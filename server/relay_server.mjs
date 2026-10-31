@@ -218,13 +218,19 @@ export function createCoopServer(options = {}) {
     server,
     wss,
     rooms,
-    listen(port = 8080, host = '0.0.0.0') {
+    listen(port = 8080, host) {
       return new Promise((resolve, reject) => {
         server.once('error', reject);
-        server.listen(port, host, () => {
+        const onListening = () => {
           const addr = server.address();
           resolve(addr.port);
-        });
+        };
+        if (host) {
+          server.listen(port, host, onListening);
+        } else {
+          // Listen on dual-stack (:: and 0.0.0.0) so both IPv6 localhost (::1) and IPv4 (127.0.0.1) tunnels work on Windows
+          server.listen(port, onListening);
+        }
       });
     },
     close() {
