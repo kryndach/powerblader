@@ -292,7 +292,12 @@ async function runTests() {
   clientRU.nes.cpu.mem[profile.ram.activeSuit] = 3; // RU equips Rocket Suit (3)
   clientRU.nes.cpu.mem[profile.ram.roomId] = 0;     // RU is in a different room
   wsRU.send(JSON.stringify({ type: 'warp_request' }));
-  await new Promise((r) => setTimeout(r, 80));
+  for (let waitAttempt = 0; waitAttempt < 100; waitAttempt++) {
+    await new Promise((r) => setTimeout(r, 15));
+    if (clientRU.nes.cpu.mem[profile.ram.roomId] === clientSG.nes.cpu.mem[profile.ram.roomId]) {
+      break;
+    }
+  }
 
   assert.strictEqual(
     clientRU.nes.cpu.mem[profile.ram.roomId],
