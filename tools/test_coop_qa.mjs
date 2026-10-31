@@ -1,7 +1,8 @@
 import assert from 'assert';
 import crypto from 'crypto';
 import fs from 'fs';
-import * as jsnes from 'jsnes';
+import * as jsnesModule from 'jsnes';
+const jsnes = jsnesModule.NES ? jsnesModule : jsnesModule.default;
 import WebSocket from 'ws';
 import { PowerBlade2CoopBridge, computeRomCrc32 } from '../src/coop_core.mjs';
 import { createCoopServer } from '../server/relay_server.mjs';

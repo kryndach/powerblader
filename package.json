@@ -10,7 +10,7 @@
     "probe": "node tools/re_probe.mjs"
   },
   "dependencies": {
-    "jsnes": "^1.2.1",
+    "jsnes": "^2.1.0",
     "ws": "^8.18.0"
   },
   "license": "MIT"

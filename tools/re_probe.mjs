@@ -1,5 +1,6 @@
 import fs from 'fs';
-import * as jsnes from 'jsnes';
+import * as jsnesModule from 'jsnes';
+const jsnes = jsnesModule.NES ? jsnesModule : jsnesModule.default;
 
 const romPath = 'local/Power Blade 2 (U) [!].nes';
 const romData = fs.readFileSync(romPath, { encoding: 'binary' });
