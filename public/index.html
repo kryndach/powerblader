@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Power Blade 2 — Online Co-op (Singapore ↔ Russia)</title>
+  <style>
+    :root {
+      --bg: #0b0e17;
+      --panel: #131826;
+      --panel-border: #25304d;
+      --accent: #38bdf8;
+      --accent-green: #4ade80;
+      --accent-amber: #fbbf24;
+      --accent-red: #f87171;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: radial-gradient(circle at top, #162038 0%, var(--bg) 70%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 12px 20px;
+      background: rgba(19, 24, 38, 0.9);
+      border-bottom: 1px solid var(--panel-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 1.15rem;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: #fff;
+    }
+    .badge {
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.15);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .badge.ok {
+      background: rgba(74, 222, 128, 0.15);
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+    }
+    .badge.warn {
+      background: rgba(251, 191, 36, 0.15);
+      border-color: var(--accent-amber);
+      color: var(--accent-amber);
+    }
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 18px;
+      padding: 18px;
+      max-width: 1360px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+    }
+    .stage-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      padding: 16px;
+      position: relative;
+    }
+    .canvas-container {
+      position: relative;
+      width: 100%;
+      max-width: 768px;
+      aspect-ratio: 256 / 240;
+      background: #000;
+      border: 2px solid #2e3b5e;
+      border-radius: 6px;
+      overflow: hidden;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.65);
+    }
+    canvas {
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      display: block;
+    }
+    .crt-overlay {
+      pointer-events: none;
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(
+        rgba(18, 16, 16, 0) 50%,
+        rgba(0, 0, 0, 0.25) 50%
+      );
+      background-size: 100% 4px;
+      opacity: 0.6;
+    }
+    .toolbar {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+      width: 100%;
+    }
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 10px;
+      padding: 14px;
+    }
+    .card h2 {
+      margin: 0 0 10px 0;
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--accent);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+      align-items: center;
+    }
+    label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      min-width: 72px;
+    }
+    input[type="text"] {
+      flex: 1;
+      background: #0b0e17;
+      border: 1px solid var(--panel-border);
+      color: var(--text);
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+    }
+    button, .file-btn {
+      background: #1e293b;
+      color: var(--text);
+      border: 1px solid #334155;
+      padding: 7px 12px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    button:hover, .file-btn:hover {
+      background: #334155;
+      border-color: var(--accent);
+    }
+    button.primary {
+      background: #0284c7;
+      border-color: #38bdf8;
+      color: #fff;
+    }
+    button.primary:hover {
+      background: #0369a1;
+    }
+    button.success {
+      background: #15803d;
+      border-color: #4ade80;
+      color: #fff;
+    }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      font-size: 0.8rem;
+    }
+    .stat-box {
+      background: rgba(11, 14, 23, 0.65);
+      border: 1px solid rgba(37, 48, 77, 0.7);
+      border-radius: 6px;
+      padding: 8px;
+    }
+    .stat-box .k {
+      color: var(--muted);
+      font-size: 0.72rem;
+      margin-bottom: 2px;
+    }
+    .stat-box .v {
+      font-weight: 700;
+      font-family: Consolas, monospace;
+      font-size: 0.88rem;
+    }
+    .controls-list {
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .controls-list kbd {
+      background: #0b0e17;
+      border: 1px solid #334155;
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--text);
+      font-family: Consolas, monospace;
+      font-size: 0.75rem;
+    }
+    #romDropZone {
+      border: 1px dashed var(--accent);
+      border-radius: 8px;
+      padding: 10px;
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--muted);
+      cursor: pointer;
+      margin-top: 6px;
+    }
+    #romDropZone.loaded {
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+      background: rgba(74, 222, 128, 0.06);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Power Blade 2 — Co-op Netcode</h1>
+      <span id="romBadge" class="badge warn">Waiting for ROM</span>
+      <span id="netBadge" class="badge">Offline</span>
+    </div>
+    <div style="display:flex; gap:10px; align-items:center;">
+      <span id="pingBadge" class="badge">Ping: -- ms</span>
+      <span id="fpsBadge" class="badge">60 FPS</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="stage-wrap">
+      <div class="canvas-container">
+        <canvas id="nesCanvas" width="256" height="240"></canvas>
+        <div id="crtOverlay" class="crt-overlay"></div>
+      </div>
+
+      <div class="toolbar">
+        <button id="btnQuickStart" class="primary" title="Skip Title & Stage Select directly into Stage 1 Gameplay">
+          🚀 Quick Start Stage 1
+        </button>
+        <button id="btnWarp" class="primary" title="Teleport to your brother's exact Stage & Room while keeping your Suit!">
+          ⚡ Warp to Partner [T]
+        </button>
+        <button id="btnUnlockSuits" title="Unlock all 4 Power Suits for both players">
+          🛡️ Unlock 4 Suits [G]
+        </button>
+        <button id="btnHeal" title="Refill HP & Suit Energy">
+          ❤️ Refill HP/Energy [H]
+        </button>
+        <button id="btnToggleBot" class="success" title="Spawn a second emulator instance in-browser driven by an AI bot to test Co-op solo!">
+          🤖 Spawn Co-op Bot
+        </button>
+        <button id="btnAudio">🔊 Audio: Off</button>
+        <button id="btnCrt">📺 CRT: On</button>
+      </div>
+      <div id="coopLiveBanner" style="margin-top:10px; padding:8px 12px; border-radius:6px; background:rgba(56,189,248,0.1); border:1px solid var(--panel-border); color:var(--text); font-size:0.8rem; width:100%; max-width:768px; text-align:center;">
+        ⏳ Connecting to Co-op Relay...
+      </div>
+      <div id="errorBanner" style="display:none; margin-top:10px; padding:8px 12px; border-radius:6px; background:rgba(248,113,113,0.18); border:1px solid var(--accent-red); color:var(--accent-red); font-size:0.8rem; width:100%; max-width:768px;"></div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="card">
+        <h2>1. ROM Setup (Client-Side)</h2>
+        <div style="font-size:0.78rem; color:var(--muted);">
+          Uses North American <b>Power Blade 2 (U) [!].nes</b> (Mapper 4 / MMC3, CRC32 <code>D273B409</code>). Cached in your browser after first load.
+        </div>
+        <div id="romDropZone">
+          📂 Click or Drop <b>Power Blade 2 (U) [!].nes</b> here
+          <input type="file" id="romFileInput" accept=".nes" style="display:none;" />
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>
+          <span>2. Co-op Room (WSS Port 443)</span>
+          <button id="btnCopyLink" style="padding:3px 8px; font-size:0.72rem;">🔗 Copy Invite</button>
+        </h2>
+        <div class="row">
+          <label for="nickInput">Nickname</label>
+          <input type="text" id="nickInput" value="Nova-SG" maxlength="16" />
+        </div>
+        <div class="row">
+          <label for="roomInput">Room Code</label>
+          <input type="text" id="roomInput" value="NOVA" maxlength="10" style="text-transform:uppercase; font-weight:700;" />
+          <button id="btnJoinRoom" class="primary">Connect</button>
+        </div>
+        <div class="row">
+          <label for="interpInput">Buffer</label>
+          <input type="text" id="interpInput" value="65" style="max-width:65px;" />
+          <span style="font-size:0.75rem; color:var(--muted);">ms interpolation (65ms ideal for SG↔RU)</span>
+        </div>
+        <div id="roomStatusBox" style="margin-top:8px; padding:8px 10px; border-radius:6px; background:rgba(11,14,23,0.75); border:1px solid var(--panel-border); font-size:0.78rem; line-height:1.45;">
+          <div id="roomStatusHeadline" style="font-weight:700; color:var(--accent-amber);">⏳ Not connected</div>
+          <div id="roomPeersList" style="color:var(--muted); margin-top:2px;">Click Connect to join room.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>3. Live Co-op Telemetry</h2>
+        <div class="stat-grid">
+          <div class="stat-box">
+            <div class="k">YOU (LOCAL)</div>
+            <div class="v" id="localStageText">Stage - / Room -</div>
+            <div class="v" id="localPosText" style="color:var(--accent);">X: - Y: -</div>
+            <div class="v" id="localHpText">HP: - | Suit: -</div>
+          </div>
+          <div class="stat-box">
+            <div class="k">PARTNER (REMOTE)</div>
+            <div class="v" id="remoteStageText">Not connected</div>
+            <div class="v" id="remotePosText" style="color:var(--accent-green);">X: - Y: -</div>
+            <div class="v" id="remoteHpText">HP: - | Suit: -</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>4. Controls (Keyboard & Gamepad)</h2>
+        <div class="controls-list">
+          <div><kbd>WASD</kbd> or <kbd>Arrows</kbd> : Move / Aim / Climb</div>
+          <div><kbd>Z</kbd> or <kbd>K</kbd> or <kbd>Space</kbd> : <b>Button A</b> (Jump)</div>
+          <div><kbd>X</kbd> or <kbd>J</kbd> : <b>Button B</b> (Throw Boomerang)</div>
+          <div><kbd>Down</kbd> + <kbd>B</kbd> : Slide Under Narrow Gaps</div>
+          <div><kbd>Enter</kbd> : <b>Start</b> (Pause / Suit Selection Menu)</div>
+          <div><kbd>Right Shift</kbd> : <b>Select</b></div>
+          <div><kbd>T</kbd> : Instant Warp to Partner's Room</div>
+          <div style="margin-top:4px; color:var(--accent);">🎮 USB/Bluetooth Gamepads work automatically!</div>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/vendor/jsnes.js"></script>
+  <script type="module">
+    import {
+      PowerBlade2CoopBridge,
+      SUIT_NAMES,
+      computeRomCrc32
+    } from '/src/coop_core.mjs';
+
+    const errorBanner = document.getElementById('errorBanner');
+    function showError(msg) {
+      if (!errorBanner) return;
+      errorBanner.style.display = 'block';
+      errorBanner.textContent = `⚠️ ${msg}`;
+    }
+    window.addEventListener('error', (e) => showError(e.message || String(e)));
+    window.addEventListener('unhandledrejection', (e) =>
+      showError(e.reason?.message || String(e.reason))
+    );
+
+    const jsnes = window.jsnes || globalThis.jsnes;
+    if (!jsnes || !jsnes.NES) {
+      throw new Error('Failed to load jsnes bundle from /vendor/jsnes.js');
+    }
+
+    const profileRes = await fetch('/games/power-blade-2/profile.json');
+    const PROFILE = await profileRes.json();
+
+    const canvas = document.getElementById('nesCanvas');
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.createImageData(256, 240);
+    const buf32 = new Uint32Array(imageData.data.buffer);
+    const currentNesFb = new Uint32Array(256 * 240);
+
+    // Audio circular buffer
+    let audioCtx = null;
+    let audioEnabled = false;
+    const AUDIO_BUF_SIZE = 8192;
+    const audioSamplesL = new Float32Array(AUDIO_BUF_SIZE);
+    const audioSamplesR = new Float32Array(AUDIO_BUF_SIZE);
+    let audioWritePtr = 0;
+    let audioReadPtr = 0;
+
+    function initAudio() {
+      if (audioCtx) return;
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AudioContextClass({ sampleRate: 44100 });
+      if (nes && nes.papu && audioCtx.sampleRate) {
+        nes.opts.sampleRate = audioCtx.sampleRate;
+        nes.papu.sampleRate = audioCtx.sampleRate;
+        nes.papu.sampleTimerMax = Math.floor(
+          (1024.0 * 1789772.5) / audioCtx.sampleRate
+        );
+      }
+      const node = audioCtx.createScriptProcessor(1024, 0, 2);
+      node.onaudioprocess = (e) => {
+        const outL = e.outputBuffer.getChannelData(0);
+        const outR = e.outputBuffer.getChannelData(1);
+        for (let i = 0; i < outL.length; i++) {
+          if (audioReadPtr !== audioWritePtr) {
+            outL[i] = audioSamplesL[audioReadPtr];
+            outR[i] = audioSamplesR[audioReadPtr];
+            audioReadPtr = (audioReadPtr + 1) & (AUDIO_BUF_SIZE - 1);
+          } else {
+            outL[i] = 0;
+            outR[i] = 0;
+          }
+        }
+      };
+      node.connect(audioCtx.destination);
+    }
+
+    const nes = new jsnes.NES({
+      sampleRate: 44100,
+      onFrame: (fb) => {
+        for (let i = 0; i < 256 * 240; i++) {
+          currentNesFb[i] = fb[i];
+        }
+      },
+      onAudioSample: (l, r) => {
+        if (!audioEnabled) return;
+        const next = (audioWritePtr + 1) & (AUDIO_BUF_SIZE - 1);
+        if (next !== audioReadPtr) {
+          audioSamplesL[audioWritePtr] = l;
+          audioSamplesR[audioWritePtr] = r;
+          audioWritePtr = next;
+        }
+      }
+    });
+
+    const bridge = new PowerBlade2CoopBridge(nes, PROFILE, { interpDelayMs: 65 });
+    let romLoaded = false;
+    let loadedRomBinary = null;
+    let loadedRomCrc32 = null;
+
+    function uint8ToBinaryString(u8) {
+      const chunk = 0x8000;
+      const parts = [];
+      for (let i = 0; i < u8.length; i += chunk) {
+        parts.push(String.fromCharCode.apply(null, u8.subarray(i, i + chunk)));
+      }
+      return parts.join('');
+    }
+
+    function loadRomFromBinaryString(binStr, sourceLabel = 'ROM') {
+      nes.loadROM(binStr);
+      bridge.tagRomChrTiles();
+      loadedRomBinary = binStr;
+      loadedRomCrc32 = computeRomCrc32(binStr);
+      romLoaded = true;
+
+      // Advance 30 boot frames so the Power Blade 2 title screen is immediately visible
+      for (let i = 0; i < 30; i++) {
+        nes.frame();
+      }
+      for (let i = 0; i < 256 * 240; i++) {
+        buf32[i] = 0xff000000 | currentNesFb[i];
+      }
+      ctx.putImageData(imageData, 0, 0);
+
+      const badge = document.getElementById('romBadge');
+      const dropZone = document.getElementById('romDropZone');
+      if (loadedRomCrc32 === PROFILE.rom.crc32) {
+        badge.textContent = `ROM Verified (${loadedRomCrc32})`;
+        badge.className = 'badge ok';
+      } else {
+        badge.textContent = `ROM Loaded (${loadedRomCrc32})`;
+        badge.className = 'badge warn';
+      }
+      dropZone.classList.add('loaded');
+      dropZone.innerHTML = `✅ Loaded <b>${sourceLabel}</b> (CRC32: <code>${loadedRomCrc32}</code>)`;
+    }
+
+    function fastForwardToStage1() {
+      if (!romLoaded) return;
+      if (nes.cpu.mem[PROFILE.ram.gameMode] === PROFILE.constants.gameModeGameplay) return;
+      for (let f = 0; f < 1400; f++) {
+        if (f % 35 === 20) nes.buttonDown(1, jsnes.Controller.BUTTON_START);
+        if (f % 35 === 25) nes.buttonUp(1, jsnes.Controller.BUTTON_START);
+        nes.frame();
+        if (
+          nes.cpu.mem[PROFILE.ram.gameMode] === PROFILE.constants.gameModeGameplay &&
+          nes.cpu.mem[PROFILE.ram.soa.hp] > 0 &&
+          f > 750
+        ) {
+          for (let k = 0; k < 40; k++) nes.frame();
+          break;
+        }
+      }
+      bridge.tagRomChrTiles();
+    }
+
+    // IndexedDB helper so your brother in Russia only selects the ROM file once
+    function saveRomToIdb(u8) {
+      try {
+        const req = indexedDB.open('pb2_coop_db', 1);
+        req.onupgradeneeded = () => req.result.createObjectStore('roms');
+        req.onsuccess = () => {
+          const tx = req.result.transaction('roms', 'readwrite');
+          tx.objectStore('roms').put(u8, 'pb2_rom');
+        };
+      } catch {}
+    }
+
+    function loadRomFromIdb() {
+      return new Promise((resolve) => {
+        try {
+          const req = indexedDB.open('pb2_coop_db', 1);
+          req.onupgradeneeded = () => req.result.createObjectStore('roms');
+          req.onsuccess = () => {
+            const tx = req.result.transaction('roms', 'readonly');
+            const getReq = tx.objectStore('roms').get('pb2_rom');
+            getReq.onsuccess = () => resolve(getReq.result || null);
+            getReq.onerror = () => resolve(null);
+          };
+          req.onerror = () => resolve(null);
+        } catch {
+          resolve(null);
+        }
+      });
+    }
+
+    async function autoLoadRom() {
+      // 1. Try local dev server ROM endpoint first
+      try {
+        const res = await fetch('/api/local-rom');
+        if (res.ok) {
+          const buf = await res.arrayBuffer();
+          const u8 = new Uint8Array(buf);
+          saveRomToIdb(u8);
+          loadRomFromBinaryString(uint8ToBinaryString(u8), 'local/Power Blade 2 (U) [!].nes');
+          return;
+        }
+      } catch {}
+
+      // 2. Try IndexedDB cached ROM
+      const cached = await loadRomFromIdb();
+      if (cached && cached.length > 16) {
+        loadRomFromBinaryString(uint8ToBinaryString(new Uint8Array(cached)), 'Cached Browser ROM');
+      }
+    }
+
+    // File input & drag-and-drop
+    const romDropZone = document.getElementById('romDropZone');
+    const romFileInput = document.getElementById('romFileInput');
+    romDropZone.addEventListener('click', () => romFileInput.click());
+    romDropZone.addEventListener('dragover', (e) => { e.preventDefault(); });
+    romDropZone.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      const file = e.dataTransfer.files?.[0];
+      if (file) {
+        const u8 = new Uint8Array(await file.arrayBuffer());
+        saveRomToIdb(u8);
+        loadRomFromBinaryString(uint8ToBinaryString(u8), file.name);
+      }
+    });
+    romFileInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        const u8 = new Uint8Array(await file.arrayBuffer());
+        saveRomToIdb(u8);
+        loadRomFromBinaryString(uint8ToBinaryString(u8), file.name);
+      }
+    });
+
+    // URL Room parameter support (?room=NOVA)
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('room')) {
+      document.getElementById('roomInput').value = params.get('room').toUpperCase();
+    }
+
+    // WebSocket Co-op Connection & Live UI Feedback
+    let ws = null;
+    let rttMs = null;
+    let currentRoomPeers = [];
+    let autoWarpedOnJoin = false;
+
+    const roomStatusHeadline = document.getElementById('roomStatusHeadline');
+    const roomPeersList = document.getElementById('roomPeersList');
+    const coopLiveBanner = document.getElementById('coopLiveBanner');
+    const btnJoinRoom = document.getElementById('btnJoinRoom');
+
+    function updateRoomStatusUi(roomCode, peers, statusNote = '') {
+      currentRoomPeers = peers || [];
+      const peerCount = currentRoomPeers.length;
+      const netBadge = document.getElementById('netBadge');
+      netBadge.textContent = `Room ${roomCode} (P${bridge.playerIndex}, ${peerCount}/2)`;
+      netBadge.className = peerCount >= 2 ? 'badge ok' : 'badge warn';
+
+      if (peerCount >= 2) {
+        roomStatusHeadline.style.color = 'var(--accent-green)';
+        roomStatusHeadline.textContent = `🟢 Connected — 2/2 Players in Room ${roomCode}`;
+        btnJoinRoom.textContent = '✅ Connected';
+        btnJoinRoom.className = 'success';
+      } else {
+        roomStatusHeadline.style.color = 'var(--accent-amber)';
+        roomStatusHeadline.textContent = `🟡 Connected to Room ${roomCode} as Player ${bridge.playerIndex} (1/2)`;
+        btnJoinRoom.textContent = '🔄 Reconnect';
+        btnJoinRoom.className = 'primary';
+      }
+
+      const peerLabels = currentRoomPeers
+        .map((p) => `P${p.playerIndex}: ${p.nick}${p.playerIndex === bridge.playerIndex ? ' (You)' : ''}`)
+        .join('  •  ');
+      roomPeersList.textContent =
+        peerCount >= 2
+          ? `${peerLabels}${statusNote ? ' — ' + statusNote : ''}`
+          : `${peerLabels} — Open a 2nd browser window at ${window.location.origin}/?room=${roomCode} or click 🤖 Spawn Co-op Bot!`;
+    }
+
+    function connectRoom(manualClick = false) {
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+        ws = null;
+      }
+      autoWarpedOnJoin = false;
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${proto}//${window.location.host}/ws`;
+      const roomCode = document.getElementById('roomInput').value.trim().toUpperCase() || 'NOVA';
+      const nick = document.getElementById('nickInput').value.trim() || 'Player';
+
+      ws = new WebSocket(wsUrl);
+      const netBadge = document.getElementById('netBadge');
+      netBadge.textContent = 'Connecting...';
+      netBadge.className = 'badge warn';
+      btnJoinRoom.textContent = '⏳ Connecting...';
+      roomStatusHeadline.style.color = 'var(--accent)';
+      roomStatusHeadline.textContent = `⏳ Connecting to Room ${roomCode}...`;
+      roomPeersList.textContent = `Dialing ${wsUrl}...`;
+
+      ws.onopen = () => {
+        ws.send(
+          JSON.stringify({
+            type: 'join_room',
+            roomCode,
+            nick,
+            romCrc32: loadedRomCrc32
+          })
+        );
+        ws.send(JSON.stringify({ type: 'ping', t: Date.now() }));
+      };
+
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'pong') {
+          rttMs = Date.now() - msg.t;
+          document.getElementById('pingBadge').textContent = `Ping: ${rttMs} ms`;
+          if (!userCustomInterp) {
+            bridge.interpDelayMs = rttMs < 15 ? 16 : 65;
+          }
+          return;
+        }
+        if (msg.type === 'room_joined') {
+          bridge.playerIndex = msg.playerIndex;
+          updateRoomStatusUi(
+            msg.roomCode,
+            msg.peers,
+            manualClick ? 'Reconnected just now!' : ''
+          );
+          return;
+        }
+        if (msg.type === 'peer_joined' || msg.type === 'peer_left') {
+          updateRoomStatusUi(
+            roomCode,
+            msg.peers,
+            msg.type === 'peer_joined'
+              ? `Partner (${msg.peer?.nick || 'P2'}) joined!`
+              : 'Partner left.'
+          );
+          return;
+        }
+        if (msg.type === 'state') {
+          bridge.receiveRemoteState(msg.state, performance.now());
+          // Auto-warp into partner's stage if we are still on the Title Screen (gameMode 0) and partner is in Gameplay (gameMode 3)
+          if (
+            romLoaded &&
+            !autoWarpedOnJoin &&
+            msg.state &&
+            msg.state.gameMode === PROFILE.constants.gameModeGameplay &&
+            nes.cpu.mem[PROFILE.ram.gameMode] !== PROFILE.constants.gameModeGameplay &&
+            ws &&
+            ws.readyState === 1
+          ) {
+            autoWarpedOnJoin = true;
+            ws.send(JSON.stringify({ type: 'warp_request' }));
+          }
+          return;
+        }
+        if (msg.type === 'event') {
+          bridge.receiveRemoteEvent(msg.event);
+          return;
+        }
+        if (msg.type === 'warp_request') {
+          if (romLoaded && ws && ws.readyState === 1) {
+            ws.send(
+              JSON.stringify({
+                type: 'warp_snapshot',
+                snapshot: bridge.createWarpSnapshot()
+              })
+            );
+          }
+          return;
+        }
+        if (msg.type === 'warp_snapshot') {
+          if (romLoaded && msg.snapshot) {
+            bridge.applyWarpSnapshot(msg.snapshot);
+            updateRoomStatusUi(roomCode, currentRoomPeers, '⚡ Warped to Partner!');
+          }
+        }
+      };
+
+      ws.onclose = () => {
+        netBadge.textContent = 'Disconnected';
+        netBadge.className = 'badge warn';
+        btnJoinRoom.textContent = 'Connect';
+        btnJoinRoom.className = 'primary';
+        roomStatusHeadline.style.color = 'var(--accent-red)';
+        roomStatusHeadline.textContent = '🔴 Disconnected from Relay';
+        roomPeersList.textContent = 'Click Connect to rejoin the room.';
+      };
+    }
+
+    setInterval(() => {
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'ping', t: Date.now() }));
+      }
+    }, 2000);
+
+    btnJoinRoom.addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      connectRoom(true);
+    });
+    let userCustomInterp = false;
+    document.getElementById('interpInput').addEventListener('change', (e) => {
+      const v = Number(e.target.value);
+      if (!Number.isNaN(v) && v >= 0 && v <= 300) {
+        userCustomInterp = true;
+        bridge.interpDelayMs = v;
+      }
+    });
+
+    document.getElementById('btnCopyLink').addEventListener('click', () => {
+      const roomCode = document.getElementById('roomInput').value.trim().toUpperCase() || 'NOVA';
+      const url = `${window.location.origin}/?room=${encodeURIComponent(roomCode)}`;
+      navigator.clipboard.writeText(url);
+      const btn = document.getElementById('btnCopyLink');
+      btn.textContent = '✅ Copied!';
+      setTimeout(() => { btn.textContent = '🔗 Copy Invite'; }, 1500);
+    });
+
+    document.getElementById('btnWarp').addEventListener('click', () => {
+      if (botActive && botBridge) {
+        bridge.applyWarpSnapshot(botBridge.createWarpSnapshot());
+      } else if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'warp_request' }));
+      }
+    });
+
+    document.getElementById('btnUnlockSuits').addEventListener('click', () => {
+      if (!romLoaded) return;
+      nes.cpu.mem[PROFILE.ram.collectedSuitsMask] = 0x0f;
+      nes.cpu.mem[PROFILE.ram.suitEnergy] = 16;
+      nes.cpu.mem[PROFILE.ram.lTanks] = 4;
+      nes.cpu.mem[PROFILE.ram.eTanks] = 4;
+    });
+
+    document.getElementById('btnHeal').addEventListener('click', () => {
+      if (!romLoaded) return;
+      nes.cpu.mem[PROFILE.ram.soa.hp] = 16;
+      nes.cpu.mem[PROFILE.ram.suitEnergy] = 16;
+    });
+
+    document.getElementById('btnAudio').addEventListener('click', () => {
+      initAudio();
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+      audioEnabled = !audioEnabled;
+      document.getElementById('btnAudio').textContent = audioEnabled ? '🔊 Audio: On' : '🔊 Audio: Off';
+    });
+
+    document.getElementById('btnCrt').addEventListener('click', () => {
+      const el = document.getElementById('crtOverlay');
+      const hidden = el.style.display === 'none';
+      el.style.display = hidden ? 'block' : 'none';
+      document.getElementById('btnCrt').textContent = hidden ? '📺 CRT: On' : '📺 CRT: Off';
+    });
+
+    document.getElementById('btnQuickStart').addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      fastForwardToStage1();
+    });
+
+    // Optional Built-in AI Co-op Partner Bot for instant solo testing in browser
+    let botActive = false;
+    let botNes = null;
+    let botBridge = null;
+    let botTick = 0;
+
+    document.getElementById('btnToggleBot').addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      if (!romLoaded) return;
+      botActive = !botActive;
+      const btn = document.getElementById('btnToggleBot');
+      if (botActive) {
+        if (nes.cpu.mem[PROFILE.ram.gameMode] !== PROFILE.constants.gameModeGameplay) {
+          fastForwardToStage1();
+        }
+        botNes = new jsnes.NES({ onFrame: () => {}, onAudioSample: () => {} });
+        botNes.loadROM(loadedRomBinary);
+        botBridge = new PowerBlade2CoopBridge(botNes, PROFILE, { playerIndex: 2 });
+        botBridge.tagRomChrTiles();
+        // Sync bot directly to player's current room & equip Patriot Suit!
+        botBridge.applyWarpSnapshot(bridge.createWarpSnapshot());
+        botNes.cpu.mem[PROFILE.ram.collectedSuitsMask] = 0x0f;
+        botNes.cpu.mem[PROFILE.ram.activeSuit] = 2; // Patriot Suit
+        btn.textContent = '🤖 Stop Co-op Bot';
+      } else {
+        botNes = null;
+        botBridge = null;
+        btn.textContent = '🤖 Spawn Co-op Bot';
+      }
+    });
+
+    function stepBuiltInBot(nowMs) {
+      if (!botActive || !botNes || !botBridge) return;
+      const localState = bridge.extractLocalState(nowMs);
+      if (localState.gameMode !== PROFILE.constants.gameModeGameplay) return;
+
+      botTick++;
+      // Keep bot in the same stage & room if player changes rooms
+      const botRam = botNes.cpu.mem;
+      if (
+        botRam[PROFILE.ram.gameMode] !== PROFILE.constants.gameModeGameplay ||
+        botRam[PROFILE.ram.stageId] !== localState.stageId ||
+        botRam[PROFILE.ram.roomId] !== localState.roomId
+      ) {
+        botBridge.applyWarpSnapshot(bridge.createWarpSnapshot());
+        botRam[PROFILE.ram.activeSuit] = 2;
+      }
+
+      // Simple patrol + jump + boomerang AI around player
+      const botState = botBridge.extractLocalState(nowMs);
+      const dx = localState.worldX - botState.worldX;
+      botNes.buttonUp(1, jsnes.Controller.BUTTON_LEFT);
+      botNes.buttonUp(1, jsnes.Controller.BUTTON_RIGHT);
+      botNes.buttonUp(1, jsnes.Controller.BUTTON_A);
+      botNes.buttonUp(1, jsnes.Controller.BUTTON_B);
+
+      if (dx < -24 || (Math.abs(dx) <= 24 && (botTick % 90) < 45)) {
+        botNes.buttonDown(1, jsnes.Controller.BUTTON_LEFT);
+      } else if (dx > 24 || (Math.abs(dx) <= 24 && (botTick % 90) >= 45)) {
+        botNes.buttonDown(1, jsnes.Controller.BUTTON_RIGHT);
+      }
+      if (botTick % 75 === 0) botNes.buttonDown(1, jsnes.Controller.BUTTON_A);
+      if (botTick % 40 === 0) botNes.buttonDown(1, jsnes.Controller.BUTTON_B);
+
+      botBridge.receiveRemoteState(localState, nowMs);
+      botNes.frame();
+      botBridge.stepFrame(nowMs);
+      const newBotState = botBridge.extractLocalState(nowMs);
+      bridge.receiveRemoteState(newBotState, nowMs);
+      for (const ev of botBridge.flushOutgoingEvents()) {
+        bridge.receiveRemoteEvent(ev);
+      }
+    }
+
+    // Keyboard Controls
+    const KEY_MAP = {
+      ArrowUp: jsnes.Controller.BUTTON_UP,
+      KeyW: jsnes.Controller.BUTTON_UP,
+      ArrowDown: jsnes.Controller.BUTTON_DOWN,
+      KeyS: jsnes.Controller.BUTTON_DOWN,
+      ArrowLeft: jsnes.Controller.BUTTON_LEFT,
+      KeyA: jsnes.Controller.BUTTON_LEFT,
+      ArrowRight: jsnes.Controller.BUTTON_RIGHT,
+      KeyD: jsnes.Controller.BUTTON_RIGHT,
+      KeyZ: jsnes.Controller.BUTTON_A,
+      KeyK: jsnes.Controller.BUTTON_A,
+      Space: jsnes.Controller.BUTTON_A,
+      KeyX: jsnes.Controller.BUTTON_B,
+      KeyJ: jsnes.Controller.BUTTON_B,
+      Enter: jsnes.Controller.BUTTON_START,
+      ShiftRight: jsnes.Controller.BUTTON_SELECT,
+      ShiftLeft: jsnes.Controller.BUTTON_SELECT
+    };
+
+    window.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      if (e.code === 'KeyT') {
+        document.getElementById('btnWarp').click();
+        return;
+      }
+      if (e.code === 'KeyG') {
+        document.getElementById('btnUnlockSuits').click();
+        return;
+      }
+      if (e.code === 'KeyH') {
+        document.getElementById('btnHeal').click();
+        return;
+      }
+      const btn = KEY_MAP[e.code];
+      if (btn !== undefined) {
+        e.preventDefault();
+        nes.buttonDown(1, btn);
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      const btn = KEY_MAP[e.code];
+      if (btn !== undefined) {
+        e.preventDefault();
+        nes.buttonUp(1, btn);
+      }
+    });
+
+    // HTML5 Gamepad Polling
+    const prevGamepadButtons = new Array(8).fill(false);
+    function pollGamepad() {
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      const pad = pads[0];
+      if (!pad) return;
+      const b = pad.buttons;
+      const axX = pad.axes?.[0] || 0;
+      const axY = pad.axes?.[1] || 0;
+      const cur = [
+        Boolean(b[0]?.pressed || b[2]?.pressed), // A (Jump)
+        Boolean(b[1]?.pressed || b[3]?.pressed), // B (Attack)
+        Boolean(b[8]?.pressed),                  // Select
+        Boolean(b[9]?.pressed),                  // Start
+        Boolean(b[12]?.pressed || axY < -0.4),   // Up
+        Boolean(b[13]?.pressed || axY > 0.4),    // Down
+        Boolean(b[14]?.pressed || axX < -0.4),   // Left
+        Boolean(b[15]?.pressed || axX > 0.4)     // Right
+      ];
+      for (let i = 0; i < 8; i++) {
+        if (cur[i] !== prevGamepadButtons[i]) {
+          if (cur[i]) nes.buttonDown(1, i);
+          else nes.buttonUp(1, i);
+          prevGamepadButtons[i] = cur[i];
+        }
+      }
+    }
+
+    // Exact 60.0988 Hz NTSC Emulator & Co-op Loop (works on 60Hz/120Hz/144Hz/240Hz monitors AND unfocused windows)
+    const NES_FRAME_MS = 1000 / 60.0988; // 16.63926 ms
+    let lastFrameTime = performance.now();
+    let frameAccumulator = 0;
+    let lastFpsTime = performance.now();
+    let framesThisSec = 0;
+
+    function stepSingleNesFrame(nowMs) {
+      pollGamepad();
+      nes.frame();
+      bridge.stepFrame(nowMs);
+      stepBuiltInBot(nowMs);
+
+      const localState = bridge.extractLocalState(nowMs);
+
+      // Send state over WebSocket at 60Hz + flush combat/progression/spawn events immediately
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'state', state: localState }));
+        for (const ev of bridge.flushOutgoingEvents()) {
+          ws.send(JSON.stringify({ type: 'event', event: ev }));
+        }
+      }
+
+      // Composite Remote Partner & Projectiles onto currentNesFb
+      const overlayInfo = bridge.renderCoopOverlay(currentNesFb, nowMs);
+
+      // Convert 24-bit BGR -> RGBA (0xFF000000 | color) and draw to Canvas
+      for (let i = 0; i < 256 * 240; i++) {
+        buf32[i] = 0xff000000 | currentNesFb[i];
+      }
+      ctx.putImageData(imageData, 0, 0);
+
+      // Update UI Telemetry every 6 frames
+      if (bridge.frameCounter % 6 === 0) {
+        const inGame = localState.gameMode === PROFILE.constants.gameModeGameplay;
+        document.getElementById('localStageText').textContent = inGame
+          ? `Stage ${localState.stageId + 1} / Room ${localState.roomId}`
+          : `Menu / Title (Mode ${localState.gameMode})`;
+        document.getElementById('localPosText').textContent =
+          `World (${localState.worldX}, ${localState.worldY})`;
+        document.getElementById('localHpText').textContent =
+          `HP: ${localState.hp}/16 | ${SUIT_NAMES[localState.activeSuit] || 'Suit'}`;
+
+        const rem = bridge.latestRemoteState;
+        if (rem && nowMs - bridge.lastRemotePacketAt < 5000) {
+          const remInGame = rem.gameMode === PROFILE.constants.gameModeGameplay;
+          document.getElementById('remoteStageText').textContent = remInGame
+            ? `Stage ${rem.stageId + 1} / Room ${rem.roomId}`
+            : `Menu / Title (Mode ${rem.gameMode})`;
+          document.getElementById('remotePosText').textContent =
+            `World (${rem.worldX}, ${rem.worldY})`;
+          document.getElementById('remoteHpText').textContent =
+            `HP: ${rem.hp}/16 | ${SUIT_NAMES[rem.activeSuit] || 'Suit'}`;
+
+          if (overlayInfo.partnerSameRoom && inGame) {
+            coopLiveBanner.style.borderColor = 'var(--accent-green)';
+            coopLiveBanner.textContent =
+              `🟢 CO-OP SYNC ACTIVE: You & Partner are together in Stage ${localState.stageId + 1} / Room ${localState.roomId}!`;
+          } else if (remInGame && !inGame) {
+            coopLiveBanner.style.borderColor = 'var(--accent-amber)';
+            coopLiveBanner.textContent =
+              `🟡 Partner is in Stage ${rem.stageId + 1} / Room ${rem.roomId} — Click [⚡ Warp to Partner] to teleport to them!`;
+          } else if (!remInGame && inGame) {
+            coopLiveBanner.style.borderColor = 'var(--accent-amber)';
+            coopLiveBanner.textContent =
+              `🟡 You are in Stage ${localState.stageId + 1} — Partner is on Title/Stage Select (they can click ⚡ Warp to Partner).`;
+          } else if (inGame && remInGame) {
+            coopLiveBanner.style.borderColor = 'var(--accent-amber)';
+            coopLiveBanner.textContent =
+              `🟡 Partner is in Stage ${rem.stageId + 1} Room ${rem.roomId} (You: Stage ${localState.stageId + 1} Room ${localState.roomId}) — Press [T] or click ⚡ Warp to Partner!`;
+          } else {
+            coopLiveBanner.style.borderColor = 'var(--accent)';
+            coopLiveBanner.textContent =
+              `🟢 Partner Connected! Click [🚀 Quick Start Stage 1] or press Enter to start playing.`;
+          }
+        } else {
+          document.getElementById('remoteStageText').textContent = 'Waiting for Partner...';
+          coopLiveBanner.style.borderColor = 'var(--panel-border)';
+          coopLiveBanner.textContent =
+            `⏳ Waiting for Partner in Room ${document.getElementById('roomInput').value.toUpperCase()} — Open a 2nd browser window or click [🤖 Spawn Co-op Bot].`;
+        }
+      }
+
+      framesThisSec++;
+      if (nowMs - lastFpsTime >= 1000) {
+        document.getElementById('fpsBadge').textContent = `${framesThisSec} FPS`;
+        framesThisSec = 0;
+        lastFpsTime = nowMs;
+      }
+    }
+
+    function pumpEmulation(nowMs = performance.now()) {
+      if (!romLoaded) {
+        lastFrameTime = nowMs;
+        return;
+      }
+      const delta = nowMs - lastFrameTime;
+      lastFrameTime = nowMs;
+      // Cap delta at 100ms so switching tabs doesn't spiral
+      frameAccumulator += Math.min(delta, 100);
+
+      let steps = 0;
+      while (frameAccumulator >= NES_FRAME_MS && steps < 4) {
+        stepSingleNesFrame(nowMs);
+        frameAccumulator -= NES_FRAME_MS;
+        steps++;
+      }
+    }
+
+    function rafLoop(nowMs) {
+      requestAnimationFrame(rafLoop);
+      pumpEmulation(nowMs);
+    }
+
+    // Fallback background timer so a 2nd unfocused browser window keeps running at 60Hz!
+    setInterval(() => {
+      pumpEmulation(performance.now());
+    }, 16);
+
+    await autoLoadRom();
+    connectRoom();
+    requestAnimationFrame(rafLoop);
+  </script>
+</body>
+</html>

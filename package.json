@@ -1,0 +1,17 @@
+{
+  "name": "power-blade-2-coop-netcode",
+  "version": "1.0.0",
+  "description": "Browser Dual-Emulator Memory & Sprite Sync Co-op for Power Blade 2 (NES) over WebSocket/TLS (wss://)",
+  "type": "module",
+  "main": "server/relay_server.mjs",
+  "scripts": {
+    "start": "node server/relay_server.mjs",
+    "test": "node tools/test_coop_qa.mjs",
+    "probe": "node tools/re_probe.mjs"
+  },
+  "dependencies": {
+    "jsnes": "^1.2.1",
+    "ws": "^8.18.0"
+  },
+  "license": "MIT"
+}

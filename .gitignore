@@ -1,0 +1,17 @@
+# coop-anything AGENTS.md Rule 2 & 7: Never commit private state, ROMs, saves, or dumps
+local/
+*.nes
+*.fds
+*.unf
+*.bin
+*.chr
+*.prg
+*.sav
+*.state
+*.fc0
+
+# Dependencies & build artifacts
+node_modules/
+dist/
+.env
+.env.*
