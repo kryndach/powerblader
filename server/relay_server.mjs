@@ -39,7 +39,8 @@ export function createCoopServer(options = {}) {
       peers.push({
         playerIndex: client.playerIndex,
         nick: client.nick,
-        romCrc32: client.romCrc32
+        romCrc32: client.romCrc32,
+        romName: client.romName
       });
     }
     return peers;
@@ -55,12 +56,29 @@ export function createCoopServer(options = {}) {
       return;
     }
 
+    if (pathname === '/api/local-roms') {
+      const localDir = path.join(ROOT_DIR, 'local');
+      let files = [];
+      if (fs.existsSync(localDir)) {
+        files = fs
+          .readdirSync(localDir)
+          .filter((f) => f.toLowerCase().endsWith('.nes'))
+          .sort();
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ files }));
+      return;
+    }
+
     if (pathname === '/api/local-rom') {
       const localDir = path.join(ROOT_DIR, 'local');
       let romFile = null;
       if (fs.existsSync(localDir)) {
         const files = fs.readdirSync(localDir).filter((f) => f.toLowerCase().endsWith('.nes'));
-        if (files.length > 0) {
+        const requested = urlObj.searchParams.get('file');
+        if (requested && files.includes(requested)) {
+          romFile = path.join(localDir, requested);
+        } else if (files.length > 0) {
           romFile = path.join(localDir, files[0]);
         }
       }
@@ -95,6 +113,8 @@ export function createCoopServer(options = {}) {
     let filePath = null;
     if (pathname === '/' || pathname === '/index.html') {
       filePath = path.join(ROOT_DIR, 'public', 'index.html');
+    } else if (pathname === '/src/netplay_engine.mjs') {
+      filePath = path.join(ROOT_DIR, 'src', 'netplay_engine.mjs');
     } else if (pathname === '/src/coop_core.mjs') {
       filePath = path.join(ROOT_DIR, 'src', 'coop_core.mjs');
     } else if (pathname === '/games/power-blade-2/profile.json') {
@@ -113,13 +133,15 @@ export function createCoopServer(options = {}) {
     fs.createReadStream(filePath).pipe(res);
   });
 
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  // Allow up to 8 MB payloads for ROM / savestate transfers
+  const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 8 * 1024 * 1024 });
 
   wss.on('connection', (ws) => {
     ws.roomCode = null;
     ws.playerIndex = 1;
     ws.nick = 'Player';
     ws.romCrc32 = null;
+    ws.romName = null;
 
     ws.on('message', (data) => {
       let msg;
@@ -136,12 +158,13 @@ export function createCoopServer(options = {}) {
       }
 
       if (msg.type === 'join_room') {
-        const roomCode = String(msg.roomCode || 'NOVA')
+        const roomCode = String(msg.roomCode || 'NES1')
           .trim()
           .toUpperCase()
           .slice(0, 12);
         ws.nick = String(msg.nick || 'Player').slice(0, 20);
         ws.romCrc32 = msg.romCrc32 || null;
+        ws.romName = msg.romName || null;
 
         if (ws.roomCode && rooms.has(ws.roomCode)) {
           rooms.get(ws.roomCode).delete(ws);
@@ -172,7 +195,8 @@ export function createCoopServer(options = {}) {
           peer: {
             playerIndex: ws.playerIndex,
             nick: ws.nick,
-            romCrc32: ws.romCrc32
+            romCrc32: ws.romCrc32,
+            romName: ws.romName
           },
           peers
         });
@@ -181,12 +205,28 @@ export function createCoopServer(options = {}) {
 
       if (!ws.roomCode) return;
 
-      if (
-        msg.type === 'state' ||
-        msg.type === 'event' ||
-        msg.type === 'warp_request' ||
-        msg.type === 'warp_snapshot'
-      ) {
+      if (msg.type === 'rom_info') {
+        ws.romCrc32 = msg.romCrc32 || ws.romCrc32;
+        ws.romName = msg.romName || ws.romName;
+      }
+
+      // Forward all netplay, WebRTC signaling, ROM sync, state sync, and legacy messages to room peers
+      const forwardTypes = new Set([
+        'netplay_input',
+        'state_sync',
+        'resync_request',
+        'console_reset',
+        'rom_info',
+        'rom_request',
+        'rom_sync',
+        'webrtc_signal',
+        'state',
+        'event',
+        'warp_request',
+        'warp_snapshot'
+      ]);
+
+      if (forwardTypes.has(msg.type)) {
         broadcastToRoom(ws.roomCode, ws, {
           ...msg,
           fromPlayer: ws.playerIndex,
@@ -251,7 +291,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const port = Number(process.env.PORT || 8080);
   const app = createCoopServer();
   app.listen(port).then((actualPort) => {
-    console.log(`Power Blade 2 Co-op Server listening on http://localhost:${actualPort}`);
-    console.log(`WebSocket Relay endpoint: ws://localhost:${actualPort}/ws (or wss:// over TLS 443)`);
+    console.log(`Universal NES Netplay Server listening on http://localhost:${actualPort}`);
+    console.log(`WebSocket Relay & Signaling endpoint: ws://localhost:${actualPort}/ws`);
+    console.log(`For internet tunnel: ssh -R 80:127.0.0.1:${actualPort} nokey@localhost.run`);
   });
 }
