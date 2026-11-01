@@ -40,7 +40,8 @@ export function createCoopServer(options = {}) {
         playerIndex: client.playerIndex,
         nick: client.nick,
         romCrc32: client.romCrc32,
-        romName: client.romName
+        romName: client.romName,
+        isAutoDefaultRom: Boolean(client.isAutoDefaultRom)
       });
     }
     return peers;
@@ -142,6 +143,7 @@ export function createCoopServer(options = {}) {
     ws.nick = 'Player';
     ws.romCrc32 = null;
     ws.romName = null;
+    ws.isAutoDefaultRom = true;
 
     ws.on('message', (data) => {
       let msg;
@@ -165,6 +167,9 @@ export function createCoopServer(options = {}) {
         ws.nick = String(msg.nick || 'Player').slice(0, 20);
         ws.romCrc32 = msg.romCrc32 || null;
         ws.romName = msg.romName || null;
+        if (typeof msg.isAutoDefaultRom === 'boolean') {
+          ws.isAutoDefaultRom = msg.isAutoDefaultRom;
+        }
 
         if (ws.roomCode && rooms.has(ws.roomCode)) {
           rooms.get(ws.roomCode).delete(ws);
@@ -196,7 +201,8 @@ export function createCoopServer(options = {}) {
             playerIndex: ws.playerIndex,
             nick: ws.nick,
             romCrc32: ws.romCrc32,
-            romName: ws.romName
+            romName: ws.romName,
+            isAutoDefaultRom: Boolean(ws.isAutoDefaultRom)
           },
           peers
         });
@@ -205,15 +211,19 @@ export function createCoopServer(options = {}) {
 
       if (!ws.roomCode) return;
 
-      if (msg.type === 'rom_info') {
+      if (msg.type === 'rom_info' || msg.type === 'rom_sync') {
         ws.romCrc32 = msg.romCrc32 || ws.romCrc32;
         ws.romName = msg.romName || ws.romName;
+        if (typeof msg.isAutoDefaultRom === 'boolean') {
+          ws.isAutoDefaultRom = msg.isAutoDefaultRom;
+        }
       }
 
       // Forward all netplay, WebRTC signaling, ROM sync, state sync, and legacy messages to room peers
       const forwardTypes = new Set([
         'netplay_input',
         'state_sync',
+        'sync_ack',
         'resync_request',
         'console_reset',
         'rom_info',

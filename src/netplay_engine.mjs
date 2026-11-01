@@ -126,6 +126,7 @@ const PPU_SCALAR_PROPS = [
   'curX',
   'scanline',
   'lastRenderedScanline',
+  'curNt',
   'nmiOutput',
   'nmiSuppressed',
   'vblankPending',
@@ -317,6 +318,8 @@ function createFastSnapshotSlot() {
       new Uint8Array(1024)
     ],
     ptTileRefs: new Array(512),
+    scantileRefs: new Array(32),
+    attrib: new Int32Array(32),
     hasChrRam: false,
     chrRamPix: new Uint8Array(512 * 64),
     chrRamOpaque: new Uint8Array(512 * 8),
@@ -364,6 +367,11 @@ export function saveFastState(nes, slot, frameNum = 0) {
     }
   }
 
+  for (let i = 0; i < 32; i++) {
+    slot.scantileRefs[i] = ppu.scantile ? ppu.scantile[i] : undefined;
+    slot.attrib[i] = ppu.attrib ? ppu.attrib[i] : 0;
+  }
+
   slot.sprPalette.set(ppu.sprPalette);
   slot.imgPalette.set(ppu.imgPalette);
   slot.secondaryOAM.set(ppu.secondaryOAM);
@@ -384,6 +392,10 @@ export function saveFastState(nes, slot, frameNum = 0) {
 export function loadFastState(nes, slot) {
   const cpu = nes.cpu;
   const ppu = nes.ppu;
+
+  if (nes.mmap && slot.mmapState) {
+    nes.mmap.fromJSON(slot.mmapState);
+  }
 
   cpu.mem.set(slot.cpuMem);
   for (let i = 0; i < CPU_SCALAR_PROPS.length; i++) {
@@ -407,6 +419,13 @@ export function loadFastState(nes, slot) {
     }
   }
 
+  if (ppu.scantile && ppu.attrib) {
+    for (let i = 0; i < 32; i++) {
+      ppu.scantile[i] = slot.scantileRefs[i];
+      ppu.attrib[i] = slot.attrib[i];
+    }
+  }
+
   ppu.sprPalette.set(slot.sprPalette);
   ppu.imgPalette.set(slot.imgPalette);
   ppu.secondaryOAM.set(slot.secondaryOAM);
@@ -422,9 +441,6 @@ export function loadFastState(nes, slot) {
     ppu.spriteRamWriteUpdate(i, ppu.spriteMem[i]);
   }
 
-  if (nes.mmap && slot.mmapState) {
-    nes.mmap.fromJSON(slot.mmapState);
-  }
   if (nes.papu && slot.papuState) {
     nes.papu.fromJSON(slot.papuState);
   }
@@ -483,9 +499,11 @@ export class NesNetplayEngine {
     this.localPlayer = options.localPlayer || 1; // 1 = Controller 1 ($4016), 2 = Controller 2 ($4017)
     this.online = Boolean(options.online);
     this.inputDelayFrames = options.inputDelayFrames ?? 2;
-    this.maxRollbackFrames = options.maxRollbackFrames ?? 12;
+    this.maxRollbackFrames = options.maxRollbackFrames ?? 20;
     this.historySize = 256;
-    this.saveBufferSize = 32;
+    this.saveBufferSize = options.saveBufferSize ?? 64;
+    this.sessionId = options.sessionId || 'default';
+    this.syncPaused = false;
 
     // Hook nes.opts.onAudioSample and nes.opts.onFrame so we can suppress duplicate audio/video during rollback re-simulation
     this.suppressCallbacks = false;
@@ -517,17 +535,27 @@ export class NesNetplayEngine {
     };
   }
 
-  resetTimeline(startFrame = 0) {
+  resetTimeline(startFrame = 0, newSessionId = null) {
+    if (newSessionId) {
+      this.sessionId = newSessionId;
+    }
+    this.timelineStartFrame = startFrame;
     this.currentFrame = startFrame;
     this.p1Inputs = new Uint8Array(this.historySize);
     this.p2Inputs = new Uint8Array(this.historySize);
     this.p1Confirmed = new Int32Array(this.historySize).fill(-1);
     this.p2Confirmed = new Int32Array(this.historySize).fill(-1);
 
+    // Exact masks passed to applyControllerMask when each frame was last simulated
+    this.p1Simulated = new Uint8Array(this.historySize);
+    this.p2Simulated = new Uint8Array(this.historySize);
+    this.simulatedFrameTag = new Int32Array(this.historySize).fill(-1);
+
     this.lastConfirmedRemoteFrame = startFrame - 1;
+    this.lastLocalScheduledFrame = startFrame - 1;
     this.earliestMispredictedFrame = null;
 
-    // Seed initial delay frames (0 .. inputDelayFrames - 1) with neutral 0 input for both players
+    // Seed initial delay frames (startFrame .. startFrame + inputDelayFrames - 1) with neutral 0 input for both players
     for (let f = startFrame; f < startFrame + this.inputDelayFrames; f++) {
       const idx = f % this.historySize;
       this.p1Inputs[idx] = 0;
@@ -537,6 +565,7 @@ export class NesNetplayEngine {
     }
     if (this.inputDelayFrames > 0) {
       this.lastConfirmedRemoteFrame = startFrame + this.inputDelayFrames - 1;
+      this.lastLocalScheduledFrame = startFrame + this.inputDelayFrames - 1;
     }
 
     // Checksum tracking (frame -> uint32 hash)
@@ -569,12 +598,11 @@ export class NesNetplayEngine {
   setInputDelay(frames) {
     const nextDelay = Math.max(0, Math.min(8, Math.floor(frames)));
     if (nextDelay === this.inputDelayFrames) return;
-    // Seed any newly added delay frames with the last known local input
-    const targetOld = this.currentFrame + this.inputDelayFrames;
-    const targetNew = this.currentFrame + nextDelay;
-    const prevMask = this.getLocalInputAt(Math.max(0, targetOld - 1));
-    for (let f = targetOld; f < targetNew; f++) {
-      this._setPlayerInput(this.localPlayer, f, prevMask, true);
+    const targetNew = this.currentFrame + nextDelay - 1;
+    const prevMask = this.getLocalInputAt(Math.max(this.timelineStartFrame, this.lastLocalScheduledFrame));
+    while (this.lastLocalScheduledFrame < targetNew) {
+      this.lastLocalScheduledFrame++;
+      this._setPlayerInput(this.localPlayer, this.lastLocalScheduledFrame, prevMask, true);
     }
     this.inputDelayFrames = nextDelay;
   }
@@ -596,17 +624,17 @@ export class NesNetplayEngine {
     if (playerNum === 1) {
       if (this.p1Confirmed[idx] === frame) return this.p1Inputs[idx];
       // Predict from last confirmed P1 frame
-      if (this.lastConfirmedRemoteFrame >= 0 && this.localPlayer === 2) {
+      if (this.lastConfirmedRemoteFrame >= this.timelineStartFrame && this.localPlayer === 2) {
         return this.p1Inputs[this.lastConfirmedRemoteFrame % this.historySize];
       }
-      return this.p1Inputs[idx];
+      return 0;
     } else {
       if (this.p2Confirmed[idx] === frame) return this.p2Inputs[idx];
       // Predict from last confirmed P2 frame
-      if (this.lastConfirmedRemoteFrame >= 0 && this.localPlayer === 1) {
+      if (this.lastConfirmedRemoteFrame >= this.timelineStartFrame && this.localPlayer === 1) {
         return this.p2Inputs[this.lastConfirmedRemoteFrame % this.historySize];
       }
-      return this.p2Inputs[idx];
+      return 0;
     }
   }
 
@@ -616,32 +644,38 @@ export class NesNetplayEngine {
 
   /**
    * Called when remote input packet arrives:
-   * packet = { startFrame, inputs: [mask_start, mask_{start-1}, ...], hashFrame?, hash? }
+   * packet = { startFrame, inputs: [mask_start, mask_{start-1}, ...], sessionId?, hashFrame?, hash? }
    */
   receiveRemoteInputPacket(packet) {
     if (!packet || typeof packet.startFrame !== 'number' || !Array.isArray(packet.inputs)) {
       return;
     }
+    if (packet.sessionId && this.sessionId && packet.sessionId !== this.sessionId) {
+      return;
+    }
     const remotePlayer = this.localPlayer === 1 ? 2 : 1;
     const confirmedArr = remotePlayer === 1 ? this.p1Confirmed : this.p2Confirmed;
     const inputsArr = remotePlayer === 1 ? this.p1Inputs : this.p2Inputs;
+    const simulatedArr = remotePlayer === 1 ? this.p1Simulated : this.p2Simulated;
+    const minValidFrame = Math.max(
+      this.timelineStartFrame,
+      this.currentFrame - (this.saveBufferSize - 4)
+    );
 
     // Process from oldest to newest in the redundant window
     for (let i = packet.inputs.length - 1; i >= 0; i--) {
       const f = packet.startFrame - i;
-      if (f < 0) continue;
-      // Ignore frames way behind our rollback buffer
-      if (f < this.currentFrame - (this.saveBufferSize - 2)) continue;
+      if (f < minValidFrame) continue;
 
       const mask = packet.inputs[i] & 0xff;
       const idx = f % this.historySize;
       const wasConfirmed = confirmedArr[idx] === f;
 
       if (!wasConfirmed) {
-        // If we already simulated frame f with a predicted input, check if our prediction matched
-        if (f < this.currentFrame) {
-          const predictedMask = this.getPlayerInput(remotePlayer, f);
-          if (predictedMask !== mask) {
+        // Check against the exact mask that was used when frame f was last simulated
+        if (f < this.currentFrame && this.simulatedFrameTag[idx] === f) {
+          const usedMask = simulatedArr[idx];
+          if (usedMask !== mask) {
             if (
               this.earliestMispredictedFrame === null ||
               f < this.earliestMispredictedFrame
@@ -659,7 +693,11 @@ export class NesNetplayEngine {
     }
 
     // Check deterministic hash if included
-    if (typeof packet.hashFrame === 'number' && typeof packet.hash === 'number') {
+    if (
+      typeof packet.hashFrame === 'number' &&
+      typeof packet.hash === 'number' &&
+      packet.hashFrame >= this.timelineStartFrame
+    ) {
       this.remoteHashes.set(packet.hashFrame, packet.hash >>> 0);
       this._cleanupOldHashes();
     }
@@ -709,11 +747,28 @@ export class NesNetplayEngine {
       this.lastRollbackSecTick = now;
     }
 
+    if (this.syncPaused) {
+      return {
+        stepped: false,
+        stalled: true,
+        syncPaused: true,
+        packetToSend: null,
+        p1Mask: 0,
+        p2Mask: 0
+      };
+    }
+
     if (!this.online) {
       // Offline / Solo or Local 2P mode: direct immediate stepping
       const f = this.currentFrame;
+      const idx = f % this.historySize;
       this._setPlayerInput(1, f, localButtonsMask, true);
       this._setPlayerInput(2, f, p2LocalButtonsMask, true);
+      this.p1Simulated[idx] = localButtonsMask & 0xff;
+      this.p2Simulated[idx] = p2LocalButtonsMask & 0xff;
+      this.simulatedFrameTag[idx] = f;
+      this.lastConfirmedRemoteFrame = f;
+      this.lastLocalScheduledFrame = f;
       saveFastState(this.nes, this.saveRing[f % this.saveBufferSize], f);
       applyControllerMask(this.nes, 1, localButtonsMask);
       applyControllerMask(this.nes, 2, p2LocalButtonsMask);
@@ -730,15 +785,33 @@ export class NesNetplayEngine {
       };
     }
 
-    // 1. Perform rollback if any earlier frame had a mispredicted remote input
-    if (
+    // 1. Find earliest frame < currentFrame whose desired (P1, P2) input differs from what was simulated
+    const minRollbackFrame = Math.max(
+      this.timelineStartFrame,
+      this.currentFrame - (this.saveBufferSize - 4)
+    );
+    let rbFrame =
       this.earliestMispredictedFrame !== null &&
       this.earliestMispredictedFrame < this.currentFrame
-    ) {
-      const rbFrame = this.earliestMispredictedFrame;
-      this.earliestMispredictedFrame = null;
-      const slot = this.saveRing[rbFrame % this.saveBufferSize];
+        ? Math.max(minRollbackFrame, this.earliestMispredictedFrame)
+        : null;
+    this.earliestMispredictedFrame = null;
 
+    for (let f = minRollbackFrame; f < this.currentFrame; f++) {
+      if (rbFrame !== null && f >= rbFrame) break;
+      const idx = f % this.historySize;
+      if (this.simulatedFrameTag[idx] === f) {
+        const want1 = this.getPlayerInput(1, f);
+        const want2 = this.getPlayerInput(2, f);
+        if (want1 !== this.p1Simulated[idx] || want2 !== this.p2Simulated[idx]) {
+          rbFrame = f;
+          break;
+        }
+      }
+    }
+
+    if (rbFrame !== null && rbFrame < this.currentFrame) {
+      const slot = this.saveRing[rbFrame % this.saveBufferSize];
       if (slot && slot.frame === rbFrame) {
         const depth = this.currentFrame - rbFrame;
         this.rollbacksTotal++;
@@ -755,6 +828,10 @@ export class NesNetplayEngine {
           saveFastState(this.nes, this.saveRing[f % this.saveBufferSize], f);
           const m1 = this.getPlayerInput(1, f);
           const m2 = this.getPlayerInput(2, f);
+          const idx = f % this.historySize;
+          this.p1Simulated[idx] = m1;
+          this.p2Simulated[idx] = m2;
+          this.simulatedFrameTag[idx] = f;
           applyControllerMask(this.nes, 1, m1);
           applyControllerMask(this.nes, 2, m2);
           this.nes.frame();
@@ -774,28 +851,38 @@ export class NesNetplayEngine {
       // Rift stall: wait for remote input packet, but still broadcast our latest inputs so peer isn't deadlocked
       this.stallFrames++;
       this._verifyConfirmedHashes();
-      const packetToSend = this._buildInputPacket(this.currentFrame + this.inputDelayFrames - 1);
+      const packetToSend = this._buildInputPacket(this.lastLocalScheduledFrame);
       this.lastStepMs = performance.now() - t0;
       return {
         stepped: false,
         stalled: true,
         packetToSend,
-        p1Mask: this.getPlayerInput(1, Math.max(0, this.currentFrame - 1)),
-        p2Mask: this.getPlayerInput(2, Math.max(0, this.currentFrame - 1))
+        p1Mask: this.getPlayerInput(1, Math.max(this.timelineStartFrame, this.currentFrame - 1)),
+        p2Mask: this.getPlayerInput(2, Math.max(this.timelineStartFrame, this.currentFrame - 1))
       };
     }
 
-    // 3. Schedule local input at (currentFrame + inputDelayFrames)
-    const targetInputFrame = this.currentFrame + this.inputDelayFrames;
-    this._setPlayerInput(this.localPlayer, targetInputFrame, localButtonsMask, true);
+    // 3. Schedule local input at (currentFrame + inputDelayFrames) without overwriting already-sent frames
+    const targetInputFrame = Math.max(
+      this.lastLocalScheduledFrame + 1,
+      this.currentFrame + this.inputDelayFrames
+    );
+    while (this.lastLocalScheduledFrame < targetInputFrame) {
+      this.lastLocalScheduledFrame++;
+      this._setPlayerInput(this.localPlayer, this.lastLocalScheduledFrame, localButtonsMask, true);
+    }
 
     // 4. Save snapshot before stepping currentFrame
     const f = this.currentFrame;
+    const idx = f % this.historySize;
     saveFastState(this.nes, this.saveRing[f % this.saveBufferSize], f);
 
     // 5. Step currentFrame with P1 and P2 inputs (confirmed or predicted)
     const p1Mask = this.getPlayerInput(1, f);
     const p2Mask = this.getPlayerInput(2, f);
+    this.p1Simulated[idx] = p1Mask;
+    this.p2Simulated[idx] = p2Mask;
+    this.simulatedFrameTag[idx] = f;
     applyControllerMask(this.nes, 1, p1Mask);
     applyControllerMask(this.nes, 2, p2Mask);
     this.suppressCallbacks = false;
@@ -810,7 +897,7 @@ export class NesNetplayEngine {
     }
     this._verifyConfirmedHashes();
 
-    const packetToSend = this._buildInputPacket(targetInputFrame);
+    const packetToSend = this._buildInputPacket(this.lastLocalScheduledFrame);
     this.lastStepMs = performance.now() - t0;
 
     return {
@@ -823,13 +910,15 @@ export class NesNetplayEngine {
   }
 
   _buildInputPacket(latestScheduledFrame) {
-    const count = Math.min(16, latestScheduledFrame + 1);
+    const available = Math.max(1, latestScheduledFrame - this.timelineStartFrame + 1);
+    const count = Math.min(32, available);
     const inputs = new Array(count);
     for (let i = 0; i < count; i++) {
       inputs[i] = this.getLocalInputAt(latestScheduledFrame - i);
     }
     const pkt = {
       type: 'netplay_input',
+      sessionId: this.sessionId,
       player: this.localPlayer,
       startFrame: latestScheduledFrame,
       inputs
@@ -851,55 +940,97 @@ export class NesNetplayEngine {
   }
 
   /**
-   * Exports a portable state object (for initial room handshake or manual resync).
+   * Exports a compact portable state object (for initial room handshake or resync).
    */
   exportSyncState() {
     patchJsnes8x16Sprites(this.nes);
     const nesState = this.nes.toJSON();
     let ptTileMap = null;
+    let scantileMap = null;
     if (this.nes.rom && this.nes.rom.vromCount > 0) {
       ptTileMap = new Array(512);
       for (let i = 0; i < 512; i++) {
         const t = this.nes.ppu.ptTile[i];
         ptTileMap[i] = t && typeof t._vromRef === 'number' ? t._vromRef : 0;
       }
-      // Do not serialize 512 CHR-ROM tile pixel arrays when ptTileMap references are used
       nesState.ppu.ptTile = [];
+
+      scantileMap = new Array(32);
+      for (let i = 0; i < 32; i++) {
+        const st = this.nes.ppu.scantile ? this.nes.ppu.scantile[i] : null;
+        scantileMap[i] = st && typeof st._vromRef === 'number' ? st._vromRef : -1;
+      }
     }
+    // Strip 184,320-int transient render buffers (~1.5 MB JSON) that are cleared on startFrame()
+    delete nesState.ppu.buffer;
+    delete nesState.ppu.bgbuffer;
+    delete nesState.ppu.pixrendered;
+    delete nesState.ppu.scantile;
+
     return {
+      sessionId: this.sessionId,
       frame: this.currentFrame,
       inputDelayFrames: this.inputDelayFrames,
       nesState,
       ptTileMap,
+      scantileMap,
       hash: computeDeterministicHash(this.nes)
     };
   }
 
   /**
-   * Imports a portable state object from Host and locks timeline to that exact frame.
+   * Imports a portable state object and locks timeline to that exact frame and sessionId.
    */
   importSyncState(syncObj) {
     if (!syncObj || !syncObj.nesState) return false;
     patchJsnes8x16Sprites(this.nes);
     const s = syncObj.nesState;
-    this.nes.cpu.fromJSON(s.cpu);
     this.nes.mmap.fromJSON(s.mmap);
+    this.nes.cpu.fromJSON(s.cpu);
 
+    const ppu = this.nes.ppu;
     const useRefMap =
       this.nes.rom && this.nes.rom.vromCount > 0 && Array.isArray(syncObj.ptTileMap);
-    const origPtTile = this.nes.ppu.ptTile;
+    const origPtTile = ppu.ptTile;
+    const origScantile = ppu.scantile;
+    const origBuffer = ppu.buffer;
+    const origBgBuffer = ppu.bgbuffer;
+    const origPixRendered = ppu.pixrendered;
+
     if (useRefMap) {
-      this.nes.ppu.ptTile = [];
+      ppu.ptTile = [];
     }
-    this.nes.ppu.fromJSON(s.ppu);
+    ppu.fromJSON(s.ppu);
+
+    // Restore transient render buffers preserved across fromJSON
+    ppu.buffer = origBuffer;
+    ppu.bgbuffer = origBgBuffer;
+    ppu.pixrendered = origPixRendered;
+    ppu.scantile = origScantile;
+
     if (useRefMap) {
-      this.nes.ppu.ptTile = origPtTile;
+      ppu.ptTile = origPtTile;
       for (let i = 0; i < 512; i++) {
         const ref = syncObj.ptTileMap[i] || 0;
         const b = (ref >> 8) & 0xff;
         const t = ref & 0xff;
         if (this.nes.rom.vromTile[b] && this.nes.rom.vromTile[b][t]) {
-          this.nes.ppu.ptTile[i] = this.nes.rom.vromTile[b][t];
+          ppu.ptTile[i] = this.nes.rom.vromTile[b][t];
+        }
+      }
+      if (Array.isArray(syncObj.scantileMap) && ppu.scantile) {
+        for (let i = 0; i < 32; i++) {
+          const ref = syncObj.scantileMap[i];
+          if (typeof ref === 'number' && ref >= 0) {
+            const b = (ref >> 8) & 0xff;
+            const t = ref & 0xff;
+            ppu.scantile[i] =
+              this.nes.rom.vromTile[b] && this.nes.rom.vromTile[b][t]
+                ? this.nes.rom.vromTile[b][t]
+                : undefined;
+          } else {
+            ppu.scantile[i] = undefined;
+          }
         }
       }
     }
@@ -912,6 +1043,9 @@ export class NesNetplayEngine {
 
     if (typeof syncObj.inputDelayFrames === 'number') {
       this.inputDelayFrames = syncObj.inputDelayFrames;
+    }
+    if (syncObj.sessionId) {
+      this.sessionId = syncObj.sessionId;
     }
     this.resetTimeline(syncObj.frame || 0);
     return true;

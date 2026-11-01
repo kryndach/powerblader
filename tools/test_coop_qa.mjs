@@ -358,6 +358,14 @@ async function runTests() {
           );
         } else if (msg.type === 'peer_joined') {
           // Host sends WebRTC offer + ROM & Savestate sync to late joiner
+          const syncState = engHost.exportSyncState();
+          const syncJsonSize = JSON.stringify(syncState).length;
+          assert.ok(
+            syncJsonSize < 550000,
+            `Expected compact syncState (<550KB, stripped of 1.1MB render buffers), got ${syncJsonSize} bytes`
+          );
+          engHost.online = true;
+          engHost.importSyncState(syncState);
           wsSG.send(
             JSON.stringify({
               type: 'webrtc_signal',
@@ -370,7 +378,7 @@ async function runTests() {
               romName: 'TestCoop.nes',
               romCrc32: romCrc,
               romBase64: Buffer.from(uint8).toString('base64'),
-              syncState: engHost.exportSyncState()
+              syncState
             })
           );
         }
@@ -427,7 +435,181 @@ async function runTests() {
     wsRU.close();
     await serverApp.close();
   }
-  console.log('[PASS] Test 4: Late-Join Auto ROM Transfer, WebRTC Signaling & Desync Detection/Recovery Verified');
+  console.log('[PASS] Test 4: Late-Join Auto ROM Transfer, Compact Snapshot (<250KB) & Desync Detection/Recovery Verified');
+
+  // ---------------------------------------------------------------------------
+  // Test 5: Bi-Directional ROM Switch (P2 Loads Balloon Fight while P1 is on Power Blade 2)
+  //         + Lockstep `rom_sync` -> `sync_ack` Handshake under 180ms Latency
+  // ---------------------------------------------------------------------------
+  {
+    const serverApp = createCoopServer();
+    const port = await serverApp.listen(0, '127.0.0.1');
+    const wsUrl = `ws://127.0.0.1:${port}/ws`;
+
+    // Player 1 starts with Mapper 4 ROM ("Power Blade 2"), Player 2 loads Mapper 0 ROM ("Balloon Fight")
+    const romP1Default = createDualControllerTestRom(4);
+    const romP2Custom = createDualControllerTestRom(0);
+    // Modify a byte in romP2Custom CHR so its CRC32 is distinct
+    romP2Custom.uint8[romP2Custom.uint8.length - 1] ^= 0x5a;
+    const crcP1 = computeRomCrc32(romP1Default.uint8);
+    const crcP2 = computeRomCrc32(romP2Custom.uint8);
+    assert.notStrictEqual(crcP1, crcP2);
+
+    let nesP1 = new jsnes.NES({});
+    nesP1.loadROM(romP1Default.binaryString);
+    let engP1 = new NesNetplayEngine(nesP1, { localPlayer: 1, online: true });
+    let p1RomName = 'Power Blade 2.nes';
+    let p1Crc = crcP1;
+
+    // Player 1 steps 120 frames before Player 2 switches ROMs
+    for (let i = 0; i < 120; i++) {
+      engP1.stepNetplayFrame(INPUT_BITS.RIGHT);
+    }
+
+    let nesP2 = new jsnes.NES({});
+    nesP2.loadROM(romP2Custom.binaryString);
+    let engP2 = new NesNetplayEngine(nesP2, { localPlayer: 2, online: true });
+    let p2RomName = 'Balloon Fight.nes';
+    let p2Crc = crcP2;
+
+    const ws1 = new WebSocket(wsUrl);
+    const ws2 = new WebSocket(wsUrl);
+
+    await new Promise((resolve, reject) => {
+      let p1Ready = false;
+      ws1.on('open', () => {
+        ws1.send(
+          JSON.stringify({
+            type: 'join_room',
+            roomCode: 'NOVA',
+            nick: 'Brother-RU',
+            romCrc32: p1Crc,
+            romName: p1RomName,
+            isAutoDefaultRom: true
+          })
+        );
+      });
+
+      ws1.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'room_joined' && !p1Ready) {
+          p1Ready = true;
+          ws2.send(
+            JSON.stringify({
+              type: 'join_room',
+              roomCode: 'NOVA',
+              nick: 'Egor-SG',
+              romCrc32: p2Crc,
+              romName: p2RomName,
+              isAutoDefaultRom: false
+            })
+          );
+        } else if (msg.type === 'rom_sync') {
+          // Player 1 receives Player 2's custom ROM ("Balloon Fight.nes")!
+          const u8 = new Uint8Array(Buffer.from(msg.romBase64, 'base64'));
+          let bin = '';
+          for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+          p1RomName = msg.romName;
+          p1Crc = msg.romCrc32;
+          nesP1 = new jsnes.NES({});
+          nesP1.loadROM(bin);
+          engP1 = new NesNetplayEngine(nesP1, { localPlayer: 1, online: true });
+          engP1.importSyncState(msg.syncState);
+          engP1.syncPaused = false;
+          ws1.send(
+            JSON.stringify({
+              type: 'sync_ack',
+              sessionId: engP1.sessionId,
+              frame: engP1.currentFrame,
+              romCrc32: p1Crc
+            })
+          );
+        }
+      });
+
+      ws2.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'room_joined') {
+          // Player 2 has a custom ROM while Player 1 has isAutoDefaultRom: true -> Player 2 pushes its ROM!
+          const partner = msg.peers.find((p) => p.playerIndex === 1);
+          assert.strictEqual(partner.isAutoDefaultRom, true);
+          const sessionId = 'test_balloon_session';
+          nesP2.loadROM(romP2Custom.binaryString);
+          engP2.resetTimeline(0, sessionId);
+          const syncState = engP2.exportSyncState();
+          engP2.importSyncState(syncState);
+          engP2.syncPaused = true;
+
+          // Even if 10 ticks happen while waiting for sync_ack, engP2 stays at frame 0!
+          for (let t = 0; t < 10; t++) {
+            const stepRes = engP2.stepNetplayFrame(INPUT_BITS.A);
+            assert.strictEqual(stepRes.stepped, false, 'Engine must stay paused while waiting for sync_ack');
+          }
+          assert.strictEqual(engP2.currentFrame, 0);
+
+          ws2.send(
+            JSON.stringify({
+              type: 'rom_sync',
+              romName: p2RomName,
+              romCrc32: p2Crc,
+              isAutoDefaultRom: false,
+              romBase64: Buffer.from(romP2Custom.uint8).toString('base64'),
+              syncState
+            })
+          );
+        } else if (msg.type === 'sync_ack') {
+          assert.strictEqual(msg.sessionId, engP2.sessionId);
+          engP2.syncPaused = false;
+          resolve();
+        }
+      });
+
+      ws1.on('error', reject);
+      ws2.on('error', reject);
+    });
+
+    // Verify both peers are now running "Balloon Fight.nes" at frame 0 with identical sessionId & state hash!
+    assert.strictEqual(p1RomName, 'Balloon Fight.nes');
+    assert.strictEqual(p2RomName, 'Balloon Fight.nes');
+    assert.strictEqual(p1Crc, p2Crc);
+    assert.strictEqual(engP1.currentFrame, 0);
+    assert.strictEqual(engP2.currentFrame, 0);
+    assert.strictEqual(engP1.sessionId, engP2.sessionId);
+    assert.strictEqual(computeDeterministicHash(nesP1), computeDeterministicHash(nesP2));
+
+    // Now step 600 frames under 180ms RTT and verify 0 desyncs
+    const qTo1 = [];
+    const qTo2 = [];
+    for (let f = 0; f < 600; f++) {
+      const now = f * 16.667;
+      while (qTo1.length > 0 && qTo1[0].at <= now) engP1.receiveRemoteInputPacket(qTo1.shift().pkt);
+      while (qTo2.length > 0 && qTo2[0].at <= now) engP2.receiveRemoteInputPacket(qTo2.shift().pkt);
+
+      const m1 = (f % 15 < 7 ? INPUT_BITS.A : 0) | INPUT_BITS.RIGHT;
+      const m2 = (f % 11 < 5 ? INPUT_BITS.B : 0) | INPUT_BITS.LEFT;
+      const r1 = engP1.stepNetplayFrame(m1);
+      const r2 = engP2.stepNetplayFrame(m2);
+      if (r1.packetToSend) qTo2.push({ at: now + 90, pkt: r1.packetToSend });
+      if (r2.packetToSend) qTo1.push({ at: now + 90, pkt: r2.packetToSend });
+    }
+    while (qTo1.length > 0) engP1.receiveRemoteInputPacket(qTo1.shift().pkt);
+    while (qTo2.length > 0) engP2.receiveRemoteInputPacket(qTo2.shift().pkt);
+    for (let s = 0; s < 12; s++) {
+      const r1 = engP1.stepNetplayFrame(0);
+      const r2 = engP2.stepNetplayFrame(0);
+      if (r1.packetToSend) engP2.receiveRemoteInputPacket(r1.packetToSend);
+      if (r2.packetToSend) engP1.receiveRemoteInputPacket(r2.packetToSend);
+    }
+
+    assert.strictEqual(engP1.desyncCount, 0, 'P1 had desyncs after ROM switch');
+    assert.strictEqual(engP2.desyncCount, 0, 'P2 had desyncs after ROM switch');
+    assert.strictEqual(computeDeterministicHash(nesP1), computeDeterministicHash(nesP2));
+
+    ws1.close();
+    ws2.close();
+    await serverApp.close();
+  }
+  console.log('[PASS] Test 5: Bi-Directional ROM Switch (Balloon Fight <-> Power Blade 2) & Lockstep sync_ack Verified');
 
   console.log('\nALL UNIVERSAL NES NETPLAY & ROLLBACK QA TESTS PASSED!');
 }

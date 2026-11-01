@@ -241,6 +241,65 @@
       background-size: 100% 4px;
     }
 
+    .screen-banner {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15, 16, 21, 0.92);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--cyan);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      pointer-events: none;
+      white-space: nowrap;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.75);
+      transition: opacity 0.25s ease;
+      opacity: 0;
+      z-index: 10;
+    }
+
+    .screen-banner.visible {
+      opacity: 1;
+    }
+
+    .screen-banner.ok {
+      border-left-color: var(--ok);
+      color: #86efac;
+    }
+
+    .screen-banner.warn {
+      border-left-color: var(--warn);
+      color: #fde047;
+    }
+
+    .screen-banner.err {
+      border-left-color: var(--err);
+      color: #fca5a5;
+    }
+
+    .mini-pad {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: #0b0c10;
+      border: 1px solid #2b3040;
+      border-radius: 3px;
+      padding: 2px 6px;
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+
+    .mini-pad.active {
+      border-color: var(--nes-red);
+      color: #fff;
+      background: rgba(225, 29, 72, 0.22);
+    }
+
     .bezel-footer {
       width: 100%;
       display: flex;
@@ -446,9 +505,11 @@
       <span id="statusLed" class="led"></span>
       <strong id="statusText">SOLO MODE — Load any 2P .nes game or click Connect for Online Netplay</strong>
     </div>
-    <div style="display:flex; align-items:center; gap:14px; color:var(--muted);">
-      <span id="romBadge">ROM: None</span>
+    <div style="display:flex; align-items:center; flex-wrap:wrap; gap:10px; color:var(--muted);">
+      <span id="romBadge" style="color:var(--text); font-weight:700;">ROM: None</span>
       <span id="roleBadge">Port: P1 ($4016)</span>
+      <span id="miniPadP1" class="mini-pad" title="Live Player 1 Controller Activity">P1: Idle</span>
+      <span id="miniPadP2" class="mini-pad" title="Live Player 2 Controller Activity">P2: Idle</span>
       <span id="pingBadge">Ping: --</span>
     </div>
   </div>
@@ -459,6 +520,7 @@
       <div class="canvas-wrap large" id="canvasWrap">
         <canvas id="nesCanvas" width="256" height="240"></canvas>
         <div class="crt-scanlines" id="scanlinesOverlay"></div>
+        <div class="screen-banner" id="screenBanner"></div>
       </div>
       <div class="bezel-footer">
         <div>
@@ -664,8 +726,36 @@
     const statusText = document.getElementById('statusText');
     const romBadge = document.getElementById('romBadge');
     const roleBadge = document.getElementById('roleBadge');
+    const miniPadP1 = document.getElementById('miniPadP1');
+    const miniPadP2 = document.getElementById('miniPadP2');
     const pingBadge = document.getElementById('pingBadge');
     const fpsLabel = document.getElementById('fpsLabel');
+    const screenBanner = document.getElementById('screenBanner');
+
+    let bannerTimer = null;
+    function showScreenBanner(text, level = 'ok', autoHideMs = 3500) {
+      if (!screenBanner) return;
+      if (bannerTimer) {
+        clearTimeout(bannerTimer);
+        bannerTimer = null;
+      }
+      screenBanner.textContent = text;
+      screenBanner.className = `screen-banner visible ${level}`;
+      if (autoHideMs > 0) {
+        bannerTimer = setTimeout(() => {
+          screenBanner.classList.remove('visible');
+        }, autoHideMs);
+      }
+    }
+
+    function hideScreenBanner() {
+      if (!screenBanner) return;
+      if (bannerTimer) {
+        clearTimeout(bannerTimer);
+        bannerTimer = null;
+      }
+      screenBanner.classList.remove('visible');
+    }
 
     // Debug UI Elements
     const dbgSyncBadge = document.getElementById('dbgSyncBadge');
@@ -722,7 +812,7 @@
       debugToggleBtn.classList.add('active-toggle');
     }
 
-    // Audio Engine (Ring Buffer at AudioContext sampleRate)
+    // Audio Engine (Fixed 48000 Hz to match jsnes deterministic APU rate)
     let audioCtx = null;
     let audioMuted = false;
     const AUDIO_BUFFER_MASK = 8191;
@@ -738,9 +828,10 @@
       }
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) return;
-      audioCtx = new AudioContextClass();
-      if (nes && nes.papu && typeof nes.papu.setSampleRate === 'function') {
-        nes.papu.setSampleRate(audioCtx.sampleRate);
+      try {
+        audioCtx = new AudioContextClass({ sampleRate: 48000 });
+      } catch {
+        audioCtx = new AudioContextClass();
       }
       const proc = audioCtx.createScriptProcessor(1024, 0, 2);
       proc.onaudioprocess = (e) => {
@@ -770,6 +861,8 @@
     let romUint8 = null;
     let romName = null;
     let romCrc32 = null;
+    let isAutoDefaultRom = true;
+    const customRomsMap = new Map();
 
     let ws = null;
     let rtcPeer = null;
@@ -778,6 +871,8 @@
     let localPlayerIndex = 1;
     let peerConnected = false;
     let peerNick = 'Player 2';
+    let syncAckTimeout = null;
+    let lastAutoResyncTime = 0;
 
     let rttMs = 0;
     let jitterMs = 0;
@@ -817,11 +912,34 @@
       return u8;
     }
 
-    function loadRomFromUint8(u8, name, broadcastToPeer = true) {
+    function ensureRomInDropdown(name, u8) {
+      if (!name) return;
+      if (u8) {
+        customRomsMap.set(name, u8);
+      }
+      let existing = Array.from(localRomSelect.options).find((o) => o.value === name);
+      if (!existing) {
+        existing = document.createElement('option');
+        existing.value = name;
+        existing.textContent = name;
+        localRomSelect.appendChild(existing);
+      }
+      localRomSelect.value = name;
+    }
+
+    function loadRomFromUint8(u8, name, options = {}) {
+      const broadcastToPeer =
+        typeof options === 'boolean' ? options : options.broadcastToPeer !== false;
+      const isAutoDefault =
+        typeof options === 'object' && options !== null ? Boolean(options.isAutoDefault) : false;
+
       romUint8 = u8;
       romBinaryString = uint8ToBinaryString(u8);
       romName = name || 'Game.nes';
       romCrc32 = computeRomCrc32(u8);
+      isAutoDefaultRom = isAutoDefault;
+
+      ensureRomInDropdown(romName, u8);
 
       nes = new jsnes.NES({
         onFrame: (fb) => renderFrameToCanvas(fb),
@@ -835,10 +953,6 @@
         }
       });
 
-      if (audioCtx && nes.papu && typeof nes.papu.setSampleRate === 'function') {
-        nes.papu.setSampleRate(audioCtx.sampleRate);
-      }
-
       nes.loadROM(romBinaryString);
       engine = new NesNetplayEngine(nes, {
         localPlayer: localPlayerIndex,
@@ -851,47 +965,130 @@
       logDebug(`Loaded ROM "${romName}" (CRC32=${romCrc32}, Mapper=${nes.rom.mapperType})`);
       updateStatusStrip();
 
+      if (!isAutoDefault) {
+        showScreenBanner(`LOADED "${romName}"`, 'ok', 2800);
+      }
+
       if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'rom_info', romCrc32, romName }));
-        if (broadcastToPeer && peerConnected && localPlayerIndex === 1) {
-          sendRomAndStateToPeer();
+        ws.send(JSON.stringify({ type: 'rom_info', romCrc32, romName, isAutoDefaultRom }));
+        if (broadcastToPeer && peerConnected) {
+          // Either Player 1 OR Player 2 can load a .NES file and sync it to their partner!
+          sendRomAndStateToPeer({ resetToZero: true });
         }
       }
     }
 
-    function sendRomAndStateToPeer() {
+    function armSyncAckWatchdog(sessionId) {
+      if (syncAckTimeout) {
+        clearTimeout(syncAckTimeout);
+      }
+      syncAckTimeout = setTimeout(() => {
+        if (engine && engine.syncPaused && engine.sessionId === sessionId) {
+          engine.syncPaused = false;
+          logDebug('Sync ACK timeout elapsed; unpausing emulation.');
+          updateStatusStrip();
+        }
+      }, 5000);
+    }
+
+    function sendRomAndStateToPeer({ resetToZero = false } = {}) {
       if (!ws || ws.readyState !== 1 || !romUint8 || !engine) return;
-      logDebug(`Syncing ROM (${Math.round(romUint8.length / 1024)} KB) + initial state to partner...`);
+      const newSessionId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      if (resetToZero && nes && romBinaryString) {
+        nes.loadROM(romBinaryString);
+        engine.resetTimeline(0, newSessionId);
+      } else {
+        engine.sessionId = newSessionId;
+      }
+
+      const syncState = engine.exportSyncState();
+      // Normalize sender's own emulator state & timeline identically to receiver!
+      engine.localPlayer = localPlayerIndex;
+      engine.online = true;
+      engine.importSyncState(syncState);
+      engine.syncPaused = true;
+      armSyncAckWatchdog(newSessionId);
+
+      logDebug(`Syncing ROM "${romName}" (${Math.round(romUint8.length / 1024)} KB) + lockstep state to partner...`);
+      showScreenBanner(`SYNCING "${romName}" WITH PARTNER...`, 'warn', 0);
+      updateStatusStrip();
+
       ws.send(
         JSON.stringify({
           type: 'rom_sync',
           romName,
           romCrc32,
+          isAutoDefaultRom,
           romBase64: uint8ToBase64(romUint8),
-          syncState: engine.exportSyncState()
+          syncState
         })
       );
     }
 
-    function sendStateSyncToPeer() {
+    function sendStateSyncToPeer({ resetToZero = false } = {}) {
       if (!ws || ws.readyState !== 1 || !engine) return;
+      const newSessionId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      if (resetToZero && nes && romBinaryString) {
+        nes.loadROM(romBinaryString);
+        engine.resetTimeline(0, newSessionId);
+      } else {
+        engine.sessionId = newSessionId;
+      }
+
       const syncState = engine.exportSyncState();
+      // Normalize sender's own emulator state & timeline identically to receiver!
+      engine.localPlayer = localPlayerIndex;
+      engine.online = true;
+      engine.importSyncState(syncState);
+      engine.syncPaused = true;
+      armSyncAckWatchdog(newSessionId);
+
       ws.send(
         JSON.stringify({
           type: 'state_sync',
+          romName,
           romCrc32,
           syncState
         })
       );
-      logDebug(`Sent deterministic state snapshot at frame #${syncState.frame}`);
+      logDebug(`Sent lockstep state snapshot at frame #${syncState.frame} (session=${newSessionId})`);
+      showScreenBanner(`LOCKSTEP SYNCING "${romName}"...`, 'warn', 0);
+      updateStatusStrip();
+    }
+
+    function formatMaskShort(mask) {
+      if (!mask) return 'Idle';
+      const parts = [];
+      if (mask & INPUT_BITS.UP) parts.push('U');
+      if (mask & INPUT_BITS.DOWN) parts.push('D');
+      if (mask & INPUT_BITS.LEFT) parts.push('L');
+      if (mask & INPUT_BITS.RIGHT) parts.push('R');
+      if (mask & INPUT_BITS.SELECT) parts.push('SEL');
+      if (mask & INPUT_BITS.START) parts.push('STA');
+      if (mask & INPUT_BITS.B) parts.push('B');
+      if (mask & INPUT_BITS.A) parts.push('A');
+      return parts.join('+');
+    }
+
+    function updateMiniPads(p1Mask, p2Mask) {
+      if (miniPadP1) {
+        miniPadP1.textContent = `P1: ${formatMaskShort(p1Mask)}`;
+        miniPadP1.classList.toggle('active', p1Mask !== 0);
+      }
+      if (miniPadP2) {
+        miniPadP2.textContent = `P2: ${formatMaskShort(p2Mask)}`;
+        miniPadP2.classList.toggle('active', p2Mask !== 0);
+      }
     }
 
     function updateStatusStrip() {
-      roleBadge.textContent = `Port: P${localPlayerIndex} (${localPlayerIndex === 1 ? '$4016' : '$4017'})`;
+      roleBadge.textContent = `YOU: P${localPlayerIndex} (${localPlayerIndex === 1 ? '$4016' : '$4017'})`;
+      const shortRom = romName ? romName.replace(/\.nes$/i, '') : 'No ROM';
+
       if (!ws || ws.readyState !== 1) {
         statusLed.className = 'led';
         statusText.textContent = romUint8
-          ? `SOLO MODE — Playing ${romName} on Port 1`
+          ? `SOLO MODE — Playing "${shortRom}" on Port 1`
           : 'SOLO MODE — Load a .NES game or click Connect';
         dbgTransportBadge.className = 'badge warn';
         dbgTransportBadge.textContent = 'OFFLINE';
@@ -900,13 +1097,18 @@
 
       if (!peerConnected) {
         statusLed.className = 'led warn';
-        statusText.textContent = `ROOM "${roomCode}" — Waiting for Player 2 to join link...`;
+        statusText.textContent = `ROOM "${roomCode}" — Waiting for Player 2 to join link... (Playing "${shortRom}")`;
         dbgTransportBadge.className = 'badge warn';
         dbgTransportBadge.textContent = 'WAITING FOR P2';
+      } else if (engine && engine.syncPaused) {
+        statusLed.className = 'led warn';
+        statusText.textContent = `ROOM "${roomCode}" — Synchronizing "${shortRom}" with ${peerNick}...`;
+        dbgTransportBadge.className = 'badge warn';
+        dbgTransportBadge.textContent = 'SYNCING';
       } else {
         const usingP2P = rtcChannel && rtcChannel.readyState === 'open' && transportModeSelect.value !== 'wss';
         statusLed.className = 'led ok';
-        statusText.textContent = `ONLINE CO-OP [${roomCode}] — P1 + P2 Locked (${usingP2P ? 'WebRTC P2P' : 'WSS Relay'})`;
+        statusText.textContent = `ONLINE SYNCED [${roomCode}] — P1 + P2 Playing "${shortRom}" (${usingP2P ? 'WebRTC P2P' : 'WSS Relay'})`;
         dbgTransportBadge.className = 'badge ok';
         dbgTransportBadge.textContent = usingP2P ? 'P2P DIRECT' : 'WSS RELAY';
       }
@@ -926,7 +1128,7 @@
               opt.textContent = f;
               localRomSelect.appendChild(opt);
             }
-            await fetchLocalRomByName(data.files[0]);
+            await fetchLocalRomByName(data.files[0], { broadcastToPeer: false, isAutoDefault: true });
           }
         }
       } catch (e) {
@@ -934,12 +1136,16 @@
       }
     }
 
-    async function fetchLocalRomByName(fileName) {
+    async function fetchLocalRomByName(fileName, options = { broadcastToPeer: true, isAutoDefault: false }) {
       try {
+        if (customRomsMap.has(fileName)) {
+          loadRomFromUint8(customRomsMap.get(fileName), fileName, options);
+          return;
+        }
         const res = await fetch(`/api/local-rom?file=${encodeURIComponent(fileName)}`);
         if (!res.ok) return;
         const buf = await res.arrayBuffer();
-        loadRomFromUint8(new Uint8Array(buf), fileName, true);
+        loadRomFromUint8(new Uint8Array(buf), fileName, options);
       } catch (e) {
         logDebug(`Failed to load ${fileName}: ${e.message}`);
       }
@@ -947,7 +1153,7 @@
 
     localRomSelect.addEventListener('change', () => {
       if (localRomSelect.value) {
-        fetchLocalRomByName(localRomSelect.value);
+        fetchLocalRomByName(localRomSelect.value, { broadcastToPeer: true, isAutoDefault: false });
       }
     });
 
@@ -955,7 +1161,8 @@
       const file = e.target.files?.[0];
       if (!file) return;
       const buf = await file.arrayBuffer();
-      loadRomFromUint8(new Uint8Array(buf), file.name, true);
+      e.target.value = '';
+      loadRomFromUint8(new Uint8Array(buf), file.name, { broadcastToPeer: true, isAutoDefault: false });
     });
 
     // Drag and drop .nes support
@@ -965,7 +1172,7 @@
       const file = e.dataTransfer?.files?.[0];
       if (file && file.name.toLowerCase().endsWith('.nes')) {
         const buf = await file.arrayBuffer();
-        loadRomFromUint8(new Uint8Array(buf), file.name, true);
+        loadRomFromUint8(new Uint8Array(buf), file.name, { broadcastToPeer: true, isAutoDefault: false });
       }
     });
 
@@ -1156,17 +1363,25 @@
         logDebug(`Joined room "${roomCode}" as Player ${localPlayerIndex} ($401${localPlayerIndex === 1 ? '6' : '7'})`);
         updateStatusStrip();
 
-        if (peerConnected) {
+        if (!peerConnected) {
+          showScreenBanner(`ROOM "${roomCode}" READY — Waiting for Player 2`, 'warn', 0);
+        } else {
           const partner = otherPeers[0];
           peerNick = partner.nick || `Player ${partner.playerIndex}`;
           if (localPlayerIndex === 2) {
-            // Request ROM or state sync from Player 1 (Host)
-            ws.send(
-              JSON.stringify({
-                type: 'rom_request',
-                haveCrc32: romCrc32
-              })
-            );
+            // If Player 2 manually loaded a custom ROM (e.g. Balloon Fight) while Player 1 only has the untouched default ROM,
+            // Player 2 pushes its custom ROM to Player 1!
+            if (!isAutoDefaultRom && partner.isAutoDefaultRom !== false && romUint8) {
+              sendRomAndStateToPeer({ resetToZero: true });
+            } else {
+              showScreenBanner(`CONNECTED TO ${peerNick.toUpperCase()} — SYNCING GAME...`, 'warn', 0);
+              ws.send(
+                JSON.stringify({
+                  type: 'rom_request',
+                  haveCrc32: romCrc32
+                })
+              );
+            }
           }
         }
         return;
@@ -1184,11 +1399,14 @@
 
         if (localPlayerIndex === 1) {
           startWebRtcSession(true);
-          if (romUint8) {
+          // If Player 2 joined with a manually-selected custom ROM while Player 1 still has the untouched default ROM,
+          // let Player 2 push its custom ROM; otherwise Player 1 syncs its ROM & state to Player 2!
+          const p2HasCustomRom = msg.peer && msg.peer.isAutoDefaultRom === false && isAutoDefaultRom;
+          if (!p2HasCustomRom && romUint8) {
             if (msg.peer?.romCrc32 === romCrc32) {
-              sendStateSyncToPeer();
+              sendStateSyncToPeer({ resetToZero: false });
             } else {
-              sendRomAndStateToPeer();
+              sendRomAndStateToPeer({ resetToZero: true });
             }
           }
         }
@@ -1200,33 +1418,48 @@
         closeWebRtc();
         if (engine) {
           engine.online = false;
+          engine.syncPaused = false;
         }
         logDebug(`Partner left the room.`);
+        showScreenBanner(`PARTNER LEFT ROOM "${roomCode}"`, 'warn', 4000);
         updateStatusStrip();
         return;
       }
 
       if (msg.type === 'rom_request') {
-        if (localPlayerIndex === 1 && romUint8) {
+        if (romUint8) {
           if (msg.haveCrc32 === romCrc32) {
-            sendStateSyncToPeer();
+            sendStateSyncToPeer({ resetToZero: false });
           } else {
-            sendRomAndStateToPeer();
+            sendRomAndStateToPeer({ resetToZero: true });
           }
         }
         return;
       }
 
       if (msg.type === 'rom_sync') {
-        logDebug(`Receiving ROM "${msg.romName}" [${msg.romCrc32}] from Host...`);
+        logDebug(`Receiving ROM "${msg.romName}" [${msg.romCrc32}] from partner...`);
         const u8 = base64ToUint8(msg.romBase64);
-        loadRomFromUint8(u8, msg.romName, false);
+        loadRomFromUint8(u8, msg.romName, { broadcastToPeer: false, isAutoDefault: Boolean(msg.isAutoDefaultRom) });
         if (msg.syncState && engine) {
           engine.localPlayer = localPlayerIndex;
           engine.online = true;
           engine.importSyncState(msg.syncState);
+          engine.syncPaused = false;
           inputDelaySelect.value = String(engine.inputDelayFrames);
-          logDebug(`Synced to Host state at frame #${engine.currentFrame}`);
+          logDebug(`Locked to partner ROM "${msg.romName}" at frame #${engine.currentFrame} (session=${engine.sessionId})`);
+          if (ws && ws.readyState === 1) {
+            ws.send(
+              JSON.stringify({
+                type: 'sync_ack',
+                sessionId: engine.sessionId,
+                frame: engine.currentFrame,
+                romCrc32
+              })
+            );
+          }
+          showScreenBanner(`ONLINE SYNCED — P1 + P2 PLAYING "${romName}"`, 'ok', 3500);
+          updateStatusStrip();
         }
         return;
       }
@@ -1236,26 +1469,52 @@
           engine.localPlayer = localPlayerIndex;
           engine.online = true;
           engine.importSyncState(msg.syncState);
+          engine.syncPaused = false;
           inputDelaySelect.value = String(engine.inputDelayFrames);
-          logDebug(`Locked to Host savestate at frame #${engine.currentFrame}`);
+          logDebug(`Locked to partner savestate at frame #${engine.currentFrame} (session=${engine.sessionId})`);
+          if (ws && ws.readyState === 1) {
+            ws.send(
+              JSON.stringify({
+                type: 'sync_ack',
+                sessionId: engine.sessionId,
+                frame: engine.currentFrame,
+                romCrc32
+              })
+            );
+          }
+          showScreenBanner(`ONLINE SYNCED — P1 + P2 PLAYING "${romName}"`, 'ok', 3500);
+          updateStatusStrip();
         } else if (msg.romCrc32 && msg.romCrc32 !== romCrc32 && ws && ws.readyState === 1) {
           ws.send(JSON.stringify({ type: 'rom_request', haveCrc32: romCrc32 }));
         }
         return;
       }
 
+      if (msg.type === 'sync_ack') {
+        if (engine && (!msg.sessionId || msg.sessionId === engine.sessionId)) {
+          if (syncAckTimeout) {
+            clearTimeout(syncAckTimeout);
+            syncAckTimeout = null;
+          }
+          engine.syncPaused = false;
+          logDebug(`Partner acknowledged lockstep sync at frame #${engine.currentFrame} (session=${engine.sessionId})`);
+          showScreenBanner(`ONLINE SYNCED — P1 + P2 PLAYING "${romName}"`, 'ok', 3500);
+          updateStatusStrip();
+        }
+        return;
+      }
+
       if (msg.type === 'resync_request') {
         if (localPlayerIndex === 1) {
-          sendStateSyncToPeer();
+          sendStateSyncToPeer({ resetToZero: false });
         }
         return;
       }
 
       if (msg.type === 'console_reset') {
         if (nes && engine) {
-          nes.reloadROM();
-          engine.resetTimeline(0);
-          logDebug('Console reset by partner (synchronized frame #0).');
+          sendStateSyncToPeer({ resetToZero: true });
+          logDebug('Console reset requested by partner.');
         }
         return;
       }
@@ -1292,7 +1551,8 @@
             roomCode: code,
             nick,
             romCrc32,
-            romName
+            romName,
+            isAutoDefaultRom
           })
         );
       };
@@ -1308,7 +1568,10 @@
         dbgWssState.textContent = 'Disconnected';
         peerConnected = false;
         closeWebRtc();
-        if (engine) engine.online = false;
+        if (engine) {
+          engine.online = false;
+          engine.syncPaused = false;
+        }
         updateStatusStrip();
       };
     }
@@ -1327,11 +1590,13 @@
 
     resetBtn.addEventListener('click', () => {
       if (!nes || !engine) return;
-      nes.reloadROM();
-      engine.resetTimeline(0);
-      logDebug('Console reset to frame #0.');
       if (ws && ws.readyState === 1 && peerConnected) {
-        ws.send(JSON.stringify({ type: 'console_reset' }));
+        sendStateSyncToPeer({ resetToZero: true });
+      } else {
+        nes.loadROM(romBinaryString);
+        engine.resetTimeline(0);
+        logDebug('Console reset to frame #0.');
+        showScreenBanner(`CONSOLE RESET — "${romName}"`, 'ok', 2000);
       }
     });
 
@@ -1348,12 +1613,7 @@
 
     forceResyncBtn.addEventListener('click', () => {
       if (!ws || ws.readyState !== 1 || !peerConnected) return;
-      if (localPlayerIndex === 1) {
-        sendStateSyncToPeer();
-      } else {
-        ws.send(JSON.stringify({ type: 'resync_request' }));
-        logDebug('Requested state resync from Host...');
-      }
+      sendStateSyncToPeer({ resetToZero: false });
     });
 
     inputDelaySelect.addEventListener('change', () => {
@@ -1441,7 +1701,23 @@
     }
 
     function updateDebugTelemetry(p1Mask, p2Mask) {
-      if (!debugDrawer.classList.contains('open') || !engine) return;
+      updateMiniPads(p1Mask, p2Mask);
+      if (!engine) return;
+
+      // Auto-heal if a rare desync ever occurs (e.g. after extreme >1s network freeze)
+      if (
+        peerConnected &&
+        !engine.syncPaused &&
+        engine.syncStatus === 'DESYNC' &&
+        localPlayerIndex === 1 &&
+        performance.now() - lastAutoResyncTime > 3000
+      ) {
+        lastAutoResyncTime = performance.now();
+        logDebug('Desync detected — triggering automatic lockstep state resync...');
+        sendStateSyncToPeer({ resetToZero: false });
+      }
+
+      if (!debugDrawer.classList.contains('open')) return;
       const t = engine.getTelemetry();
       dbgFrame.textContent = String(t.currentFrame);
       dbgVerifiedFrame.textContent = t.lastVerifiedFrame >= 0 ? String(t.lastVerifiedFrame) : '--';
@@ -1487,7 +1763,7 @@
           if (res.stepped) {
             framesThisSec++;
           }
-          if (engine.currentFrame % 4 === 0) {
+          if (engine.currentFrame % 4 === 0 || !res.stepped) {
             updateDebugTelemetry(res.p1Mask, res.p2Mask);
           }
         }
