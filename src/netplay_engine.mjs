@@ -153,67 +153,140 @@ export function patchJsnes8x16Sprites(nes) {
   if (nes.ppu._patched8x16) return;
   const ppu = nes.ppu;
   ppu._patched8x16 = true;
+
+  // Fix 1: Flush visible scanline background before HBlank ($2006/$2005/$2000) scroll changes
+  // On real NES hardware, visible pixels are output during dots 0..255 and HUD split-screen IRQ
+  // scroll writes happen in HBlank (dots 256..340) for the NEXT scanline. Because jsnes normally
+  // waits until dot 341 (endScanline) to call renderBgScanline, HBlank scroll writes at dot ~335
+  // would otherwise shift the current scanline and make bottom HUDs/menus jump by 1-2 scanlines.
+  function flushCurrentScanlineIfHblank() {
+    if (
+      ppu.scanline >= 21 &&
+      ppu.scanline <= 260 &&
+      ppu.curX >= 256 &&
+      !ppu.scanlineAlreadyRendered &&
+      (ppu.f_bgVisibility === 1 || ppu.f_spVisibility === 1)
+    ) {
+      const bufferScan = ppu.scanline + 1 - 21;
+      ppu.cntHT = ppu.regHT;
+      ppu.cntH = ppu.regH;
+      ppu.renderBgScanline(true, bufferScan);
+      ppu.scanlineAlreadyRendered = true;
+    }
+  }
+
+  const origWriteVRAMAddress = ppu.writeVRAMAddress.bind(ppu);
+  ppu.writeVRAMAddress = function (address) {
+    if (!this.firstWrite) {
+      flushCurrentScanlineIfHblank();
+      this.validTileData = false;
+    }
+    return origWriteVRAMAddress(address);
+  };
+
+  const origScrollWrite = ppu.scrollWrite.bind(ppu);
+  ppu.scrollWrite = function (value) {
+    flushCurrentScanlineIfHblank();
+    return origScrollWrite(value);
+  };
+
+  // Fix 2: 8x16 sprite rendering (fix odd-bank topTileNum + 256 without double-flipping vertFlip rows)
   ppu.renderSpritesPartially = function (startscan, scancount, bgPri) {
     if (this.f_spVisibility !== 1) return;
 
-    const sprT1 = this.f_spPatternTable === 0 ? 0 : 256;
-    const is8x16 = this.f_spriteSize !== 0;
-    const sprHeight = is8x16 ? 16 : 8;
+    const mmap = this.nes.mmap;
+    const ptTile = this.ptTile;
+    const buffer = this.buffer;
+    const sprPalette = this.sprPalette;
+    const pixrendered = this.pixrendered;
 
-    for (let s = startscan; s < startscan + scancount; s++) {
-      if (s < 0 || s >= 240) continue;
-      const count = this.scanlineSpriteCount[s];
+    for (let scan = startscan; scan < startscan + scancount; scan++) {
+      if (scan < 0 || scan >= 240) continue;
+      const count = this.scanlineSpriteCount[scan];
       if (count === 0) continue;
-      const baseOffset = s * 32;
+      const oamBase = scan * 32;
 
-      for (let idx = count - 1; idx >= 0; idx--) {
-        const off = baseOffset + idx * 4;
-        const sprY = this.scanlineSecondaryOAM[off];
-        const sprTile = this.scanlineSecondaryOAM[off + 1];
-        const attr = this.scanlineSecondaryOAM[off + 2];
-        const sprX = this.scanlineSecondaryOAM[off + 3];
+      for (let i = 0; i < count; i++) {
+        const sprY = this.scanlineSecondaryOAM[oamBase + i * 4 + 0];
+        const sprTile = this.scanlineSecondaryOAM[oamBase + i * 4 + 1];
+        const sprAttr = this.scanlineSecondaryOAM[oamBase + i * 4 + 2];
+        const sprX = this.scanlineSecondaryOAM[oamBase + i * 4 + 3];
 
-        const bgPriority = (attr >> 5) & 1;
-        if (bgPriority !== bgPri) continue;
+        const vertFlip = (sprAttr >> 7) & 1;
+        const horiFlip = (sprAttr >> 6) & 1;
+        const priority = (sprAttr >> 5) & 1;
+        const palAdd = (sprAttr & 3) << 2;
 
-        const vertFlip = (attr >> 7) & 1;
-        const horiFlip = (attr >> 6) & 1;
-        const col = (attr & 3) << 2;
+        if (priority !== bgPri) continue;
 
-        const scanY = s;
-        const rowInSprite = scanY - (sprY + 1);
-        if (rowInSprite < 0 || rowInSprite >= sprHeight) continue;
+        if (this.f_spriteSize === 0) {
+          const tileIndex = this.f_spPatternTable === 0 ? sprTile : sprTile + 256;
+          const sprBaseAddr = this.f_spPatternTable === 0 ? 0x0000 : 0x1000;
+          const dy = sprY + 1;
+          const fineY = scan - dy;
+          if (fineY < 0 || fineY >= 8) continue;
 
-        let tileIndex;
-        let rowInTile;
-        if (!is8x16) {
-          tileIndex = sprTile + sprT1;
-          rowInTile = rowInSprite;
+          const t = mmap.getSpritePatternTile ? mmap.getSpritePatternTile(tileIndex) : ptTile[tileIndex];
+          if (t) {
+            t.render(
+              buffer,
+              0,
+              fineY,
+              8,
+              fineY + 1,
+              sprX,
+              dy,
+              palAdd,
+              sprPalette,
+              horiFlip,
+              vertFlip,
+              i,
+              pixrendered
+            );
+          }
+          mmap.latchAccess(sprBaseAddr + sprTile * 16 + 8);
         } else {
+          const sprBaseAddr = (sprTile & 1) !== 0 ? 0x1000 : 0x0000;
           const topTileNum = sprTile & 0xfe;
           const top = (sprTile & 1) !== 0 ? topTileNum + 256 : topTileNum;
-          const isBottomHalf = vertFlip ? rowInSprite < 8 : rowInSprite >= 8;
-          tileIndex = isBottomHalf ? top + 1 : top;
-          rowInTile = rowInSprite & 7;
-        }
 
-        const t = this.nes.mmap.getSpritePatternTile(tileIndex);
-        if (!t) continue;
-        t.render(
-          this.buffer,
-          0,
-          vertFlip ? 7 - rowInTile : rowInTile,
-          8,
-          (vertFlip ? 7 - rowInTile : rowInTile) + 1,
-          sprX,
-          scanY - (vertFlip ? 7 - rowInTile : rowInTile),
-          col,
-          this.sprPalette,
-          horiFlip !== 0,
-          vertFlip !== 0,
-          idx,
-          this.pixrendered
-        );
+          const dy = sprY + 1;
+          const fineY = scan - dy;
+          if (fineY < 0 || fineY >= 16) continue;
+
+          let tileOffset;
+          let tileFineY;
+          if (fineY < 8) {
+            tileOffset = vertFlip ? 1 : 0;
+            tileFineY = fineY;
+          } else {
+            tileOffset = vertFlip ? 0 : 1;
+            tileFineY = fineY - 8;
+          }
+
+          const t = mmap.getSpritePatternTile
+            ? mmap.getSpritePatternTile(top + tileOffset)
+            : ptTile[top + tileOffset];
+          if (t) {
+            t.render(
+              buffer,
+              0,
+              tileFineY,
+              8,
+              tileFineY + 1,
+              sprX,
+              dy + (fineY < 8 ? 0 : 8),
+              palAdd,
+              sprPalette,
+              horiFlip,
+              vertFlip,
+              i,
+              pixrendered
+            );
+          }
+          mmap.latchAccess(sprBaseAddr + topTileNum * 16 + 8);
+          mmap.latchAccess(sprBaseAddr + (topTileNum + 1) * 16 + 8);
+        }
       }
     }
   };
