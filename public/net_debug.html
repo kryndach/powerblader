@@ -701,6 +701,7 @@
     let httpPollingBusy = false;
     let httpOutQueue = [];
     let highestSeqSeen = 0;
+    const seenSeqSet = new Set();
     let seenAccessEntries = new Set();
 
     let roomCode = null;
@@ -729,6 +730,8 @@
     let rtcPeer = null;
     let dcFast = null;
     let dcReliable = null;
+    let pendingRemoteCandidates = [];
+    let rtcSignalChain = Promise.resolve();
 
     function getStunServers() {
       const prof = stunProfileSelect.value;
@@ -834,17 +837,19 @@
     }
 
     function sendSignalingMessage(signalPayload) {
-      // Send over WSS if open AND queue on HTTPS tunnel so signaling works even when WSS is blocked!
+      // Send strictly ONCE: prefer WSS if open, fallback to HTTPS tunnel only if WSS is not open
       const msg = { type: 'webrtc_signal', signal: signalPayload };
       if (ws && ws.readyState === 1) {
         ws.send(JSON.stringify(msg));
+      } else {
+        httpOutQueue.push(msg);
+        flushHttpTunnelNow();
       }
-      httpOutQueue.push(msg);
-      flushHttpTunnelNow();
     }
 
     async function startWebRtc(isInitiator) {
       closeWebRtc();
+      pendingRemoteCandidates = [];
       metrics.iceCandidates = [];
       renderIceTable();
 
@@ -909,27 +914,39 @@
       }
     }
 
-    async function handleWebRtcSignal(signal) {
+    function handleWebRtcSignal(signal) {
       if (!signal) return;
-      if (!rtcPeer && signal.sdp && signal.sdp.type === 'offer') {
-        await startWebRtc(false);
-      }
-      if (!rtcPeer) return;
-      try {
-        if (signal.sdp) {
-          await rtcPeer.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-          if (signal.sdp.type === 'offer') {
-            const answer = await rtcPeer.createAnswer();
-            await rtcPeer.setLocalDescription(answer);
-            sendSignalingMessage({ sdp: rtcPeer.localDescription });
+      rtcSignalChain = rtcSignalChain.then(async () => {
+        try {
+          if (signal.sdp) {
+            if (signal.sdp.type === 'offer') {
+              await startWebRtc(false);
+            }
+            if (!rtcPeer) return;
+            await rtcPeer.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+            if (signal.sdp.type === 'offer') {
+              const answer = await rtcPeer.createAnswer();
+              await rtcPeer.setLocalDescription(answer);
+              sendSignalingMessage({ sdp: rtcPeer.localDescription });
+            }
+            // Flush any ICE candidates that arrived before remoteDescription was ready
+            while (pendingRemoteCandidates.length > 0) {
+              const cand = pendingRemoteCandidates.shift();
+              recordIceCandidateRow('REMOTE', cand.candidate);
+              await rtcPeer.addIceCandidate(new RTCIceCandidate(cand));
+            }
+          } else if (signal.candidate) {
+            if (!rtcPeer || !rtcPeer.remoteDescription || !rtcPeer.remoteDescription.type) {
+              pendingRemoteCandidates.push(signal.candidate);
+            } else {
+              recordIceCandidateRow('REMOTE', signal.candidate.candidate);
+              await rtcPeer.addIceCandidate(new RTCIceCandidate(signal.candidate));
+            }
           }
-        } else if (signal.candidate) {
-          recordIceCandidateRow('REMOTE', signal.candidate.candidate);
-          await rtcPeer.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        } catch (e) {
+          logEvent(`WebRTC signaling error: ${e.message}`, 'err');
         }
-      } catch (e) {
-        logEvent(`WebRTC signaling error: ${e.message}`, 'err');
-      }
+      });
     }
 
     renegotiateRtcBtn.addEventListener('click', () => {
@@ -1405,12 +1422,19 @@
     function handleIncomingMessage(msg, viaSource) {
       if (!msg || typeof msg.type !== 'string') return;
 
-      // Deduplicate sequenced room messages arriving via both WSS and HTTPS Tunnel
+      // Deduplicate sequenced room messages arriving via both WSS and HTTPS Tunnel without dropping out-of-order packets
       if (typeof msg._seq === 'number') {
-        if (msg._seq <= highestSeqSeen) {
+        if (seenSeqSet.has(msg._seq)) {
           return;
         }
-        highestSeqSeen = msg._seq;
+        seenSeqSet.add(msg._seq);
+        if (seenSeqSet.size > 2000) {
+          const oldest = seenSeqSet.values().next().value;
+          seenSeqSet.delete(oldest);
+        }
+        if (msg._seq > highestSeqSeen) {
+          highestSeqSeen = msg._seq;
+        }
       }
 
       if (msg.type === 'pong') {
@@ -1713,6 +1737,11 @@
     }
 
     async function pollHttpTunnel(isInitialJoin = false) {
+      // Do NOT spam background HTTP polling when WebSocket is already OPEN and there is no explicit HTTP outbox queue!
+      if (!isInitialJoin && ws && ws.readyState === 1 && httpOutQueue.length === 0) {
+        httpStateVal.textContent = 'STANDBY (WSS Open)';
+        return;
+      }
       if (httpPollingBusy && !isInitialJoin) return;
       httpPollingBusy = true;
       const code = (roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
@@ -1736,7 +1765,7 @@
         if (res.ok) {
           const data = await res.json();
           httpTunnelActive = true;
-          httpStateVal.textContent = 'OPEN (Active)';
+          httpStateVal.textContent = ws && ws.readyState === 1 ? 'STANDBY (WSS Open)' : 'OPEN (Active)';
           if (!ws || ws.readyState !== 1) {
             metrics.serverRttMs = Math.max(1, Math.round(performance.now() - t0));
             srvRttVal.textContent = `${metrics.serverRttMs} ms (HTTP)`;
@@ -1785,6 +1814,7 @@
       }
       closeWebRtc();
       highestSeqSeen = 0;
+      seenSeqSet.clear();
 
       const code = (roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
       roomInput.value = code;
@@ -1792,11 +1822,11 @@
       backToNesLink.href = `/?room=${encodeURIComponent(code)}`;
       const nick = (nickInput.value || 'PC').trim().slice(0, 14);
 
-      // 1. Immediately connect via HTTPS Tunnel (/api/http-tunnel) so room works even if WSS is blocked!
-      httpStateVal.textContent = 'Connecting...';
+      // 1. Perform one initial HTTP handshake to fetch server access logs & register HTTP fallback capability
+      httpStateVal.textContent = 'Checking...';
       pollHttpTunnel(true);
 
-      // 2. Also connect via WebSocket (/ws)
+      // 2. Connect via WebSocket (/ws)
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${proto}//${window.location.host}/ws`;
 
@@ -1805,7 +1835,8 @@
 
       ws.onopen = () => {
         wssStateVal.textContent = 'OPEN';
-        logEvent(`Connected to WebSocket Relay (${wsUrl})`, 'ok');
+        httpStateVal.textContent = 'STANDBY (WSS Open)';
+        logEvent(`Connected to WebSocket Relay (${wsUrl}) — HTTP polling placed on standby to prevent tunnel congestion.`, 'ok');
         ws.send(
           JSON.stringify({
             type: 'join_room',
@@ -1832,8 +1863,9 @@
         lastWsCloseCode = `${ev.code}${ev.reason ? ' ' + ev.reason : ''}`;
         wsCloseLabel.textContent = `WS Drops: ${wsDropCount} (Last code: ${lastWsCloseCode})`;
         wssStateVal.textContent = `BLOCKED/CLOSED (${ev.code})`;
+        httpStateVal.textContent = 'OPEN (Active Fallback)';
         updateRoomBanner();
-        logEvent(`WebSocket CLOSED (code=${ev.code}) — HTTPS Tunnel remains active.`, 'warn');
+        logEvent(`WebSocket CLOSED (code=${ev.code}) — HTTPS Tunnel activated automatically.`, 'warn');
       };
     }
 
@@ -1849,10 +1881,12 @@
       });
     });
 
-    // High-frequency HTTPS Tunnel Poller (every 180ms when connected or waiting)
+    // HTTPS Tunnel Fallback Poller (only polls when WSS is NOT open, or when explicit HTTP packets are queued)
     setInterval(() => {
-      pollHttpTunnel(false);
-    }, 180);
+      if (!ws || ws.readyState !== 1 || httpOutQueue.length > 0) {
+        pollHttpTunnel(false);
+      }
+    }, 220);
 
     // Periodic 1s Ping Loop + WebRTC Selected Candidate Pair Poller
     setInterval(async () => {
@@ -1861,9 +1895,10 @@
         if (peerConnected) {
           metrics.wssPeer.tx++;
           sendViaTransport('wss', { type: 'peer_ping', via: 'wss', t: performance.now() });
+          wssPingCountVal.textContent = `WSS:${metrics.wssPeer.rx}/${metrics.wssPeer.tx} | HTTP:${metrics.httpPeer.rx}/${metrics.httpPeer.tx}`;
         }
-      }
-      if (peerConnected && httpTunnelActive) {
+      } else if (peerConnected && httpTunnelActive) {
+        // Only send periodic HTTP pings when WSS is blocked/closed so we don't double-ping over the SSH tunnel
         metrics.httpPeer.tx++;
         sendViaTransport('http', { type: 'peer_ping', via: 'http', t: performance.now() });
         wssPingCountVal.textContent = `WSS:${metrics.wssPeer.rx}/${metrics.wssPeer.tx} | HTTP:${metrics.httpPeer.rx}/${metrics.httpPeer.tx}`;
@@ -1894,9 +1929,10 @@
       }
     }, 1000);
 
-    // Interactive 2-PC Live Sandbox (60Hz)
-    const localArena = { x: 80, y: 85, btn: 0, seq: 0 };
-    const remoteArena = { x: 240, y: 85, btn: 0, seq: 0, lastRxAt: 0, lastGapMs: 0, rxCountThisSec: 0, rxPerSec: 0 };
+    // Interactive 2-PC Live Sandbox (Delta-Timed 60Hz Physics + Change-Triggered Network Sync)
+    const localArena = { x: 80, y: 85, btn: 0, seq: 0, txCountThisSec: 0, txPerSec: 0 };
+    const lastSentArena = { x: 80, y: 85, btn: 0, sentAt: 0 };
+    const remoteArena = { x: 240, y: 85, renderX: 240, renderY: 85, btn: 0, seq: 0, lastRxAt: 0, lastGapMs: 0, rxCountThisSec: 0, rxPerSec: 0 };
     const keysHeld = new Set();
 
     window.addEventListener('keydown', (e) => {
@@ -1929,11 +1965,19 @@
     setInterval(() => {
       remoteArena.rxPerSec = remoteArena.rxCountThisSec;
       remoteArena.rxCountThisSec = 0;
-      arenaRateVal.textContent = `${remoteArena.rxPerSec} pkt/s | Gap: ${remoteArena.lastGapMs} ms`;
+      localArena.txPerSec = localArena.txCountThisSec;
+      localArena.txCountThisSec = 0;
+      arenaRateVal.textContent = `Tx:${localArena.txPerSec} / Rx:${remoteArena.rxPerSec} pkt/s | Gap:${remoteArena.lastGapMs}ms`;
     }, 1000);
 
-    function stepArena60Hz() {
-      const speed = 3;
+    let lastArenaFrameTime = performance.now();
+    function stepArena60Hz(now = performance.now()) {
+      const dtMs = Math.min(50, Math.max(1, now - lastArenaFrameTime));
+      lastArenaFrameTime = now;
+      // Normalize movement speed to 60Hz (16.667ms) so 144Hz and 60Hz monitors move at identical speeds
+      const stepScale = dtMs / (1000 / 60);
+      const speed = 3 * stepScale;
+
       let btnMask = draggingArena ? 1 : 0;
       if (keysHeld.has('KeyW') || keysHeld.has('ArrowUp')) { localArena.y = Math.max(12, localArena.y - speed); btnMask |= 16; }
       if (keysHeld.has('KeyS') || keysHeld.has('ArrowDown')) { localArena.y = Math.min(158, localArena.y + speed); btnMask |= 32; }
@@ -1942,17 +1986,43 @@
       if (keysHeld.has('KeyZ') || keysHeld.has('KeyJ') || keysHeld.has('Space')) btnMask |= 1;
       if (keysHeld.has('KeyX') || keysHeld.has('KeyK')) btnMask |= 2;
       localArena.btn = btnMask;
-      localArena.seq++;
+
+      const roundedX = Math.round(localArena.x);
+      const roundedY = Math.round(localArena.y);
 
       if (peerConnected) {
-        sendViaTransport(arenaTransportSelect.value, {
-          type: 'diag_arena_state',
-          x: localArena.x,
-          y: localArena.y,
-          btn: localArena.btn,
-          seq: localArena.seq
-        });
+        const changed =
+          roundedX !== lastSentArena.x ||
+          roundedY !== lastSentArena.y ||
+          localArena.btn !== lastSentArena.btn;
+        const usingDirectRtc =
+          (dcFast && dcFast.readyState === 'open' && (arenaTransportSelect.value === 'auto' || arenaTransportSelect.value === 'rtc_fast')) ||
+          (dcReliable && dcReliable.readyState === 'open' && arenaTransportSelect.value === 'rtc_rel');
+        // Cap send rate to 60Hz (16ms) on WebRTC UDP, or 30Hz (33ms) on WSS/HTTPS Tunnel to prevent SSH TCP bufferbloat!
+        const minIntervalMs = usingDirectRtc ? 16 : 33;
+        const elapsedSinceSend = now - lastSentArena.sentAt;
+
+        if ((changed && elapsedSinceSend >= minIntervalMs) || elapsedSinceSend >= 1000) {
+          localArena.seq++;
+          localArena.txCountThisSec++;
+          lastSentArena.x = roundedX;
+          lastSentArena.y = roundedY;
+          lastSentArena.btn = localArena.btn;
+          lastSentArena.sentAt = now;
+
+          sendViaTransport(arenaTransportSelect.value, {
+            type: 'diag_arena_state',
+            x: roundedX,
+            y: roundedY,
+            btn: localArena.btn,
+            seq: localArena.seq
+          });
+        }
       }
+
+      // Smooth interpolation for remote box
+      remoteArena.renderX += (remoteArena.x - remoteArena.renderX) * Math.min(1, 0.45 * stepScale);
+      remoteArena.renderY += (remoteArena.y - remoteArena.renderY) * Math.min(1, 0.45 * stepScale);
 
       // Draw Arena
       arenaCtx.fillStyle = '#07090e';
@@ -1971,8 +2041,11 @@
       }
       arenaCtx.stroke();
 
-      const p1 = localPlayerIndex === 1 ? localArena : remoteArena;
-      const p2 = localPlayerIndex === 1 ? remoteArena : localArena;
+      const localDraw = { x: roundedX, y: roundedY, btn: localArena.btn };
+      const remoteDraw = { x: Math.round(remoteArena.renderX), y: Math.round(remoteArena.renderY), btn: remoteArena.btn };
+
+      const p1 = localPlayerIndex === 1 ? localDraw : remoteDraw;
+      const p2 = localPlayerIndex === 1 ? remoteDraw : localDraw;
 
       // Draw PC 1 (Red)
       arenaCtx.fillStyle = '#f43f5e';

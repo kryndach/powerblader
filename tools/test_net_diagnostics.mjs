@@ -285,44 +285,49 @@ async function runNetDiagnosticsTests() {
       wsHost.send(JSON.stringify({ type: 'join_room', roomCode: 'HTTPFALLBACK', clientId: 'host_ws', nick: 'Host-SG' }));
     });
     wsHost.on('message', async (raw) => {
-      const msg = JSON.parse(raw.toString());
-      if (msg.type === 'room_joined') {
-        // Now PC 2 joins via HTTP POST only (no WebSocket at all!)
-        const joinRes = await httpPostJson(`${baseUrl}/api/http-tunnel`, {
-          roomCode: 'HTTPFALLBACK',
-          clientId: 'bro_http_only',
-          nick: 'Brother-RU',
-          join: true,
-          ackSeq: 0,
-          messages: []
-        });
-        assert.strictEqual(joinRes.ok, true);
-        assert.strictEqual(joinRes.playerIndex, 2);
-        assert.strictEqual(joinRes.peers.length, 2);
-      } else if (msg.type === 'peer_joined') {
-        hostSawHttpPeer = msg.peer?.clientId === 'bro_http_only' && msg.peer?.httpActive === true;
-        // Host sends peer_ping to HTTP-only PC 2
-        wsHost.send(JSON.stringify({ type: 'peer_ping', via: 'http', t: 12345 }));
-        // PC 2 polls HTTP tunnel, receives peer_ping, and replies with peer_pong
-        const poll1 = await httpPostJson(`${baseUrl}/api/http-tunnel`, {
-          roomCode: 'HTTPFALLBACK',
-          clientId: 'bro_http_only',
-          nick: 'Brother-RU',
-          ackSeq: 0,
-          messages: []
-        });
-        const pingMsg = poll1.messages.find((m) => m.type === 'peer_ping');
-        assert.ok(pingMsg, 'HTTP-only peer should receive peer_ping in outbox');
-        await httpPostJson(`${baseUrl}/api/http-tunnel`, {
-          roomCode: 'HTTPFALLBACK',
-          clientId: 'bro_http_only',
-          nick: 'Brother-RU',
-          ackSeq: pingMsg._seq,
-          messages: [{ type: 'peer_pong', via: 'http', t: pingMsg.t }]
-        });
-      } else if (msg.type === 'peer_pong' && msg.via === 'http') {
-        hostGotHttpPong = true;
-        resolve();
+      try {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'room_joined') {
+          // Now PC 2 joins via HTTP POST only (no WebSocket at all!)
+          const joinRes = await httpPostJson(`${baseUrl}/api/http-tunnel`, {
+            roomCode: 'HTTPFALLBACK',
+            clientId: 'bro_http_only',
+            nick: 'Brother-RU',
+            join: true,
+            ackSeq: 0,
+            messages: []
+          });
+          assert.strictEqual(joinRes.ok, true);
+          assert.strictEqual(joinRes.playerIndex, 2);
+          assert.strictEqual(joinRes.peers.length, 2);
+        } else if (msg.type === 'peer_joined') {
+          hostSawHttpPeer = msg.peer?.clientId === 'bro_http_only' && msg.peer?.httpActive === true;
+          // Host sends peer_ping to HTTP-only PC 2
+          wsHost.send(JSON.stringify({ type: 'peer_ping', via: 'http', t: 12345 }));
+          await new Promise((r) => setTimeout(r, 30));
+          // PC 2 polls HTTP tunnel, receives peer_ping, and replies with peer_pong
+          const poll1 = await httpPostJson(`${baseUrl}/api/http-tunnel`, {
+            roomCode: 'HTTPFALLBACK',
+            clientId: 'bro_http_only',
+            nick: 'Brother-RU',
+            ackSeq: 0,
+            messages: []
+          });
+          const pingMsg = poll1.messages.find((m) => m.type === 'peer_ping');
+          assert.ok(pingMsg, 'HTTP-only peer should receive peer_ping in outbox');
+          await httpPostJson(`${baseUrl}/api/http-tunnel`, {
+            roomCode: 'HTTPFALLBACK',
+            clientId: 'bro_http_only',
+            nick: 'Brother-RU',
+            ackSeq: pingMsg._seq,
+            messages: [{ type: 'peer_pong', via: 'http', t: pingMsg.t }]
+          });
+        } else if (msg.type === 'peer_pong' && msg.via === 'http') {
+          hostGotHttpPong = true;
+          resolve();
+        }
+      } catch (err) {
+        reject(err);
       }
     });
     wsHost.on('error', reject);

@@ -74,9 +74,11 @@ export function createCoopServer(options = {}) {
     if (peer.ws && peer.ws.readyState === 1) {
       try {
         peer.ws.send(raw);
+        return;
       } catch {}
     }
 
+    // Queue in HTTP outbox only when WebSocket is not open for this peer
     peer.httpOutbox.push(msgWithSeq);
     if (peer.httpOutbox.length > 400) {
       peer.httpOutbox.shift();
