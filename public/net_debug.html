@@ -899,6 +899,7 @@
 
         const offer = await rtcPeer.createOffer();
         await rtcPeer.setLocalDescription(offer);
+        logEvent('Sent WebRTC SDP Offer to partner...', 'info');
         sendSignalingMessage({ sdp: rtcPeer.localDescription });
       } else {
         rtcPeer.ondatachannel = (ev) => {
@@ -920,13 +921,17 @@
         try {
           if (signal.sdp) {
             if (signal.sdp.type === 'offer') {
+              logEvent('Received WebRTC SDP Offer from partner — creating Answer...', 'info');
               await startWebRtc(false);
+            } else if (signal.sdp.type === 'answer') {
+              logEvent('Received WebRTC SDP Answer from partner — starting ICE checks...', 'ok');
             }
             if (!rtcPeer) return;
             await rtcPeer.setRemoteDescription(new RTCSessionDescription(signal.sdp));
             if (signal.sdp.type === 'offer') {
               const answer = await rtcPeer.createAnswer();
               await rtcPeer.setLocalDescription(answer);
+              logEvent('Sent WebRTC SDP Answer to partner.', 'info');
               sendSignalingMessage({ sdp: rtcPeer.localDescription });
             }
             // Flush any ICE candidates that arrived before remoteDescription was ready
@@ -986,16 +991,29 @@
         }
         return false;
       }
+      if (transport === 'auto_reliable') {
+        if (dcReliable && dcReliable.readyState === 'open' && raw.length <= 65536) {
+          dcReliable.send(raw);
+          return true;
+        }
+        if (ws && ws.readyState === 1) {
+          ws.send(raw);
+          return true;
+        }
+        httpOutQueue.push(payloadObj);
+        flushHttpTunnelNow();
+        return true;
+      }
       // 'auto': prefer WebRTC Fast -> WebRTC Reliable -> WSS -> HTTPS Tunnel
-      if (dcFast && dcFast.readyState === 'open') {
+      if (dcFast && dcFast.readyState === 'open' && raw.length <= 16384) {
         dcFast.send(raw);
         return true;
       }
-      if (dcReliable && dcReliable.readyState === 'open') {
+      if (dcReliable && dcReliable.readyState === 'open' && raw.length <= 65536) {
         dcReliable.send(raw);
         return true;
       }
-      if (ws && ws.readyState === 1 && peerTransports.wsOpen !== false) {
+      if (ws && ws.readyState === 1) {
         ws.send(raw);
         return true;
       }
@@ -1042,11 +1060,21 @@
       }
     }
 
+    async function waitForBufferDrain(via) {
+      for (let tries = 0; tries < 200; tries++) {
+        const wsBuffered = ws && ws.readyState === 1 ? ws.bufferedAmount : 0;
+        const rtcBuffered = dcReliable && dcReliable.readyState === 'open' ? dcReliable.bufferedAmount : 0;
+        if (wsBuffered < 24576 && rtcBuffered < 24576) return;
+        await new Promise((r) => setTimeout(r, 15));
+      }
+    }
+
     async function runDataTransferTest(kb, mode, via) {
       if (!peerConnected) {
         logEvent('Connect 2nd PC before running data transfer tests.', 'warn');
         return { ok: false, status: 'NO PEER' };
       }
+      const sendVia = via === 'auto' ? 'auto_reliable' : via;
       const byteLength = kb * 1024;
       const u8 = new Uint8Array(byteLength);
       for (let i = 0; i < byteLength; i++) {
@@ -1055,10 +1083,12 @@
       const crc = crc32Bytes(u8);
       const xferId = `xf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const t0 = performance.now();
+      // Dynamic timeout: localhost.run free SSH tunnels throttle to ~18 KB/s, so 256KB-512KB needs up to 45-60s
+      const timeoutMs = Math.max(18000, kb * 130);
 
-      logEvent(`Starting ${kb} KB (${mode}) transfer via ${via.toUpperCase()} [CRC=${crc}]...`);
+      logEvent(`Starting ${kb} KB (${mode}) transfer via ${via.toUpperCase()} [CRC=${crc}, timeout=${Math.round(timeoutMs / 1000)}s]...`);
 
-      return new Promise((resolve) => {
+      return new Promise(async (resolve) => {
         const timeout = setTimeout(() => {
           if (pendingTransfers.has(xferId)) {
             pendingTransfers.delete(xferId);
@@ -1071,13 +1101,13 @@
               kbps: '0',
               crc32: crc,
               ok: false,
-              status: 'TIMEOUT (Dropped)'
+              status: `TIMEOUT (> ${Math.round(timeoutMs / 1000)}s)`
             };
             addTransferRow(row);
-            logEvent(`Transfer ${kb} KB (${mode}) via ${via} TIMED OUT!`, 'err');
+            logEvent(`Transfer ${kb} KB (${mode}) via ${via} TIMED OUT after ${Math.round(timeoutMs / 1000)}s!`, 'err');
             resolve(row);
           }
-        }, 10000);
+        }, timeoutMs);
 
         pendingTransfers.set(xferId, {
           t0,
@@ -1090,7 +1120,7 @@
         });
 
         if (mode === 'single') {
-          const sent = sendViaTransport(via, {
+          const sent = sendViaTransport(sendVia, {
             type: 'diag_xfer_single',
             xferId,
             kb,
@@ -1116,9 +1146,10 @@
             resolve(row);
           }
         } else {
+          // Paced 16KB chunk streaming with backpressure check so live cursor/input packets are never blocked!
           const chunkSize = 16 * 1024;
           const totalChunks = Math.ceil(u8.length / chunkSize);
-          sendViaTransport(via, {
+          sendViaTransport(sendVia, {
             type: 'diag_xfer_start',
             xferId,
             kb,
@@ -1128,15 +1159,20 @@
             crc32: crc
           });
           for (let c = 0; c < totalChunks; c++) {
+            await waitForBufferDrain(sendVia);
             const slice = u8.subarray(c * chunkSize, Math.min(u8.length, (c + 1) * chunkSize));
-            sendViaTransport(via, {
+            sendViaTransport(sendVia, {
               type: 'diag_xfer_chunk',
               xferId,
               index: c,
               dataB64: uint8ToBase64(slice)
             });
+            // Yield 8ms between chunks so real-time cursor/pad packets interleave smoothly
+            if (totalChunks > 4) {
+              await new Promise((r) => setTimeout(r, 8));
+            }
           }
-          sendViaTransport(via, {
+          sendViaTransport(sendVia, {
             type: 'diag_xfer_end',
             xferId
           });
@@ -1393,10 +1429,34 @@
       });
     });
 
+    let rtcAutoRetryTimer = null;
+    function scheduleWebRtcHandshake() {
+      if (localPlayerIndex !== 1 || !peerConnected) return;
+      if (dcFast && dcFast.readyState === 'open') return;
+      setTimeout(() => {
+        if (peerConnected && (!dcFast || dcFast.readyState !== 'open')) {
+          startWebRtc(true);
+        }
+      }, 300);
+      if (rtcAutoRetryTimer) clearTimeout(rtcAutoRetryTimer);
+      rtcAutoRetryTimer = setTimeout(() => {
+        if (
+          peerConnected &&
+          localPlayerIndex === 1 &&
+          (!dcFast || dcFast.readyState !== 'open') &&
+          (!rtcPeer || !rtcPeer.remoteDescription || !rtcPeer.remoteDescription.type)
+        ) {
+          logEvent('WebRTC Answer not received yet — retrying WebRTC Offer...', 'warn');
+          startWebRtc(true);
+        }
+      }, 4500);
+    }
+
     function syncRoomPeersList(peersList) {
       if (!Array.isArray(peersList)) return;
       const others = peersList.filter((p) => p.clientId ? p.clientId !== clientId : p.playerIndex !== localPlayerIndex);
       const wasConnected = peerConnected;
+      const prevWsOpen = peerTransports.wsOpen;
       peerConnected = others.length > 0;
       if (peerConnected) {
         const partner = others[0];
@@ -1405,13 +1465,13 @@
           wsOpen: Boolean(partner.wsOpen),
           httpActive: Boolean(partner.httpActive)
         };
-        if (!wasConnected) {
+        if (!wasConnected || (!prevWsOpen && peerTransports.wsOpen)) {
           logEvent(
-            `Partner "${peerNick}" detected in room "${roomCode}" (WS=${peerTransports.wsOpen ? 'OPEN' : 'CLOSED'}, HTTPS=${peerTransports.httpActive ? 'ACTIVE' : 'IDLE'})!`,
+            `Partner "${peerNick}" ready in room "${roomCode}" (WS=${peerTransports.wsOpen ? 'OPEN' : 'CLOSED'}, HTTPS=${peerTransports.httpActive ? 'ACTIVE' : 'STANDBY'})!`,
             'ok'
           );
-          if (localPlayerIndex === 1 && !rtcPeer) {
-            startWebRtc(true);
+          if (localPlayerIndex === 1 && (!rtcPeer || (!prevWsOpen && peerTransports.wsOpen))) {
+            scheduleWebRtcHandshake();
           }
         }
       }
@@ -1701,6 +1761,22 @@
         remoteArena.y = msg.y;
         remoteArena.btn = msg.btn || 0;
         remoteArena.seq = msg.seq || 0;
+        remoteArena.via = viaSource.toUpperCase();
+        // Echo lightweight Arena timestamp ack (at most every 150ms) to measure exact directional cursor RTT
+        if (typeof msg.t === 'number' && now - remoteArena.lastAckSentAt > 150) {
+          remoteArena.lastAckSentAt = now;
+          sendViaTransport(arenaTransportSelect.value, {
+            type: 'diag_arena_ack',
+            t: msg.t
+          });
+        }
+        return;
+      }
+
+      if (msg.type === 'diag_arena_ack') {
+        if (typeof msg.t === 'number') {
+          localArena.rttMs = Math.max(1, Math.round(performance.now() - msg.t));
+        }
         return;
       }
     }
@@ -1807,10 +1883,33 @@
       }
     }
 
+    let wsFallbackTimer = null;
+    async function fetchServerAccessLogs() {
+      try {
+        const res = await fetch('/api/health');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (Array.isArray(data.accessLog)) {
+          metrics.serverAccessLog = data.accessLog;
+          for (const item of data.accessLog) {
+            const key = `${item.ts}_${item.note}_${item.ip}`;
+            if (!seenAccessEntries.has(key)) {
+              seenAccessEntries.add(key);
+              logEvent(`[SERVER] ${item.note} from ${item.ip} (${item.host})`, 'info');
+            }
+          }
+        }
+      } catch {}
+    }
+
     function connectRoom() {
       if (ws) {
         try { ws.close(); } catch {}
         ws = null;
+      }
+      if (wsFallbackTimer) {
+        clearTimeout(wsFallbackTimer);
+        wsFallbackTimer = null;
       }
       closeWebRtc();
       highestSeqSeen = 0;
@@ -1822,21 +1921,32 @@
       backToNesLink.href = `/?room=${encodeURIComponent(code)}`;
       const nick = (nickInput.value || 'PC').trim().slice(0, 14);
 
-      // 1. Perform one initial HTTP handshake to fetch server access logs & register HTTP fallback capability
-      httpStateVal.textContent = 'Checking...';
-      pollHttpTunnel(true);
+      // 1. Fetch read-only server access log (/api/health) without creating a competing HTTP_JOIN session
+      fetchServerAccessLogs();
+      httpStateVal.textContent = 'STANDBY (Waiting for WSS)';
 
-      // 2. Connect via WebSocket (/ws)
+      // 2. Connect via WebSocket (/ws) FIRST; only fall back to HTTP_JOIN if WSS fails or takes >2.2s
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${proto}//${window.location.host}/ws`;
 
       wssStateVal.textContent = 'Connecting...';
       ws = new WebSocket(wsUrl);
 
+      wsFallbackTimer = setTimeout(() => {
+        if (!ws || ws.readyState !== 1) {
+          logEvent('WebSocket taking >2.2s — activating HTTPS Tunnel (/api/http-tunnel) fallback!', 'warn');
+          pollHttpTunnel(true);
+        }
+      }, 2200);
+
       ws.onopen = () => {
+        if (wsFallbackTimer) {
+          clearTimeout(wsFallbackTimer);
+          wsFallbackTimer = null;
+        }
         wssStateVal.textContent = 'OPEN';
         httpStateVal.textContent = 'STANDBY (WSS Open)';
-        logEvent(`Connected to WebSocket Relay (${wsUrl}) — HTTP polling placed on standby to prevent tunnel congestion.`, 'ok');
+        logEvent(`Connected to WebSocket Relay (${wsUrl}) — HTTP polling placed on standby.`, 'ok');
         ws.send(
           JSON.stringify({
             type: 'join_room',
@@ -1845,6 +1955,7 @@
             nick
           })
         );
+        setTimeout(fetchServerAccessLogs, 500);
       };
 
       ws.onmessage = (ev) => {
@@ -1856,6 +1967,7 @@
 
       ws.onerror = () => {
         logEvent('WebSocket error — falling back to HTTPS Tunnel (/api/http-tunnel).', 'warn');
+        pollHttpTunnel(true);
       };
 
       ws.onclose = (ev) => {
@@ -1866,6 +1978,7 @@
         httpStateVal.textContent = 'OPEN (Active Fallback)';
         updateRoomBanner();
         logEvent(`WebSocket CLOSED (code=${ev.code}) — HTTPS Tunnel activated automatically.`, 'warn');
+        pollHttpTunnel(true);
       };
     }
 
@@ -1930,9 +2043,9 @@
     }, 1000);
 
     // Interactive 2-PC Live Sandbox (Delta-Timed 60Hz Physics + Change-Triggered Network Sync)
-    const localArena = { x: 80, y: 85, btn: 0, seq: 0, txCountThisSec: 0, txPerSec: 0 };
+    const localArena = { x: 80, y: 85, btn: 0, seq: 0, txCountThisSec: 0, txPerSec: 0, rttMs: null };
     const lastSentArena = { x: 80, y: 85, btn: 0, sentAt: 0 };
-    const remoteArena = { x: 240, y: 85, renderX: 240, renderY: 85, btn: 0, seq: 0, lastRxAt: 0, lastGapMs: 0, rxCountThisSec: 0, rxPerSec: 0 };
+    const remoteArena = { x: 240, y: 85, renderX: 240, renderY: 85, btn: 0, seq: 0, lastRxAt: 0, lastGapMs: 0, rxCountThisSec: 0, rxPerSec: 0, lastAckSentAt: 0, via: '--' };
     const keysHeld = new Set();
 
     window.addEventListener('keydown', (e) => {
@@ -1954,8 +2067,9 @@
       localArena.btn |= 1;
       updateArenaFromPointer(e);
     });
-    window.addEventListener('pointermove', (e) => {
-      if (draggingArena) updateArenaFromPointer(e);
+    arenaCanvas.addEventListener('pointermove', (e) => {
+      // Allow moving cursor box simply by moving mouse inside the arena canvas!
+      updateArenaFromPointer(e);
     });
     window.addEventListener('pointerup', () => {
       draggingArena = false;
@@ -1967,7 +2081,8 @@
       remoteArena.rxCountThisSec = 0;
       localArena.txPerSec = localArena.txCountThisSec;
       localArena.txCountThisSec = 0;
-      arenaRateVal.textContent = `Tx:${localArena.txPerSec} / Rx:${remoteArena.rxPerSec} pkt/s | Gap:${remoteArena.lastGapMs}ms`;
+      const lagStr = localArena.rttMs !== null ? `${localArena.rttMs}ms` : '--';
+      arenaRateVal.textContent = `Tx:${localArena.txPerSec}/Rx:${remoteArena.rxPerSec} (${remoteArena.via}) | RTT:${lagStr} | Gap:${remoteArena.lastGapMs}ms`;
     }, 1000);
 
     let lastArenaFrameTime = performance.now();
@@ -1998,11 +2113,13 @@
         const usingDirectRtc =
           (dcFast && dcFast.readyState === 'open' && (arenaTransportSelect.value === 'auto' || arenaTransportSelect.value === 'rtc_fast')) ||
           (dcReliable && dcReliable.readyState === 'open' && arenaTransportSelect.value === 'rtc_rel');
-        // Cap send rate to 60Hz (16ms) on WebRTC UDP, or 30Hz (33ms) on WSS/HTTPS Tunnel to prevent SSH TCP bufferbloat!
-        const minIntervalMs = usingDirectRtc ? 16 : 33;
+        // Cap send rate to 60Hz (16ms) on WebRTC UDP, or 25Hz (40ms) on WSS/HTTPS Tunnel to prevent SSH TCP bufferbloat!
+        const minIntervalMs = usingDirectRtc ? 16 : 40;
         const elapsedSinceSend = now - lastSentArena.sentAt;
+        // Skip sending if WebSocket buffer has >8KB queued (e.g. during a big file transfer) so cursor packets never pile up!
+        const wsBackedUp = !usingDirectRtc && ws && ws.readyState === 1 && ws.bufferedAmount > 8192;
 
-        if ((changed && elapsedSinceSend >= minIntervalMs) || elapsedSinceSend >= 1000) {
+        if (!wsBackedUp && ((changed && elapsedSinceSend >= minIntervalMs) || elapsedSinceSend >= 1000)) {
           localArena.seq++;
           localArena.txCountThisSec++;
           lastSentArena.x = roundedX;
@@ -2015,7 +2132,8 @@
             x: roundedX,
             y: roundedY,
             btn: localArena.btn,
-            seq: localArena.seq
+            seq: localArena.seq,
+            t: now
           });
         }
       }

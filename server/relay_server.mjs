@@ -74,6 +74,7 @@ export function createCoopServer(options = {}) {
     if (peer.ws && peer.ws.readyState === 1) {
       try {
         peer.ws.send(raw);
+        peer.lastTxAt = Date.now();
         return;
       } catch {}
     }
@@ -132,6 +133,16 @@ export function createCoopServer(options = {}) {
       if (typeof info.isAutoDefaultRom === 'boolean') peer.isAutoDefaultRom = info.isAutoDefaultRom;
       if (wsInstance) peer.ws = wsInstance;
       if (info.httpActive) peer.httpActive = true;
+    }
+
+    // If WebSocket is now open, immediately flush any messages that were queued in httpOutbox before WS opened!
+    if (peer.ws && peer.ws.readyState === 1 && peer.httpOutbox.length > 0) {
+      const pending = peer.httpOutbox.splice(0, peer.httpOutbox.length);
+      for (const m of pending) {
+        try {
+          peer.ws.send(JSON.stringify(m));
+        } catch {}
+      }
     }
 
     const peers = getRoomPeersInfo(roomCode);
@@ -201,6 +212,13 @@ export function createCoopServer(options = {}) {
     ]);
 
     if (forwardTypes.has(msg.type) || msg.type.startsWith('diag_')) {
+      // Defeat Windows loopback TCP Delayed-ACK + ssh.exe Nagle stall when traffic is one-way (e.g. Brother -> Host)
+      if (peer.ws && peer.ws.readyState === 1 && Date.now() - (peer.lastTxAt || 0) > 20) {
+        try {
+          peer.ws.ping();
+          peer.lastTxAt = Date.now();
+        } catch {}
+      }
       broadcastToRoom(peer.roomCode, peer.clientId, {
         ...msg,
         fromPlayer: peer.playerIndex,
@@ -404,7 +422,13 @@ export function createCoopServer(options = {}) {
   // Allow up to 8 MB payloads for ROM / savestate transfers
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 8 * 1024 * 1024 });
 
+  // Disable Nagle's algorithm (enable TCP_NODELAY) on all incoming sockets for minimum real-time latency
+  server.on('connection', (socket) => {
+    socket.setNoDelay(true);
+  });
+
   wss.on('connection', (ws, req) => {
+    ws._socket?.setNoDelay?.(true);
     recordAccess(req, 'WS_CONNECTED /ws');
     ws.peerSession = null;
 
