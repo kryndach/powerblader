@@ -3,6 +3,33 @@ import http from 'http';
 import WebSocket from 'ws';
 import { createCoopServer } from '../server/relay_server.mjs';
 
+function httpPostJson(urlStr, payloadObj) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const body = JSON.stringify(payloadObj);
+    const req = http.request(
+      {
+        hostname: u.hostname,
+        port: u.port,
+        path: u.pathname,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body)
+        }
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => resolve(JSON.parse(data)));
+      }
+    );
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 function httpGetText(url) {
   return new Promise((resolve, reject) => {
     http
@@ -247,6 +274,64 @@ async function runNetDiagnosticsTests() {
 
   ws1.close();
   ws2.close();
+
+  // 5. Test Pure HTTPS Tunnel Fallback (/api/http-tunnel) when PC 2 WebSocket is blocked
+  const wsHost = new WebSocket(wsUrl);
+  let hostSawHttpPeer = false;
+  let hostGotHttpPong = false;
+
+  await new Promise((resolve, reject) => {
+    wsHost.on('open', () => {
+      wsHost.send(JSON.stringify({ type: 'join_room', roomCode: 'HTTPFALLBACK', clientId: 'host_ws', nick: 'Host-SG' }));
+    });
+    wsHost.on('message', async (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'room_joined') {
+        // Now PC 2 joins via HTTP POST only (no WebSocket at all!)
+        const joinRes = await httpPostJson(`${baseUrl}/api/http-tunnel`, {
+          roomCode: 'HTTPFALLBACK',
+          clientId: 'bro_http_only',
+          nick: 'Brother-RU',
+          join: true,
+          ackSeq: 0,
+          messages: []
+        });
+        assert.strictEqual(joinRes.ok, true);
+        assert.strictEqual(joinRes.playerIndex, 2);
+        assert.strictEqual(joinRes.peers.length, 2);
+      } else if (msg.type === 'peer_joined') {
+        hostSawHttpPeer = msg.peer?.clientId === 'bro_http_only' && msg.peer?.httpActive === true;
+        // Host sends peer_ping to HTTP-only PC 2
+        wsHost.send(JSON.stringify({ type: 'peer_ping', via: 'http', t: 12345 }));
+        // PC 2 polls HTTP tunnel, receives peer_ping, and replies with peer_pong
+        const poll1 = await httpPostJson(`${baseUrl}/api/http-tunnel`, {
+          roomCode: 'HTTPFALLBACK',
+          clientId: 'bro_http_only',
+          nick: 'Brother-RU',
+          ackSeq: 0,
+          messages: []
+        });
+        const pingMsg = poll1.messages.find((m) => m.type === 'peer_ping');
+        assert.ok(pingMsg, 'HTTP-only peer should receive peer_ping in outbox');
+        await httpPostJson(`${baseUrl}/api/http-tunnel`, {
+          roomCode: 'HTTPFALLBACK',
+          clientId: 'bro_http_only',
+          nick: 'Brother-RU',
+          ackSeq: pingMsg._seq,
+          messages: [{ type: 'peer_pong', via: 'http', t: pingMsg.t }]
+        });
+      } else if (msg.type === 'peer_pong' && msg.via === 'http') {
+        hostGotHttpPong = true;
+        resolve();
+      }
+    });
+    wsHost.on('error', reject);
+  });
+
+  assert.ok(hostSawHttpPeer && hostGotHttpPong, 'HTTPS Tunnel fallback failed');
+  console.log('[PASS] Stage 5: Pure HTTPS Tunnel Fallback (/api/http-tunnel) When WebSocket Is Blocked Verified');
+
+  wsHost.close();
   await app.close();
 
   console.log('\nALL 2-PC NETWORK & PROTOCOL DIAGNOSTIC TESTS PASSED!');

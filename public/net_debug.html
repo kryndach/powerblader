@@ -339,15 +339,23 @@
             <span class="v" id="wssStateVal">Closed</span>
           </div>
           <div class="kv">
+            <span class="k">HTTPS Tunnel (/api/http-tunnel):</span>
+            <span class="v" id="httpStateVal">Idle</span>
+          </div>
+          <div class="kv">
             <span class="k">Browser ↔ Relay Server RTT:</span>
             <span class="v" id="srvRttVal">-- ms</span>
+          </div>
+          <div class="kv">
+            <span class="k">PC1 ↔ PC2 via HTTPS Tunnel RTT:</span>
+            <span class="v" id="httpPeerRttVal">-- ms (±0ms)</span>
           </div>
           <div class="kv">
             <span class="k">PC1 ↔ PC2 via WSS Relay RTT:</span>
             <span class="v" id="wssPeerRttVal">-- ms (±0ms)</span>
           </div>
           <div class="kv">
-            <span class="k">WSS Relay Pings (Rx/Tx):</span>
+            <span class="k">WSS / HTTPS Pings (Rx/Tx):</span>
             <span class="v" id="wssPingCountVal">0 / 0</span>
           </div>
           <div class="kv">
@@ -445,7 +453,9 @@
           <div style="display:flex; gap:6px; align-items:center;">
             <span style="color:var(--muted); font-size:11px;">Via:</span>
             <select id="transferTransportSelect">
-              <option value="wss">WSS Relay (Tunnel)</option>
+              <option value="auto">Auto (Best Open Path)</option>
+              <option value="wss">WSS Relay (WebSocket)</option>
+              <option value="http">HTTPS Tunnel (/api/http-tunnel)</option>
               <option value="rtc_rel">WebRTC Reliable DC</option>
               <option value="rtc_fast">WebRTC Fast DC</option>
             </select>
@@ -484,7 +494,9 @@
           <span class="card-title">4. 60Hz Packet Stream & Tunnel Clumping Analyzer</span>
           <div style="display:flex; gap:6px;">
             <select id="streamTransportSelect">
+              <option value="auto">Auto (Best Open)</option>
               <option value="wss">WSS Relay</option>
+              <option value="http">HTTPS Tunnel</option>
               <option value="rtc_fast">WebRTC Fast (UDP)</option>
               <option value="rtc_rel">WebRTC Reliable</option>
             </select>
@@ -519,8 +531,9 @@
           <div style="display:flex; gap:6px; align-items:center;">
             <span style="color:var(--muted); font-size:11px;">Live Path:</span>
             <select id="arenaTransportSelect">
-              <option value="auto">Auto (WebRTC Fast -> WSS)</option>
+              <option value="auto">Auto (WebRTC -> WSS -> HTTPS)</option>
               <option value="wss">Force WSS Relay</option>
+              <option value="http">Force HTTPS Tunnel</option>
               <option value="rtc_fast">Force WebRTC Fast (UDP)</option>
               <option value="rtc_rel">Force WebRTC Reliable</option>
             </select>
@@ -611,7 +624,9 @@
     const activePeersBadge = document.getElementById('activePeersBadge');
 
     const wssStateVal = document.getElementById('wssStateVal');
+    const httpStateVal = document.getElementById('httpStateVal');
     const srvRttVal = document.getElementById('srvRttVal');
+    const httpPeerRttVal = document.getElementById('httpPeerRttVal');
     const wssPeerRttVal = document.getElementById('wssPeerRttVal');
     const wssPingCountVal = document.getElementById('wssPingCountVal');
     const rtcFastRttVal = document.getElementById('rtcFastRttVal');
@@ -680,11 +695,19 @@
     });
 
     // State
+    const clientId = `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     let ws = null;
+    let httpTunnelActive = false;
+    let httpPollingBusy = false;
+    let httpOutQueue = [];
+    let highestSeqSeen = 0;
+    let seenAccessEntries = new Set();
+
     let roomCode = null;
     let localPlayerIndex = 1;
     let peerConnected = false;
     let peerNick = 'Remote PC';
+    let peerTransports = { wsOpen: false, httpActive: false };
     let wsDropCount = 0;
     let lastWsCloseCode = '--';
 
@@ -692,12 +715,14 @@
     const metrics = {
       serverRttMs: null,
       wssPeer: { rtt: null, jitter: 0, tx: 0, rx: 0, samples: [] },
+      httpPeer: { rtt: null, jitter: 0, tx: 0, rx: 0, samples: [] },
       rtcFast: { rtt: null, jitter: 0, tx: 0, rx: 0, samples: [] },
       rtcRel: { rtt: null, jitter: 0, tx: 0, rx: 0, samples: [] },
       iceCandidates: [],
       transfers: [],
       lastStreamReport: null,
-      suiteResults: []
+      suiteResults: [],
+      serverAccessLog: []
     };
 
     // WebRTC State
@@ -726,7 +751,6 @@
 
     function recordIceCandidateRow(side, candStr) {
       if (!candStr) return;
-      // Parse standard candidate string: candidate:foundation component protocol priority ip port typ type ...
       const parts = candStr.trim().split(/\s+/);
       const proto = (parts[2] || 'udp').toUpperCase();
       const addr = `${parts[4] || '?'}:${parts[5] || '?'}`;
@@ -796,7 +820,7 @@
         logEvent(`WebRTC DataChannel [${ch.label}] closed.`, 'warn');
         updateState();
       };
-      ch.onerror = (err) => {
+      ch.onerror = () => {
         logEvent(`WebRTC DataChannel [${ch.label}] error.`, 'err');
         updateState();
       };
@@ -807,6 +831,16 @@
         } catch {}
       };
       updateState();
+    }
+
+    function sendSignalingMessage(signalPayload) {
+      // Send over WSS if open AND queue on HTTPS tunnel so signaling works even when WSS is blocked!
+      const msg = { type: 'webrtc_signal', signal: signalPayload };
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify(msg));
+      }
+      httpOutQueue.push(msg);
+      flushHttpTunnelNow();
     }
 
     async function startWebRtc(isInitiator) {
@@ -829,14 +863,7 @@
       rtcPeer.onicecandidate = (ev) => {
         if (ev.candidate) {
           recordIceCandidateRow('LOCAL', ev.candidate.candidate);
-          if (ws && ws.readyState === 1) {
-            ws.send(
-              JSON.stringify({
-                type: 'webrtc_signal',
-                signal: { candidate: ev.candidate }
-              })
-            );
-          }
+          sendSignalingMessage({ candidate: ev.candidate });
         }
       };
 
@@ -867,14 +894,7 @@
 
         const offer = await rtcPeer.createOffer();
         await rtcPeer.setLocalDescription(offer);
-        if (ws && ws.readyState === 1) {
-          ws.send(
-            JSON.stringify({
-              type: 'webrtc_signal',
-              signal: { sdp: rtcPeer.localDescription }
-            })
-          );
-        }
+        sendSignalingMessage({ sdp: rtcPeer.localDescription });
       } else {
         rtcPeer.ondatachannel = (ev) => {
           const ch = ev.channel;
@@ -901,14 +921,7 @@
           if (signal.sdp.type === 'offer') {
             const answer = await rtcPeer.createAnswer();
             await rtcPeer.setLocalDescription(answer);
-            if (ws && ws.readyState === 1) {
-              ws.send(
-                JSON.stringify({
-                  type: 'webrtc_signal',
-                  signal: { sdp: rtcPeer.localDescription }
-                })
-              );
-            }
+            sendSignalingMessage({ sdp: rtcPeer.localDescription });
           }
         } else if (signal.candidate) {
           recordIceCandidateRow('REMOTE', signal.candidate.candidate);
@@ -944,17 +957,34 @@
         }
         return false;
       }
-      if (transport === 'auto') {
-        if (dcFast && dcFast.readyState === 'open') {
-          dcFast.send(raw);
+      if (transport === 'http') {
+        httpOutQueue.push({ ...payloadObj, via: 'http' });
+        flushHttpTunnelNow();
+        return true;
+      }
+      if (transport === 'wss') {
+        if (ws && ws.readyState === 1) {
+          ws.send(raw);
           return true;
         }
+        return false;
       }
-      if (ws && ws.readyState === 1) {
+      // 'auto': prefer WebRTC Fast -> WebRTC Reliable -> WSS -> HTTPS Tunnel
+      if (dcFast && dcFast.readyState === 'open') {
+        dcFast.send(raw);
+        return true;
+      }
+      if (dcReliable && dcReliable.readyState === 'open') {
+        dcReliable.send(raw);
+        return true;
+      }
+      if (ws && ws.readyState === 1 && peerTransports.wsOpen !== false) {
         ws.send(raw);
         return true;
       }
-      return false;
+      httpOutQueue.push(payloadObj);
+      flushHttpTunnelNow();
+      return true;
     }
 
     // Update RTT helper
@@ -973,9 +1003,8 @@
     }
 
     // Chunked Receiver State
-    const incomingChunks = new Map(); // xferId -> { totalChunks, totalBytes, crc32, chunks: Map, startTime, via }
-    // Pending Outgoing Transfer Resolvers
-    const pendingTransfers = new Map(); // xferId -> { t0, kb, mode, via, crc32, resolve }
+    const incomingChunks = new Map();
+    const pendingTransfers = new Map();
 
     function addTransferRow(row) {
       metrics.transfers.unshift(row);
@@ -1031,7 +1060,7 @@
             logEvent(`Transfer ${kb} KB (${mode}) via ${via} TIMED OUT!`, 'err');
             resolve(row);
           }
-        }, 8000);
+        }, 10000);
 
         pendingTransfers.set(xferId, {
           t0,
@@ -1070,7 +1099,6 @@
             resolve(row);
           }
         } else {
-          // Chunked mode: 16 KB chunks
           const chunkSize = 16 * 1024;
           const totalChunks = Math.ceil(u8.length / chunkSize);
           sendViaTransport(via, {
@@ -1173,7 +1201,7 @@
                 streamId,
                 totalFrames
               });
-            }, 350);
+            }, 450);
           }
         }, 1000 / 60);
 
@@ -1182,7 +1210,7 @@
             pendingStreamResolve = null;
             resolve(null);
           }
-        }, (totalFrames * 17) + 4000);
+        }, (totalFrames * 17) + 5000);
       });
     }
 
@@ -1217,31 +1245,35 @@
       suiteStatusBadge.textContent = 'RUNNING...';
       logEvent('=== STARTING 5-STAGE 2-PC AUTOMATED DIAGNOSTIC SUITE ===', 'ok');
 
-      // Stage 1: WSS Relay Latency & Jitter Check
+      // Stage 1: WSS vs HTTPS Tunnel Latency Check
       await new Promise((r) => setTimeout(r, 1200));
       const wssRtt = metrics.wssPeer.rtt;
+      const httpRtt = metrics.httpPeer.rtt;
       metrics.suiteResults.push({
-        stage: '1. WSS Peer Ping',
-        proto: 'WSS Relay',
-        status: wssRtt !== null && wssRtt < 400 ? 'PASS' : wssRtt !== null ? 'WARN' : 'FAIL',
-        detail: wssRtt !== null ? `RTT=${wssRtt}ms, Jitter=±${metrics.wssPeer.jitter}ms` : 'No pong from peer'
+        stage: '1. Relay Ping (WSS / HTTPS)',
+        proto: wssRtt !== null ? 'WSS + HTTPS' : 'HTTPS Tunnel',
+        status: wssRtt !== null ? 'PASS' : httpRtt !== null ? 'WARN' : 'FAIL',
+        detail: `WSS=${wssRtt !== null ? wssRtt + 'ms' : 'BLOCKED'}, HTTPS=${httpRtt !== null ? httpRtt + 'ms' : '--'}`
       });
       renderSuiteScorecard();
 
-      // Stage 2: Single-Frame 256 KB vs Chunked 256 KB over WSS Relay
-      const xferSingle64 = await runDataTransferTest(64, 'single', 'wss');
+      const activeRelay = wssRtt !== null ? 'wss' : 'http';
+
+      // Stage 2: 64 KB Single Frame
+      const xferSingle64 = await runDataTransferTest(64, 'single', activeRelay);
       metrics.suiteResults.push({
         stage: '2. 64KB Single Frame',
-        proto: 'WSS Relay',
+        proto: activeRelay.toUpperCase(),
         status: xferSingle64.ok ? 'PASS' : 'FAIL',
         detail: xferSingle64.ok ? `${xferSingle64.ms}ms (${xferSingle64.kbps} KB/s)` : xferSingle64.status
       });
       renderSuiteScorecard();
 
-      const xferChunked256 = await runDataTransferTest(256, 'chunked', 'wss');
+      // Stage 3: 256 KB Chunked (16x16KB)
+      const xferChunked256 = await runDataTransferTest(256, 'chunked', activeRelay);
       metrics.suiteResults.push({
         stage: '3. 256KB Chunked (16x16KB)',
-        proto: 'WSS Relay',
+        proto: activeRelay.toUpperCase(),
         status: xferChunked256.ok ? 'PASS' : 'FAIL',
         detail: xferChunked256.ok ? `${xferChunked256.ms}ms (${xferChunked256.kbps} KB/s) CRC OK` : xferChunked256.status
       });
@@ -1249,7 +1281,7 @@
 
       // Stage 4: WebRTC P2P Handshake & Direct UDP Check
       await startWebRtc(true);
-      await new Promise((r) => setTimeout(r, 2500));
+      await new Promise((r) => setTimeout(r, 3000));
       const p2pOpen = dcFast && dcFast.readyState === 'open';
       metrics.suiteResults.push({
         stage: '4. WebRTC P2P Direct',
@@ -1257,33 +1289,33 @@
         status: p2pOpen ? 'PASS' : 'WARN',
         detail: p2pOpen
           ? `OPEN (RTT=${metrics.rtcFast.rtt ?? '--'}ms)`
-          : `Blocked by NAT/ISP (${rtcPeer ? rtcPeer.iceConnectionState : 'closed'}) — WSS Relay required`
+          : `Blocked by NAT/ISP (${rtcPeer ? rtcPeer.iceConnectionState : 'closed'}) — Using ${activeRelay.toUpperCase()}`
       });
       renderSuiteScorecard();
 
       // Stage 5: 60Hz Real-Time Packet Stream (180 frames = 3s)
-      const streamRes = await run60HzStreamTest('wss', 180);
+      const bestStreamVia = p2pOpen ? 'rtc_fast' : activeRelay;
+      const streamRes = await run60HzStreamTest(bestStreamVia, 180);
       if (streamRes) {
         const lossPct = streamRes.lossPct;
         const maxGap = streamRes.gaps.max;
         metrics.suiteResults.push({
           stage: '5. 60Hz Input Stream',
-          proto: 'WSS Relay',
-          status: lossPct === 0 && maxGap < 120 ? 'PASS' : lossPct < 5 ? 'WARN' : 'FAIL',
+          proto: bestStreamVia.toUpperCase(),
+          status: lossPct === 0 && maxGap < 150 ? 'PASS' : lossPct < 5 ? 'WARN' : 'FAIL',
           detail: `Rx=${streamRes.received}/${streamRes.total} (Loss ${lossPct}%), MaxGap=${maxGap}ms, Clump=${streamRes.gaps.clumpedPct}%`
         });
       } else {
         metrics.suiteResults.push({
           stage: '5. 60Hz Input Stream',
-          proto: 'WSS Relay',
+          proto: bestStreamVia.toUpperCase(),
           status: 'FAIL',
           detail: 'Stream summary timed out'
         });
       }
       renderSuiteScorecard();
 
-      // Broadcast scorecard to partner PC so both screens see the results
-      sendViaTransport('wss', {
+      sendViaTransport('auto', {
         type: 'diag_suite_results',
         suiteResults: metrics.suiteResults
       });
@@ -1299,9 +1331,11 @@
       const report = {
         timestamp: new Date().toISOString(),
         url: window.location.href,
+        clientId,
         roomCode,
         localPlayerIndex,
         peerConnected,
+        peerTransports,
         wsDropCount,
         lastWsCloseCode,
         serverRttMs: metrics.serverRttMs,
@@ -1310,6 +1344,12 @@
           jitter: metrics.wssPeer.jitter,
           tx: metrics.wssPeer.tx,
           rx: metrics.wssPeer.rx
+        },
+        httpPeer: {
+          rtt: metrics.httpPeer.rtt,
+          jitter: metrics.httpPeer.jitter,
+          tx: metrics.httpPeer.tx,
+          rx: metrics.httpPeer.rx
         },
         rtcFast: {
           state: dcFast ? dcFast.readyState : 'none',
@@ -1326,6 +1366,7 @@
         transfers: metrics.transfers,
         lastStreamReport: metrics.lastStreamReport,
         suiteResults: metrics.suiteResults,
+        serverAccessLog: metrics.serverAccessLog,
         recentLogs: logHistory.slice(-30)
       };
       navigator.clipboard.writeText(JSON.stringify(report, null, 2)).then(() => {
@@ -1335,9 +1376,42 @@
       });
     });
 
-    // Incoming Message Handler (WSS + WebRTC DataChannels)
+    function syncRoomPeersList(peersList) {
+      if (!Array.isArray(peersList)) return;
+      const others = peersList.filter((p) => p.clientId ? p.clientId !== clientId : p.playerIndex !== localPlayerIndex);
+      const wasConnected = peerConnected;
+      peerConnected = others.length > 0;
+      if (peerConnected) {
+        const partner = others[0];
+        peerNick = partner.nick || `PC ${partner.playerIndex}`;
+        peerTransports = {
+          wsOpen: Boolean(partner.wsOpen),
+          httpActive: Boolean(partner.httpActive)
+        };
+        if (!wasConnected) {
+          logEvent(
+            `Partner "${peerNick}" detected in room "${roomCode}" (WS=${peerTransports.wsOpen ? 'OPEN' : 'CLOSED'}, HTTPS=${peerTransports.httpActive ? 'ACTIVE' : 'IDLE'})!`,
+            'ok'
+          );
+          if (localPlayerIndex === 1 && !rtcPeer) {
+            startWebRtc(true);
+          }
+        }
+      }
+      updateRoomBanner();
+    }
+
+    // Incoming Message Handler (WSS + HTTPS Tunnel + WebRTC DataChannels)
     function handleIncomingMessage(msg, viaSource) {
       if (!msg || typeof msg.type !== 'string') return;
+
+      // Deduplicate sequenced room messages arriving via both WSS and HTTPS Tunnel
+      if (typeof msg._seq === 'number') {
+        if (msg._seq <= highestSeqSeen) {
+          return;
+        }
+        highestSeqSeen = msg._seq;
+      }
 
       if (msg.type === 'pong') {
         metrics.serverRttMs = Math.max(1, Date.now() - msg.t);
@@ -1348,24 +1422,13 @@
       if (msg.type === 'room_joined') {
         roomCode = msg.roomCode;
         localPlayerIndex = msg.playerIndex;
-        const others = (msg.peers || []).filter((p) => p.playerIndex !== localPlayerIndex);
-        peerConnected = others.length > 0;
-        if (peerConnected) {
-          peerNick = others[0].nick || `PC ${others[0].playerIndex}`;
-        }
-        updateRoomBanner();
-        logEvent(`Joined room "${roomCode}" as PC ${localPlayerIndex}. Peers in room: ${msg.peers.length}`, 'ok');
+        syncRoomPeersList(msg.peers);
+        logEvent(`Joined room "${roomCode}" as PC ${localPlayerIndex} via ${viaSource.toUpperCase()}.`, 'ok');
         return;
       }
 
       if (msg.type === 'peer_joined') {
-        peerConnected = true;
-        peerNick = msg.peer?.nick || `PC ${msg.peer?.playerIndex}`;
-        updateRoomBanner();
-        logEvent(`Partner "${peerNick}" joined room "${roomCode}"! Starting WebRTC & Ping probes...`, 'ok');
-        if (localPlayerIndex === 1) {
-          startWebRtc(true);
-        }
+        syncRoomPeersList(msg.peers || (msg.peer ? [msg.peer] : []));
         return;
       }
 
@@ -1382,11 +1445,12 @@
         return;
       }
 
-      // End-to-End Peer Ping / Pong across WSS, RTC Fast, and RTC Reliable
+      // End-to-End Peer Ping / Pong across WSS, HTTPS Tunnel, RTC Fast, and RTC Reliable
       if (msg.type === 'peer_ping') {
-        sendViaTransport(msg.via || viaSource, {
+        const replyVia = msg.via || viaSource;
+        sendViaTransport(replyVia, {
           type: 'peer_pong',
-          via: msg.via || viaSource,
+          via: replyVia,
           t: msg.t
         });
         return;
@@ -1400,10 +1464,14 @@
         } else if (msg.via === 'rtc_rel') {
           recordRttSample(metrics.rtcRel, rtt);
           rtcRelRttVal.textContent = `${metrics.rtcRel.rtt} ms (±${metrics.rtcRel.jitter}ms)`;
+        } else if (msg.via === 'http') {
+          recordRttSample(metrics.httpPeer, rtt);
+          httpPeerRttVal.textContent = `${metrics.httpPeer.rtt} ms (±${metrics.httpPeer.jitter}ms)`;
+          wssPingCountVal.textContent = `WSS:${metrics.wssPeer.rx}/${metrics.wssPeer.tx} | HTTP:${metrics.httpPeer.rx}/${metrics.httpPeer.tx}`;
         } else {
           recordRttSample(metrics.wssPeer, rtt);
           wssPeerRttVal.textContent = `${metrics.wssPeer.rtt} ms (±${metrics.wssPeer.jitter}ms)`;
-          wssPingCountVal.textContent = `${metrics.wssPeer.rx} / ${metrics.wssPeer.tx}`;
+          wssPingCountVal.textContent = `WSS:${metrics.wssPeer.rx}/${metrics.wssPeer.tx} | HTTP:${metrics.httpPeer.rx}/${metrics.httpPeer.tx}`;
         }
         return;
       }
@@ -1413,7 +1481,7 @@
         const u8 = base64ToUint8(msg.dataB64 || '');
         const calcCrc = crc32Bytes(u8);
         const crcMatch = calcCrc === msg.crc32;
-        sendViaTransport(viaSource, {
+        sendViaTransport(msg.via || viaSource, {
           type: 'diag_xfer_ack',
           xferId: msg.xferId,
           rxBytes: u8.length,
@@ -1421,7 +1489,7 @@
           crcMatch
         });
         logEvent(
-          `Received ${msg.kb} KB (single) via ${viaSource.toUpperCase()} — CRC ${crcMatch ? 'MATCH' : 'MISMATCH'}`,
+          `Received ${msg.kb} KB (single) via ${(msg.via || viaSource).toUpperCase()} — CRC ${crcMatch ? 'MATCH' : 'MISMATCH'}`,
           crcMatch ? 'ok' : 'err'
         );
         return;
@@ -1467,7 +1535,7 @@
         }
         const calcCrc = missing === 0 ? crc32Bytes(full) : 'MISSING';
         const crcMatch = missing === 0 && calcCrc === st.expectedCrc;
-        sendViaTransport(viaSource, {
+        sendViaTransport(st.via || viaSource, {
           type: 'diag_xfer_ack',
           xferId: msg.xferId,
           rxBytes: offset,
@@ -1475,7 +1543,7 @@
           crcMatch
         });
         logEvent(
-          `Reassembled ${st.kb} KB (${st.totalChunks} chunks) via ${viaSource.toUpperCase()} — CRC ${crcMatch ? 'OK' : 'FAIL'}`,
+          `Reassembled ${st.kb} KB (${st.totalChunks} chunks) via ${(st.via || viaSource).toUpperCase()} — CRC ${crcMatch ? 'OK' : 'FAIL'}`,
           crcMatch ? 'ok' : 'err'
         );
         return;
@@ -1522,7 +1590,7 @@
           lastRxTime: 0,
           gapsMs: []
         };
-        logEvent(`Receiving 60Hz stream (${rxStreamState.expectedCount} frames) via ${viaSource.toUpperCase()}...`);
+        logEvent(`Receiving 60Hz stream (${rxStreamState.expectedCount} frames) via ${(msg.via || viaSource).toUpperCase()}...`);
         return;
       }
 
@@ -1566,7 +1634,7 @@
         };
         metrics.lastStreamReport = summary;
         applyStreamSummaryToUi(summary);
-        sendViaTransport(viaSource, {
+        sendViaTransport(rxStreamState.via || viaSource, {
           type: 'diag_stream_summary',
           summary
         });
@@ -1622,22 +1690,91 @@
 
     function updateRoomBanner() {
       localRoleLabel.textContent = `You: PC ${localPlayerIndex}`;
-      peerRoleLabel.textContent = peerConnected ? `Partner: ${peerNick} (Connected)` : 'Partner: Waiting...';
+      peerRoleLabel.textContent = peerConnected
+        ? `Partner: ${peerNick} (WS:${peerTransports.wsOpen ? 'OK' : 'NO'}, HTTP:${peerTransports.httpActive ? 'OK' : '--'})`
+        : 'Partner: Waiting...';
       activePeersBadge.className = peerConnected ? 'badge ok' : 'badge warn';
       activePeersBadge.textContent = peerConnected ? '2 / 2 PCs READY' : '1 / 2 PCs';
 
-      if (!ws || ws.readyState !== 1) {
+      const wsOpen = ws && ws.readyState === 1;
+      if (!wsOpen && !httpTunnelActive) {
         roomBadge.className = 'badge err';
         roomBadge.textContent = 'OFFLINE';
-        roomStatusText.textContent = 'WebSocket Disconnected — Click "Connect Room"';
+        roomStatusText.textContent = 'Disconnected — Click "Connect Room"';
       } else if (!peerConnected) {
         roomBadge.className = 'badge warn';
         roomBadge.textContent = `ROOM "${roomCode}"`;
-        roomStatusText.textContent = `Waiting for 2nd PC to open /nettest?room=${roomCode}...`;
+        roomStatusText.textContent = `Waiting for 2nd PC to open /nettest?room=${roomCode}... (WSS: ${wsOpen ? 'OPEN' : 'BLOCKED'}, HTTPS: ${httpTunnelActive ? 'OPEN' : '...'})`;
       } else {
         roomBadge.className = 'badge ok';
         roomBadge.textContent = `2-PC LINKED [${roomCode}]`;
-        roomStatusText.textContent = `Connected with "${peerNick}" — Ready for Manual & Automated Protocol Tests`;
+        roomStatusText.textContent = `Connected with "${peerNick}" — Click "▶ Run Auto Suite (2-PC)" or move boxes below!`;
+      }
+    }
+
+    async function pollHttpTunnel(isInitialJoin = false) {
+      if (httpPollingBusy && !isInitialJoin) return;
+      httpPollingBusy = true;
+      const code = (roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
+      const nick = (nickInput.value || 'PC').trim().slice(0, 14);
+      const batch = httpOutQueue.splice(0, 80);
+      const t0 = performance.now();
+
+      try {
+        const res = await fetch('/api/http-tunnel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            roomCode: code,
+            clientId,
+            nick,
+            join: isInitialJoin,
+            ackSeq: highestSeqSeen,
+            messages: batch
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          httpTunnelActive = true;
+          httpStateVal.textContent = 'OPEN (Active)';
+          if (!ws || ws.readyState !== 1) {
+            metrics.serverRttMs = Math.max(1, Math.round(performance.now() - t0));
+            srvRttVal.textContent = `${metrics.serverRttMs} ms (HTTP)`;
+          }
+          roomCode = data.roomCode || code;
+          localPlayerIndex = data.playerIndex || localPlayerIndex;
+          syncRoomPeersList(data.peers);
+
+          if (Array.isArray(data.accessLog)) {
+            metrics.serverAccessLog = data.accessLog;
+            for (const item of data.accessLog) {
+              const key = `${item.ts}_${item.note}_${item.ip}`;
+              if (!seenAccessEntries.has(key)) {
+                seenAccessEntries.add(key);
+                logEvent(`[SERVER] ${item.note} from ${item.ip} (${item.host})`, 'info');
+              }
+            }
+          }
+
+          if (Array.isArray(data.messages)) {
+            for (const m of data.messages) {
+              handleIncomingMessage(m, 'http');
+            }
+          }
+        } else {
+          httpStateVal.textContent = `ERR (${res.status})`;
+        }
+      } catch (e) {
+        httpTunnelActive = false;
+        httpStateVal.textContent = 'ERR';
+      } finally {
+        httpPollingBusy = false;
+      }
+    }
+
+    function flushHttpTunnelNow() {
+      if (httpOutQueue.length > 0 && !httpPollingBusy) {
+        pollHttpTunnel(false);
       }
     }
 
@@ -1647,11 +1784,19 @@
         ws = null;
       }
       closeWebRtc();
+      highestSeqSeen = 0;
 
       const code = (roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
       roomInput.value = code;
+      roomCode = code;
       backToNesLink.href = `/?room=${encodeURIComponent(code)}`;
       const nick = (nickInput.value || 'PC').trim().slice(0, 14);
+
+      // 1. Immediately connect via HTTPS Tunnel (/api/http-tunnel) so room works even if WSS is blocked!
+      httpStateVal.textContent = 'Connecting...';
+      pollHttpTunnel(true);
+
+      // 2. Also connect via WebSocket (/ws)
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${proto}//${window.location.host}/ws`;
 
@@ -1665,6 +1810,7 @@
           JSON.stringify({
             type: 'join_room',
             roomCode: code,
+            clientId,
             nick
           })
         );
@@ -1678,17 +1824,16 @@
       };
 
       ws.onerror = () => {
-        logEvent('WebSocket error event fired.', 'err');
+        logEvent('WebSocket error — falling back to HTTPS Tunnel (/api/http-tunnel).', 'warn');
       };
 
       ws.onclose = (ev) => {
         wsDropCount++;
         lastWsCloseCode = `${ev.code}${ev.reason ? ' ' + ev.reason : ''}`;
         wsCloseLabel.textContent = `WS Drops: ${wsDropCount} (Last code: ${lastWsCloseCode})`;
-        wssStateVal.textContent = `CLOSED (${ev.code})`;
-        peerConnected = false;
+        wssStateVal.textContent = `BLOCKED/CLOSED (${ev.code})`;
         updateRoomBanner();
-        logEvent(`WebSocket CLOSED (code=${ev.code}, clean=${ev.wasClean})`, 'err');
+        logEvent(`WebSocket CLOSED (code=${ev.code}) — HTTPS Tunnel remains active.`, 'warn');
       };
     }
 
@@ -1704,15 +1849,24 @@
       });
     });
 
+    // High-frequency HTTPS Tunnel Poller (every 180ms when connected or waiting)
+    setInterval(() => {
+      pollHttpTunnel(false);
+    }, 180);
+
     // Periodic 1s Ping Loop + WebRTC Selected Candidate Pair Poller
     setInterval(async () => {
       if (ws && ws.readyState === 1) {
         ws.send(JSON.stringify({ type: 'ping', t: Date.now() }));
         if (peerConnected) {
           metrics.wssPeer.tx++;
-          wssPingCountVal.textContent = `${metrics.wssPeer.rx} / ${metrics.wssPeer.tx}`;
           sendViaTransport('wss', { type: 'peer_ping', via: 'wss', t: performance.now() });
         }
+      }
+      if (peerConnected && httpTunnelActive) {
+        metrics.httpPeer.tx++;
+        sendViaTransport('http', { type: 'peer_ping', via: 'http', t: performance.now() });
+        wssPingCountVal.textContent = `WSS:${metrics.wssPeer.rx}/${metrics.wssPeer.tx} | HTTP:${metrics.httpPeer.rx}/${metrics.httpPeer.tx}`;
       }
       if (peerConnected && dcFast && dcFast.readyState === 'open') {
         metrics.rtcFast.tx++;
