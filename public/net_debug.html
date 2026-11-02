@@ -1,0 +1,1855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>2-PC Network, Protocol & Data Transfer Debugger</title>
+  <style>
+    :root {
+      --bg: #0b0d13;
+      --panel: #131722;
+      --panel-alt: #1b2030;
+      --border: #2a3147;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --red: #f43f5e;
+      --ok: #22c55e;
+      --warn: #eab308;
+      --err: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Consolas", "Courier New", monospace;
+      font-size: 13px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1280px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .topbar {
+      background: var(--panel);
+      border: 2px solid var(--border);
+      border-top: 4px solid var(--accent);
+      border-radius: 6px;
+      padding: 10px 14px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-tag {
+      background: var(--accent);
+      color: #06131f;
+      font-weight: 900;
+      padding: 4px 8px;
+      border-radius: 3px;
+      font-size: 12px;
+    }
+
+    .brand-title {
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+
+    input[type="text"], select {
+      background: #080a0f;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-family: inherit;
+      font-size: 12px;
+    }
+
+    button, a.btn {
+      background: var(--panel-alt);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: background 0.12s, border-color 0.12s;
+    }
+
+    button:hover, a.btn:hover {
+      background: #262d42;
+      border-color: #475569;
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: #041019;
+      border-color: #7dd3fc;
+    }
+
+    button.primary:hover {
+      background: #0284c7;
+      color: #fff;
+    }
+
+    button.run-suite {
+      background: #16a34a;
+      color: #fff;
+      border-color: #4ade80;
+    }
+
+    button.run-suite:hover {
+      background: #15803d;
+    }
+
+    .banner {
+      background: #10141f;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 8px 14px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
+      gap: 12px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .card-hdr {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #1f2537;
+      padding-bottom: 6px;
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .badge {
+      padding: 2px 7px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .badge.ok {
+      background: rgba(34, 197, 94, 0.18);
+      color: #4ade80;
+      border: 1px solid rgba(34, 197, 94, 0.4);
+    }
+
+    .badge.warn {
+      background: rgba(234, 179, 8, 0.18);
+      color: #facc15;
+      border: 1px solid rgba(234, 179, 8, 0.4);
+    }
+
+    .badge.err {
+      background: rgba(239, 68, 68, 0.2);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+
+    .kv-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 14px;
+    }
+
+    .kv {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #0e111a;
+      border: 1px solid #1c2233;
+      border-radius: 4px;
+      padding: 5px 8px;
+    }
+
+    .kv .k {
+      color: var(--muted);
+      font-size: 11.5px;
+    }
+
+    .kv .v {
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11.5px;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 5px 7px;
+      border-bottom: 1px solid #1e2436;
+    }
+
+    th {
+      color: var(--muted);
+      background: #0d1018;
+      font-weight: 700;
+    }
+
+    .table-wrap {
+      max-height: 165px;
+      overflow-y: auto;
+      border: 1px solid #1e2436;
+      border-radius: 4px;
+      background: #0b0e16;
+    }
+
+    .arena-wrap {
+      display: flex;
+      gap: 12px;
+      align-items: stretch;
+      flex-wrap: wrap;
+    }
+
+    #arenaCanvas {
+      background: #07090e;
+      border: 2px solid #262f45;
+      border-radius: 4px;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    .log-box {
+      height: 170px;
+      overflow-y: auto;
+      background: #080a10;
+      border: 1px solid #1e2436;
+      border-radius: 4px;
+      padding: 8px;
+      font-size: 11.5px;
+      line-height: 1.45;
+      color: #cbd5e1;
+    }
+
+    .log-line.err { color: #f87171; }
+    .log-line.ok { color: #4ade80; }
+    .log-line.warn { color: #facc15; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Top Control Deck -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-tag">NETBENCH</span>
+        <span class="brand-title">2-PC Connection, Protocol & Data Transfer Debugger</span>
+      </div>
+
+      <div class="controls">
+        <input type="text" id="nickInput" value="PC" maxlength="14" style="width:90px" title="Your PC Label" />
+        <input type="text" id="roomInput" value="NOVA" maxlength="10" style="width:76px; text-transform:uppercase; font-weight:700;" title="Room Code" />
+        <button id="connectBtn" class="primary">Connect Room</button>
+        <button id="copyInviteBtn" title="Copy direct /nettest link for 2nd PC">Copy Test Link</button>
+        <button id="runAutoSuiteBtn" class="run-suite" title="Run automated 5-stage protocol & transfer test between both PCs">▶ Run Auto Suite (2-PC)</button>
+        <button id="copyReportBtn" title="Copy JSON diagnostic report to clipboard">📋 Copy Report</button>
+        <a class="btn" id="backToNesLink" href="/">🎮 NES Console</a>
+      </div>
+    </header>
+
+    <!-- Live Room & Peer Summary Strip -->
+    <div class="banner">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span id="roomBadge" class="badge warn">DISCONNECTED</span>
+        <strong id="roomStatusText">Click "Connect Room" and open the copied link on the 2nd PC</strong>
+      </div>
+      <div style="display:flex; gap:14px; color:var(--muted);">
+        <span id="localRoleLabel">You: --</span>
+        <span id="peerRoleLabel">Partner: Not in room</span>
+        <span id="wsCloseLabel">WS Drops: 0 (Last code: --)</span>
+      </div>
+    </div>
+
+    <!-- Row 1: Protocol Ping Matrix + WebRTC ICE/NAT Inspector -->
+    <div class="grid-2">
+      <!-- Panel 1: Real-Time Protocol & Ping Matrix -->
+      <section class="card">
+        <div class="card-hdr">
+          <span class="card-title">1. Live Protocol & Ping Matrix (Every 1s)</span>
+          <span id="activePeersBadge" class="badge warn">1 / 2 PCs</span>
+        </div>
+
+        <div class="kv-grid">
+          <div class="kv">
+            <span class="k">WSS Relay State:</span>
+            <span class="v" id="wssStateVal">Closed</span>
+          </div>
+          <div class="kv">
+            <span class="k">Browser ↔ Relay Server RTT:</span>
+            <span class="v" id="srvRttVal">-- ms</span>
+          </div>
+          <div class="kv">
+            <span class="k">PC1 ↔ PC2 via WSS Relay RTT:</span>
+            <span class="v" id="wssPeerRttVal">-- ms (±0ms)</span>
+          </div>
+          <div class="kv">
+            <span class="k">WSS Relay Pings (Rx/Tx):</span>
+            <span class="v" id="wssPingCountVal">0 / 0</span>
+          </div>
+          <div class="kv">
+            <span class="k">PC1 ↔ PC2 via WebRTC Fast (UDP):</span>
+            <span class="v" id="rtcFastRttVal">-- ms (±0ms)</span>
+          </div>
+          <div class="kv">
+            <span class="k">PC1 ↔ PC2 via WebRTC Reliable:</span>
+            <span class="v" id="rtcRelRttVal">-- ms (±0ms)</span>
+          </div>
+        </div>
+
+        <div class="card-hdr" style="margin-top:4px;">
+          <span class="card-title" style="font-size:12px;">Automated Diagnostic Suite Scorecard</span>
+          <span id="suiteStatusBadge" class="badge warn">IDLE</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Test Stage</th>
+                <th>Protocol</th>
+                <th>Result</th>
+                <th>Measured Metrics</th>
+              </tr>
+            </thead>
+            <tbody id="suiteTableBody">
+              <tr><td colspan="4" style="color:var(--muted);">Click "▶ Run Auto Suite (2-PC)" once both PCs are connected.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Panel 2: WebRTC P2P, STUN & ICE Candidate Inspector -->
+      <section class="card">
+        <div class="card-hdr">
+          <span class="card-title">2. WebRTC P2P, STUN & ICE Candidate Inspector</span>
+          <span id="rtcOverallBadge" class="badge warn">IDLE</span>
+        </div>
+
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          <span style="color:var(--muted);">STUN Profile:</span>
+          <select id="stunProfileSelect">
+            <option value="mixed">Google + Cloudflare STUN (Recommended)</option>
+            <option value="cloudflare">Cloudflare STUN Only (stun.cloudflare.com:3478)</option>
+            <option value="google">Google STUN Only (stun.l.google.com:19302)</option>
+            <option value="none">No STUN (LAN / Host Candidates Only)</option>
+          </select>
+          <button id="renegotiateRtcBtn">Re-Test WebRTC P2P</button>
+        </div>
+
+        <div class="kv-grid">
+          <div class="kv">
+            <span class="k">ICE Connection / Gathering:</span>
+            <span class="v" id="iceStateVal">new / new</span>
+          </div>
+          <div class="kv">
+            <span class="k">Selected Candidate Pair:</span>
+            <span class="v" id="selectedPairVal">--</span>
+          </div>
+          <div class="kv">
+            <span class="k">DC Fast (Unordered UDP):</span>
+            <span class="v" id="dcFastStateVal">closed</span>
+          </div>
+          <div class="kv">
+            <span class="k">DC Reliable (Ordered SCTP):</span>
+            <span class="v" id="dcRelStateVal">closed</span>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Side</th>
+                <th>Type</th>
+                <th>Protocol</th>
+                <th>Address / Port</th>
+              </tr>
+            </thead>
+            <tbody id="iceTableBody">
+              <tr><td colspan="4" style="color:var(--muted);">No ICE candidates gathered yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- Row 2: Payload & Chunked Data Transfer Tester + 60Hz Stream & Interactive 2-PC Arena -->
+    <div class="grid-2">
+      <!-- Panel 3: Payload Size & Chunked Transfer Tester -->
+      <section class="card">
+        <div class="card-hdr">
+          <span class="card-title">3. Data Transfer & Payload Size Tester (CRC32 Verified)</span>
+          <div style="display:flex; gap:6px; align-items:center;">
+            <span style="color:var(--muted); font-size:11px;">Via:</span>
+            <select id="transferTransportSelect">
+              <option value="wss">WSS Relay (Tunnel)</option>
+              <option value="rtc_rel">WebRTC Reliable DC</option>
+              <option value="rtc_fast">WebRTC Fast DC</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-wrap:wrap; gap:6px;">
+          <button data-xfer-kb="1" data-xfer-mode="single" class="xfer-btn">Send 1 KB</button>
+          <button data-xfer-kb="16" data-xfer-mode="single" class="xfer-btn">Send 16 KB</button>
+          <button data-xfer-kb="64" data-xfer-mode="single" class="xfer-btn">Send 64 KB</button>
+          <button data-xfer-kb="256" data-xfer-mode="single" class="xfer-btn" title="Tests if single large frame stalls or drops tunnel">Send 256 KB (1 Frame)</button>
+          <button data-xfer-kb="256" data-xfer-mode="chunked" class="xfer-btn primary" title="Splits 256KB into 16x16KB chunks + CRC32 check">Send 256 KB (16KB Chunks)</button>
+          <button data-xfer-kb="512" data-xfer-mode="chunked" class="xfer-btn primary" title="Simulates full ROM + Savestate transfer in 16KB chunks">Send 512 KB (16KB Chunks)</button>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Direction</th>
+                <th>Payload</th>
+                <th>Via</th>
+                <th>Time / Speed</th>
+                <th>CRC32</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="transferTableBody">
+              <tr><td colspan="6" style="color:var(--muted);">No data transfers run yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 60Hz Burst & Jitter Stream Analyzer -->
+        <div class="card-hdr" style="margin-top:4px;">
+          <span class="card-title">4. 60Hz Packet Stream & Tunnel Clumping Analyzer</span>
+          <div style="display:flex; gap:6px;">
+            <select id="streamTransportSelect">
+              <option value="wss">WSS Relay</option>
+              <option value="rtc_fast">WebRTC Fast (UDP)</option>
+              <option value="rtc_rel">WebRTC Reliable</option>
+            </select>
+            <button id="startStreamBtn" class="primary">Run 5s (300f) @ 60Hz</button>
+          </div>
+        </div>
+
+        <div class="kv-grid">
+          <div class="kv">
+            <span class="k">Stream Progress (Tx / Rx):</span>
+            <span class="v" id="streamProgressVal">0 / 0 (Loss: 0%)</span>
+          </div>
+          <div class="kv">
+            <span class="k">Out-of-Order / Duplicates:</span>
+            <span class="v" id="streamOrderVal">0 / 0</span>
+          </div>
+          <div class="kv">
+            <span class="k">Arrival Gap (Avg / P95 / Max):</span>
+            <span class="v" id="streamGapVal">-- / -- / -- ms</span>
+          </div>
+          <div class="kv">
+            <span class="k">Tunnel Clumping (<3ms bursts):</span>
+            <span class="v" id="streamClumpVal">0%</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Panel 5: Interactive 2-PC Live Sandbox + Diagnostic Event Log -->
+      <section class="card">
+        <div class="card-hdr">
+          <span class="card-title">5. Manual 2-PC Live Input & Cursor Sandbox (60Hz)</span>
+          <div style="display:flex; gap:6px; align-items:center;">
+            <span style="color:var(--muted); font-size:11px;">Live Path:</span>
+            <select id="arenaTransportSelect">
+              <option value="auto">Auto (WebRTC Fast -> WSS)</option>
+              <option value="wss">Force WSS Relay</option>
+              <option value="rtc_fast">Force WebRTC Fast (UDP)</option>
+              <option value="rtc_rel">Force WebRTC Reliable</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="arena-wrap">
+          <canvas id="arenaCanvas" width="320" height="170"></canvas>
+          <div style="flex:1; min-width:200px; display:flex; flex-direction:column; gap:6px;">
+            <div class="kv">
+              <span class="k">Red Box (PC 1):</span>
+              <span class="v" id="p1PosVal">x:80, y:85 | btn:0x00</span>
+            </div>
+            <div class="kv">
+              <span class="k">Cyan Box (PC 2):</span>
+              <span class="v" id="p2PosVal">x:240, y:85 | btn:0x00</span>
+            </div>
+            <div class="kv">
+              <span class="k">Live Rx Rate / Gap:</span>
+              <span class="v" id="arenaRateVal">0 pkt/s | -- ms</span>
+            </div>
+            <div style="color:var(--muted); font-size:11.5px; line-height:1.4; padding:4px;">
+              Move your box with <strong>WASD / Arrows</strong> or <strong>Drag Mouse</strong> inside the canvas. Both PCs see each other's box and button presses in real time.
+            </div>
+          </div>
+        </div>
+
+        <div class="card-hdr" style="margin-top:2px;">
+          <span class="card-title" style="font-size:12px;">Live Protocol Event Log</span>
+          <button id="clearLogBtn" style="padding:2px 7px; font-size:11px;">Clear</button>
+        </div>
+        <div class="log-box" id="logBox"></div>
+      </section>
+    </div>
+  </div>
+
+  <script type="module">
+    // CRC32 Table for verifying payload transfers
+    const CRC_TABLE = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let k = 0; k < 8; k++) {
+        c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      }
+      CRC_TABLE[i] = c >>> 0;
+    }
+
+    function crc32Bytes(u8) {
+      let crc = 0xffffffff;
+      for (let i = 0; i < u8.length; i++) {
+        crc = CRC_TABLE[(crc ^ u8[i]) & 0xff] ^ (crc >>> 8);
+      }
+      return ((crc ^ 0xffffffff) >>> 0).toString(16).toUpperCase().padStart(8, '0');
+    }
+
+    function uint8ToBase64(u8) {
+      const chunk = 0x8000;
+      let bin = '';
+      for (let i = 0; i < u8.length; i += chunk) {
+        bin += String.fromCharCode.apply(null, u8.subarray(i, i + chunk));
+      }
+      return btoa(bin);
+    }
+
+    function base64ToUint8(b64) {
+      const bin = atob(b64);
+      const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) {
+        u8[i] = bin.charCodeAt(i) & 0xff;
+      }
+      return u8;
+    }
+
+    // DOM Elements
+    const nickInput = document.getElementById('nickInput');
+    const roomInput = document.getElementById('roomInput');
+    const connectBtn = document.getElementById('connectBtn');
+    const copyInviteBtn = document.getElementById('copyInviteBtn');
+    const runAutoSuiteBtn = document.getElementById('runAutoSuiteBtn');
+    const copyReportBtn = document.getElementById('copyReportBtn');
+    const backToNesLink = document.getElementById('backToNesLink');
+
+    const roomBadge = document.getElementById('roomBadge');
+    const roomStatusText = document.getElementById('roomStatusText');
+    const localRoleLabel = document.getElementById('localRoleLabel');
+    const peerRoleLabel = document.getElementById('peerRoleLabel');
+    const wsCloseLabel = document.getElementById('wsCloseLabel');
+    const activePeersBadge = document.getElementById('activePeersBadge');
+
+    const wssStateVal = document.getElementById('wssStateVal');
+    const srvRttVal = document.getElementById('srvRttVal');
+    const wssPeerRttVal = document.getElementById('wssPeerRttVal');
+    const wssPingCountVal = document.getElementById('wssPingCountVal');
+    const rtcFastRttVal = document.getElementById('rtcFastRttVal');
+    const rtcRelRttVal = document.getElementById('rtcRelRttVal');
+
+    const suiteStatusBadge = document.getElementById('suiteStatusBadge');
+    const suiteTableBody = document.getElementById('suiteTableBody');
+
+    const rtcOverallBadge = document.getElementById('rtcOverallBadge');
+    const stunProfileSelect = document.getElementById('stunProfileSelect');
+    const renegotiateRtcBtn = document.getElementById('renegotiateRtcBtn');
+    const iceStateVal = document.getElementById('iceStateVal');
+    const selectedPairVal = document.getElementById('selectedPairVal');
+    const dcFastStateVal = document.getElementById('dcFastStateVal');
+    const dcRelStateVal = document.getElementById('dcRelStateVal');
+    const iceTableBody = document.getElementById('iceTableBody');
+
+    const transferTransportSelect = document.getElementById('transferTransportSelect');
+    const transferTableBody = document.getElementById('transferTableBody');
+
+    const streamTransportSelect = document.getElementById('streamTransportSelect');
+    const startStreamBtn = document.getElementById('startStreamBtn');
+    const streamProgressVal = document.getElementById('streamProgressVal');
+    const streamOrderVal = document.getElementById('streamOrderVal');
+    const streamGapVal = document.getElementById('streamGapVal');
+    const streamClumpVal = document.getElementById('streamClumpVal');
+
+    const arenaTransportSelect = document.getElementById('arenaTransportSelect');
+    const arenaCanvas = document.getElementById('arenaCanvas');
+    const arenaCtx = arenaCanvas.getContext('2d');
+    const p1PosVal = document.getElementById('p1PosVal');
+    const p2PosVal = document.getElementById('p2PosVal');
+    const arenaRateVal = document.getElementById('arenaRateVal');
+
+    const logBox = document.getElementById('logBox');
+    const clearLogBtn = document.getElementById('clearLogBtn');
+
+    // URL Params
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('room')) {
+      roomInput.value = params.get('room').toUpperCase().slice(0, 10);
+    }
+    if (params.get('nick')) {
+      nickInput.value = params.get('nick').slice(0, 14);
+    }
+    backToNesLink.href = `/?room=${encodeURIComponent(roomInput.value)}`;
+
+    const logHistory = [];
+    function logEvent(msg, level = 'info') {
+      const ts = new Date().toISOString().slice(11, 23);
+      const entry = `[${ts}] ${msg}`;
+      logHistory.push({ ts, level, msg });
+      if (logHistory.length > 200) logHistory.shift();
+
+      const div = document.createElement('div');
+      div.className = `log-line ${level}`;
+      div.textContent = entry;
+      logBox.prepend(div);
+      while (logBox.children.length > 80) {
+        logBox.removeChild(logBox.lastChild);
+      }
+    }
+
+    clearLogBtn.addEventListener('click', () => {
+      logBox.innerHTML = '';
+    });
+
+    // State
+    let ws = null;
+    let roomCode = null;
+    let localPlayerIndex = 1;
+    let peerConnected = false;
+    let peerNick = 'Remote PC';
+    let wsDropCount = 0;
+    let lastWsCloseCode = '--';
+
+    // Ping Metrics
+    const metrics = {
+      serverRttMs: null,
+      wssPeer: { rtt: null, jitter: 0, tx: 0, rx: 0, samples: [] },
+      rtcFast: { rtt: null, jitter: 0, tx: 0, rx: 0, samples: [] },
+      rtcRel: { rtt: null, jitter: 0, tx: 0, rx: 0, samples: [] },
+      iceCandidates: [],
+      transfers: [],
+      lastStreamReport: null,
+      suiteResults: []
+    };
+
+    // WebRTC State
+    let rtcPeer = null;
+    let dcFast = null;
+    let dcReliable = null;
+
+    function getStunServers() {
+      const prof = stunProfileSelect.value;
+      if (prof === 'none') return [];
+      if (prof === 'cloudflare') {
+        return [{ urls: 'stun:stun.cloudflare.com:3478' }];
+      }
+      if (prof === 'google') {
+        return [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' }
+        ];
+      }
+      return [
+        { urls: 'stun:stun.cloudflare.com:3478' },
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ];
+    }
+
+    function recordIceCandidateRow(side, candStr) {
+      if (!candStr) return;
+      // Parse standard candidate string: candidate:foundation component protocol priority ip port typ type ...
+      const parts = candStr.trim().split(/\s+/);
+      const proto = (parts[2] || 'udp').toUpperCase();
+      const addr = `${parts[4] || '?'}:${parts[5] || '?'}`;
+      const typIdx = parts.indexOf('typ');
+      const ctype = typIdx >= 0 ? parts[typIdx + 1] : 'unknown';
+
+      metrics.iceCandidates.push({ side, type: ctype, proto, addr, raw: candStr });
+      renderIceTable();
+    }
+
+    function renderIceTable() {
+      if (metrics.iceCandidates.length === 0) {
+        iceTableBody.innerHTML = '<tr><td colspan="4" style="color:var(--muted);">No ICE candidates gathered yet.</td></tr>';
+        return;
+      }
+      iceTableBody.innerHTML = '';
+      for (const c of metrics.iceCandidates) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong>${c.side}</strong></td>
+          <td><span class="badge ${c.type === 'srflx' || c.type === 'prflx' ? 'ok' : 'warn'}">${c.type}</span></td>
+          <td>${c.proto}</td>
+          <td>${c.addr}</td>
+        `;
+        iceTableBody.appendChild(tr);
+      }
+    }
+
+    function closeWebRtc() {
+      if (dcFast) {
+        try { dcFast.close(); } catch {}
+        dcFast = null;
+      }
+      if (dcReliable) {
+        try { dcReliable.close(); } catch {}
+        dcReliable = null;
+      }
+      if (rtcPeer) {
+        try { rtcPeer.close(); } catch {}
+        rtcPeer = null;
+      }
+      dcFastStateVal.textContent = 'closed';
+      dcRelStateVal.textContent = 'closed';
+      rtcOverallBadge.className = 'badge warn';
+      rtcOverallBadge.textContent = 'CLOSED';
+    }
+
+    function bindDataChannel(ch, label) {
+      const updateState = () => {
+        if (label === 'fast') {
+          dcFastStateVal.textContent = ch.readyState;
+        } else {
+          dcRelStateVal.textContent = ch.readyState;
+        }
+        const anyOpen =
+          (dcFast && dcFast.readyState === 'open') ||
+          (dcReliable && dcReliable.readyState === 'open');
+        rtcOverallBadge.className = anyOpen ? 'badge ok' : 'badge warn';
+        rtcOverallBadge.textContent = anyOpen ? 'P2P OPEN' : ch.readyState.toUpperCase();
+      };
+
+      ch.onopen = () => {
+        logEvent(`WebRTC DataChannel [${ch.label}] OPEN!`, 'ok');
+        updateState();
+      };
+      ch.onclose = () => {
+        logEvent(`WebRTC DataChannel [${ch.label}] closed.`, 'warn');
+        updateState();
+      };
+      ch.onerror = (err) => {
+        logEvent(`WebRTC DataChannel [${ch.label}] error.`, 'err');
+        updateState();
+      };
+      ch.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          handleIncomingMessage(msg, label === 'fast' ? 'rtc_fast' : 'rtc_rel');
+        } catch {}
+      };
+      updateState();
+    }
+
+    async function startWebRtc(isInitiator) {
+      closeWebRtc();
+      metrics.iceCandidates = [];
+      renderIceTable();
+
+      if (typeof RTCPeerConnection === 'undefined') {
+        logEvent('RTCPeerConnection not supported in this browser.', 'err');
+        return;
+      }
+
+      const iceServers = getStunServers();
+      logEvent(
+        `Starting WebRTC (${isInitiator ? 'Initiator' : 'Responder'}) with ${iceServers.length} STUN servers...`
+      );
+
+      rtcPeer = new RTCPeerConnection({ iceServers });
+
+      rtcPeer.onicecandidate = (ev) => {
+        if (ev.candidate) {
+          recordIceCandidateRow('LOCAL', ev.candidate.candidate);
+          if (ws && ws.readyState === 1) {
+            ws.send(
+              JSON.stringify({
+                type: 'webrtc_signal',
+                signal: { candidate: ev.candidate }
+              })
+            );
+          }
+        }
+      };
+
+      const updateIceUi = () => {
+        if (!rtcPeer) return;
+        iceStateVal.textContent = `${rtcPeer.iceConnectionState} / ${rtcPeer.iceGatheringState}`;
+        if (rtcPeer.iceConnectionState === 'failed') {
+          rtcOverallBadge.className = 'badge err';
+          rtcOverallBadge.textContent = 'ICE FAILED (UDP Blocked/NAT)';
+          logEvent('WebRTC ICE connection FAILED — direct UDP between these 2 networks is blocked by NAT/Firewall.', 'err');
+        }
+      };
+
+      rtcPeer.oniceconnectionstatechange = updateIceUi;
+      rtcPeer.onicegatheringstatechange = updateIceUi;
+      rtcPeer.onconnectionstatechange = updateIceUi;
+
+      if (isInitiator) {
+        dcFast = rtcPeer.createDataChannel('diag_fast', {
+          ordered: false,
+          maxRetransmits: 0
+        });
+        dcReliable = rtcPeer.createDataChannel('diag_reliable', {
+          ordered: true
+        });
+        bindDataChannel(dcFast, 'fast');
+        bindDataChannel(dcReliable, 'reliable');
+
+        const offer = await rtcPeer.createOffer();
+        await rtcPeer.setLocalDescription(offer);
+        if (ws && ws.readyState === 1) {
+          ws.send(
+            JSON.stringify({
+              type: 'webrtc_signal',
+              signal: { sdp: rtcPeer.localDescription }
+            })
+          );
+        }
+      } else {
+        rtcPeer.ondatachannel = (ev) => {
+          const ch = ev.channel;
+          if (ch.label === 'diag_fast') {
+            dcFast = ch;
+            bindDataChannel(ch, 'fast');
+          } else {
+            dcReliable = ch;
+            bindDataChannel(ch, 'reliable');
+          }
+        };
+      }
+    }
+
+    async function handleWebRtcSignal(signal) {
+      if (!signal) return;
+      if (!rtcPeer && signal.sdp && signal.sdp.type === 'offer') {
+        await startWebRtc(false);
+      }
+      if (!rtcPeer) return;
+      try {
+        if (signal.sdp) {
+          await rtcPeer.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+          if (signal.sdp.type === 'offer') {
+            const answer = await rtcPeer.createAnswer();
+            await rtcPeer.setLocalDescription(answer);
+            if (ws && ws.readyState === 1) {
+              ws.send(
+                JSON.stringify({
+                  type: 'webrtc_signal',
+                  signal: { sdp: rtcPeer.localDescription }
+                })
+              );
+            }
+          }
+        } else if (signal.candidate) {
+          recordIceCandidateRow('REMOTE', signal.candidate.candidate);
+          await rtcPeer.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        }
+      } catch (e) {
+        logEvent(`WebRTC signaling error: ${e.message}`, 'err');
+      }
+    }
+
+    renegotiateRtcBtn.addEventListener('click', () => {
+      if (!peerConnected) {
+        logEvent('Cannot start WebRTC P2P until 2nd PC is in the room.', 'warn');
+        return;
+      }
+      startWebRtc(true);
+    });
+
+    // Transport Sender Helper
+    function sendViaTransport(transport, payloadObj) {
+      const raw = JSON.stringify(payloadObj);
+      if (transport === 'rtc_fast') {
+        if (dcFast && dcFast.readyState === 'open') {
+          dcFast.send(raw);
+          return true;
+        }
+        return false;
+      }
+      if (transport === 'rtc_rel') {
+        if (dcReliable && dcReliable.readyState === 'open') {
+          dcReliable.send(raw);
+          return true;
+        }
+        return false;
+      }
+      if (transport === 'auto') {
+        if (dcFast && dcFast.readyState === 'open') {
+          dcFast.send(raw);
+          return true;
+        }
+      }
+      if (ws && ws.readyState === 1) {
+        ws.send(raw);
+        return true;
+      }
+      return false;
+    }
+
+    // Update RTT helper
+    function recordRttSample(bucket, sampleMs) {
+      const s = Math.max(1, Math.round(sampleMs));
+      if (bucket.rtt === null) {
+        bucket.rtt = s;
+        bucket.jitter = 0;
+      } else {
+        bucket.jitter = Math.round(bucket.jitter * 0.7 + Math.abs(s - bucket.rtt) * 0.3);
+        bucket.rtt = Math.round(bucket.rtt * 0.7 + s * 0.3);
+      }
+      bucket.rx++;
+      bucket.samples.push(s);
+      if (bucket.samples.length > 30) bucket.samples.shift();
+    }
+
+    // Chunked Receiver State
+    const incomingChunks = new Map(); // xferId -> { totalChunks, totalBytes, crc32, chunks: Map, startTime, via }
+    // Pending Outgoing Transfer Resolvers
+    const pendingTransfers = new Map(); // xferId -> { t0, kb, mode, via, crc32, resolve }
+
+    function addTransferRow(row) {
+      metrics.transfers.unshift(row);
+      if (metrics.transfers.length > 20) metrics.transfers.pop();
+      transferTableBody.innerHTML = '';
+      for (const r of metrics.transfers) {
+        const tr = document.createElement('tr');
+        const badgeClass = r.ok ? 'ok' : 'err';
+        tr.innerHTML = `
+          <td>${r.dir}</td>
+          <td><strong>${r.kb} KB</strong> (${r.mode})</td>
+          <td>${r.via}</td>
+          <td>${r.ms} ms (${r.kbps} KB/s)</td>
+          <td><code>${r.crc32}</code></td>
+          <td><span class="badge ${badgeClass}">${r.status}</span></td>
+        `;
+        transferTableBody.appendChild(tr);
+      }
+    }
+
+    async function runDataTransferTest(kb, mode, via) {
+      if (!peerConnected) {
+        logEvent('Connect 2nd PC before running data transfer tests.', 'warn');
+        return { ok: false, status: 'NO PEER' };
+      }
+      const byteLength = kb * 1024;
+      const u8 = new Uint8Array(byteLength);
+      for (let i = 0; i < byteLength; i++) {
+        u8[i] = (i * 73 + 19) & 0xff;
+      }
+      const crc = crc32Bytes(u8);
+      const xferId = `xf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const t0 = performance.now();
+
+      logEvent(`Starting ${kb} KB (${mode}) transfer via ${via.toUpperCase()} [CRC=${crc}]...`);
+
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          if (pendingTransfers.has(xferId)) {
+            pendingTransfers.delete(xferId);
+            const row = {
+              dir: 'TX → RX',
+              kb,
+              mode,
+              via,
+              ms: Math.round(performance.now() - t0),
+              kbps: '0',
+              crc32: crc,
+              ok: false,
+              status: 'TIMEOUT (Dropped)'
+            };
+            addTransferRow(row);
+            logEvent(`Transfer ${kb} KB (${mode}) via ${via} TIMED OUT!`, 'err');
+            resolve(row);
+          }
+        }, 8000);
+
+        pendingTransfers.set(xferId, {
+          t0,
+          kb,
+          mode,
+          via,
+          crc32: crc,
+          timeout,
+          resolve
+        });
+
+        if (mode === 'single') {
+          const sent = sendViaTransport(via, {
+            type: 'diag_xfer_single',
+            xferId,
+            kb,
+            via,
+            crc32: crc,
+            dataB64: uint8ToBase64(u8)
+          });
+          if (!sent) {
+            clearTimeout(timeout);
+            pendingTransfers.delete(xferId);
+            const row = {
+              dir: 'TX',
+              kb,
+              mode,
+              via,
+              ms: 0,
+              kbps: '0',
+              crc32: crc,
+              ok: false,
+              status: 'CH CLOSED'
+            };
+            addTransferRow(row);
+            resolve(row);
+          }
+        } else {
+          // Chunked mode: 16 KB chunks
+          const chunkSize = 16 * 1024;
+          const totalChunks = Math.ceil(u8.length / chunkSize);
+          sendViaTransport(via, {
+            type: 'diag_xfer_start',
+            xferId,
+            kb,
+            via,
+            totalChunks,
+            totalBytes: u8.length,
+            crc32: crc
+          });
+          for (let c = 0; c < totalChunks; c++) {
+            const slice = u8.subarray(c * chunkSize, Math.min(u8.length, (c + 1) * chunkSize));
+            sendViaTransport(via, {
+              type: 'diag_xfer_chunk',
+              xferId,
+              index: c,
+              dataB64: uint8ToBase64(slice)
+            });
+          }
+          sendViaTransport(via, {
+            type: 'diag_xfer_end',
+            xferId
+          });
+        }
+      });
+    }
+
+    document.querySelectorAll('.xfer-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const kb = Number(btn.dataset.xferKb);
+        const mode = btn.dataset.xferMode;
+        const via = transferTransportSelect.value;
+        runDataTransferTest(kb, mode, via);
+      });
+    });
+
+    // 60Hz Packet Stream Analyzer
+    let rxStreamState = {
+      active: false,
+      streamId: null,
+      expectedCount: 300,
+      receivedSeqs: new Set(),
+      lastSeq: -1,
+      outOfOrder: 0,
+      duplicates: 0,
+      lastRxTime: 0,
+      gapsMs: []
+    };
+
+    let pendingStreamResolve = null;
+
+    function computeGapStats(gaps) {
+      if (!gaps || gaps.length === 0) {
+        return { avg: 0, p95: 0, max: 0, clumpedPct: 0 };
+      }
+      const sorted = [...gaps].sort((a, b) => a - b);
+      const sum = sorted.reduce((a, b) => a + b, 0);
+      const avg = +(sum / sorted.length).toFixed(1);
+      const p95 = +sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))].toFixed(1);
+      const max = +sorted[sorted.length - 1].toFixed(1);
+      const clumped = sorted.filter((g) => g < 3.0).length;
+      const clumpedPct = Math.round((clumped / sorted.length) * 100);
+      return { avg, p95, max, clumpedPct };
+    }
+
+    async function run60HzStreamTest(via, totalFrames = 180) {
+      if (!peerConnected) {
+        logEvent('Connect 2nd PC before running 60Hz stream test.', 'warn');
+        return null;
+      }
+      const streamId = `st_${Date.now()}`;
+      logEvent(`Starting 60Hz Packet Stream (${totalFrames} frames) via ${via.toUpperCase()}...`);
+      sendViaTransport(via, {
+        type: 'diag_stream_start',
+        streamId,
+        via,
+        totalFrames
+      });
+
+      return new Promise((resolve) => {
+        let sent = 0;
+        pendingStreamResolve = resolve;
+        const timer = setInterval(() => {
+          sendViaTransport(via, {
+            type: 'diag_stream_pkt',
+            streamId,
+            seq: sent,
+            t: performance.now(),
+            pad1: sent & 0xff,
+            pad2: (sent * 7) & 0xff
+          });
+          sent++;
+          streamProgressVal.textContent = `Tx: ${sent}/${totalFrames}`;
+          if (sent >= totalFrames) {
+            clearInterval(timer);
+            setTimeout(() => {
+              sendViaTransport(via, {
+                type: 'diag_stream_finish',
+                streamId,
+                totalFrames
+              });
+            }, 350);
+          }
+        }, 1000 / 60);
+
+        setTimeout(() => {
+          if (pendingStreamResolve === resolve) {
+            pendingStreamResolve = null;
+            resolve(null);
+          }
+        }, (totalFrames * 17) + 4000);
+      });
+    }
+
+    startStreamBtn.addEventListener('click', () => {
+      run60HzStreamTest(streamTransportSelect.value, 300);
+    });
+
+    // Automated 5-Stage 2-PC Diagnostic Suite
+    function renderSuiteScorecard() {
+      if (metrics.suiteResults.length === 0) return;
+      suiteTableBody.innerHTML = '';
+      for (const s of metrics.suiteResults) {
+        const tr = document.createElement('tr');
+        const cls = s.status === 'PASS' ? 'ok' : s.status === 'WARN' ? 'warn' : 'err';
+        tr.innerHTML = `
+          <td><strong>${s.stage}</strong></td>
+          <td>${s.proto}</td>
+          <td><span class="badge ${cls}">${s.status}</span></td>
+          <td>${s.detail}</td>
+        `;
+        suiteTableBody.appendChild(tr);
+      }
+    }
+
+    async function runFullAutoDiagnosticSuite() {
+      if (!peerConnected) {
+        logEvent('Wait for 2nd PC to join the room before running the Auto Suite!', 'warn');
+        return;
+      }
+      metrics.suiteResults = [];
+      suiteStatusBadge.className = 'badge warn';
+      suiteStatusBadge.textContent = 'RUNNING...';
+      logEvent('=== STARTING 5-STAGE 2-PC AUTOMATED DIAGNOSTIC SUITE ===', 'ok');
+
+      // Stage 1: WSS Relay Latency & Jitter Check
+      await new Promise((r) => setTimeout(r, 1200));
+      const wssRtt = metrics.wssPeer.rtt;
+      metrics.suiteResults.push({
+        stage: '1. WSS Peer Ping',
+        proto: 'WSS Relay',
+        status: wssRtt !== null && wssRtt < 400 ? 'PASS' : wssRtt !== null ? 'WARN' : 'FAIL',
+        detail: wssRtt !== null ? `RTT=${wssRtt}ms, Jitter=±${metrics.wssPeer.jitter}ms` : 'No pong from peer'
+      });
+      renderSuiteScorecard();
+
+      // Stage 2: Single-Frame 256 KB vs Chunked 256 KB over WSS Relay
+      const xferSingle64 = await runDataTransferTest(64, 'single', 'wss');
+      metrics.suiteResults.push({
+        stage: '2. 64KB Single Frame',
+        proto: 'WSS Relay',
+        status: xferSingle64.ok ? 'PASS' : 'FAIL',
+        detail: xferSingle64.ok ? `${xferSingle64.ms}ms (${xferSingle64.kbps} KB/s)` : xferSingle64.status
+      });
+      renderSuiteScorecard();
+
+      const xferChunked256 = await runDataTransferTest(256, 'chunked', 'wss');
+      metrics.suiteResults.push({
+        stage: '3. 256KB Chunked (16x16KB)',
+        proto: 'WSS Relay',
+        status: xferChunked256.ok ? 'PASS' : 'FAIL',
+        detail: xferChunked256.ok ? `${xferChunked256.ms}ms (${xferChunked256.kbps} KB/s) CRC OK` : xferChunked256.status
+      });
+      renderSuiteScorecard();
+
+      // Stage 4: WebRTC P2P Handshake & Direct UDP Check
+      await startWebRtc(true);
+      await new Promise((r) => setTimeout(r, 2500));
+      const p2pOpen = dcFast && dcFast.readyState === 'open';
+      metrics.suiteResults.push({
+        stage: '4. WebRTC P2P Direct',
+        proto: 'WebRTC UDP',
+        status: p2pOpen ? 'PASS' : 'WARN',
+        detail: p2pOpen
+          ? `OPEN (RTT=${metrics.rtcFast.rtt ?? '--'}ms)`
+          : `Blocked by NAT/ISP (${rtcPeer ? rtcPeer.iceConnectionState : 'closed'}) — WSS Relay required`
+      });
+      renderSuiteScorecard();
+
+      // Stage 5: 60Hz Real-Time Packet Stream (180 frames = 3s)
+      const streamRes = await run60HzStreamTest('wss', 180);
+      if (streamRes) {
+        const lossPct = streamRes.lossPct;
+        const maxGap = streamRes.gaps.max;
+        metrics.suiteResults.push({
+          stage: '5. 60Hz Input Stream',
+          proto: 'WSS Relay',
+          status: lossPct === 0 && maxGap < 120 ? 'PASS' : lossPct < 5 ? 'WARN' : 'FAIL',
+          detail: `Rx=${streamRes.received}/${streamRes.total} (Loss ${lossPct}%), MaxGap=${maxGap}ms, Clump=${streamRes.gaps.clumpedPct}%`
+        });
+      } else {
+        metrics.suiteResults.push({
+          stage: '5. 60Hz Input Stream',
+          proto: 'WSS Relay',
+          status: 'FAIL',
+          detail: 'Stream summary timed out'
+        });
+      }
+      renderSuiteScorecard();
+
+      // Broadcast scorecard to partner PC so both screens see the results
+      sendViaTransport('wss', {
+        type: 'diag_suite_results',
+        suiteResults: metrics.suiteResults
+      });
+
+      suiteStatusBadge.className = 'badge ok';
+      suiteStatusBadge.textContent = 'COMPLETE';
+      logEvent('=== 2-PC AUTOMATED DIAGNOSTIC SUITE COMPLETE ===', 'ok');
+    }
+
+    runAutoSuiteBtn.addEventListener('click', runFullAutoDiagnosticSuite);
+
+    copyReportBtn.addEventListener('click', () => {
+      const report = {
+        timestamp: new Date().toISOString(),
+        url: window.location.href,
+        roomCode,
+        localPlayerIndex,
+        peerConnected,
+        wsDropCount,
+        lastWsCloseCode,
+        serverRttMs: metrics.serverRttMs,
+        wssPeer: {
+          rtt: metrics.wssPeer.rtt,
+          jitter: metrics.wssPeer.jitter,
+          tx: metrics.wssPeer.tx,
+          rx: metrics.wssPeer.rx
+        },
+        rtcFast: {
+          state: dcFast ? dcFast.readyState : 'none',
+          rtt: metrics.rtcFast.rtt,
+          jitter: metrics.rtcFast.jitter
+        },
+        rtcRel: {
+          state: dcReliable ? dcReliable.readyState : 'none',
+          rtt: metrics.rtcRel.rtt,
+          jitter: metrics.rtcRel.jitter
+        },
+        iceState: rtcPeer ? `${rtcPeer.iceConnectionState}/${rtcPeer.iceGatheringState}` : 'none',
+        iceCandidates: metrics.iceCandidates,
+        transfers: metrics.transfers,
+        lastStreamReport: metrics.lastStreamReport,
+        suiteResults: metrics.suiteResults,
+        recentLogs: logHistory.slice(-30)
+      };
+      navigator.clipboard.writeText(JSON.stringify(report, null, 2)).then(() => {
+        const orig = copyReportBtn.textContent;
+        copyReportBtn.textContent = '✔ Copied JSON Report!';
+        setTimeout(() => (copyReportBtn.textContent = orig), 1800);
+      });
+    });
+
+    // Incoming Message Handler (WSS + WebRTC DataChannels)
+    function handleIncomingMessage(msg, viaSource) {
+      if (!msg || typeof msg.type !== 'string') return;
+
+      if (msg.type === 'pong') {
+        metrics.serverRttMs = Math.max(1, Date.now() - msg.t);
+        srvRttVal.textContent = `${metrics.serverRttMs} ms`;
+        return;
+      }
+
+      if (msg.type === 'room_joined') {
+        roomCode = msg.roomCode;
+        localPlayerIndex = msg.playerIndex;
+        const others = (msg.peers || []).filter((p) => p.playerIndex !== localPlayerIndex);
+        peerConnected = others.length > 0;
+        if (peerConnected) {
+          peerNick = others[0].nick || `PC ${others[0].playerIndex}`;
+        }
+        updateRoomBanner();
+        logEvent(`Joined room "${roomCode}" as PC ${localPlayerIndex}. Peers in room: ${msg.peers.length}`, 'ok');
+        return;
+      }
+
+      if (msg.type === 'peer_joined') {
+        peerConnected = true;
+        peerNick = msg.peer?.nick || `PC ${msg.peer?.playerIndex}`;
+        updateRoomBanner();
+        logEvent(`Partner "${peerNick}" joined room "${roomCode}"! Starting WebRTC & Ping probes...`, 'ok');
+        if (localPlayerIndex === 1) {
+          startWebRtc(true);
+        }
+        return;
+      }
+
+      if (msg.type === 'peer_left') {
+        peerConnected = false;
+        closeWebRtc();
+        updateRoomBanner();
+        logEvent(`Partner left room "${roomCode}".`, 'warn');
+        return;
+      }
+
+      if (msg.type === 'webrtc_signal') {
+        handleWebRtcSignal(msg.signal);
+        return;
+      }
+
+      // End-to-End Peer Ping / Pong across WSS, RTC Fast, and RTC Reliable
+      if (msg.type === 'peer_ping') {
+        sendViaTransport(msg.via || viaSource, {
+          type: 'peer_pong',
+          via: msg.via || viaSource,
+          t: msg.t
+        });
+        return;
+      }
+
+      if (msg.type === 'peer_pong') {
+        const rtt = performance.now() - msg.t;
+        if (msg.via === 'rtc_fast') {
+          recordRttSample(metrics.rtcFast, rtt);
+          rtcFastRttVal.textContent = `${metrics.rtcFast.rtt} ms (±${metrics.rtcFast.jitter}ms)`;
+        } else if (msg.via === 'rtc_rel') {
+          recordRttSample(metrics.rtcRel, rtt);
+          rtcRelRttVal.textContent = `${metrics.rtcRel.rtt} ms (±${metrics.rtcRel.jitter}ms)`;
+        } else {
+          recordRttSample(metrics.wssPeer, rtt);
+          wssPeerRttVal.textContent = `${metrics.wssPeer.rtt} ms (±${metrics.wssPeer.jitter}ms)`;
+          wssPingCountVal.textContent = `${metrics.wssPeer.rx} / ${metrics.wssPeer.tx}`;
+        }
+        return;
+      }
+
+      // Single-Frame Data Transfer Receiver
+      if (msg.type === 'diag_xfer_single') {
+        const u8 = base64ToUint8(msg.dataB64 || '');
+        const calcCrc = crc32Bytes(u8);
+        const crcMatch = calcCrc === msg.crc32;
+        sendViaTransport(viaSource, {
+          type: 'diag_xfer_ack',
+          xferId: msg.xferId,
+          rxBytes: u8.length,
+          rxCrc32: calcCrc,
+          crcMatch
+        });
+        logEvent(
+          `Received ${msg.kb} KB (single) via ${viaSource.toUpperCase()} — CRC ${crcMatch ? 'MATCH' : 'MISMATCH'}`,
+          crcMatch ? 'ok' : 'err'
+        );
+        return;
+      }
+
+      // Chunked Data Transfer Receiver
+      if (msg.type === 'diag_xfer_start') {
+        incomingChunks.set(msg.xferId, {
+          kb: msg.kb,
+          via: msg.via || viaSource,
+          totalChunks: msg.totalChunks,
+          totalBytes: msg.totalBytes,
+          expectedCrc: msg.crc32,
+          chunks: new Map(),
+          t0: performance.now()
+        });
+        return;
+      }
+
+      if (msg.type === 'diag_xfer_chunk') {
+        const st = incomingChunks.get(msg.xferId);
+        if (!st) return;
+        st.chunks.set(msg.index, base64ToUint8(msg.dataB64));
+        return;
+      }
+
+      if (msg.type === 'diag_xfer_end') {
+        const st = incomingChunks.get(msg.xferId);
+        if (!st) return;
+        incomingChunks.delete(msg.xferId);
+
+        const full = new Uint8Array(st.totalBytes);
+        let offset = 0;
+        let missing = 0;
+        for (let i = 0; i < st.totalChunks; i++) {
+          const part = st.chunks.get(i);
+          if (!part) {
+            missing++;
+          } else {
+            full.set(part, offset);
+            offset += part.length;
+          }
+        }
+        const calcCrc = missing === 0 ? crc32Bytes(full) : 'MISSING';
+        const crcMatch = missing === 0 && calcCrc === st.expectedCrc;
+        sendViaTransport(viaSource, {
+          type: 'diag_xfer_ack',
+          xferId: msg.xferId,
+          rxBytes: offset,
+          rxCrc32: calcCrc,
+          crcMatch
+        });
+        logEvent(
+          `Reassembled ${st.kb} KB (${st.totalChunks} chunks) via ${viaSource.toUpperCase()} — CRC ${crcMatch ? 'OK' : 'FAIL'}`,
+          crcMatch ? 'ok' : 'err'
+        );
+        return;
+      }
+
+      if (msg.type === 'diag_xfer_ack') {
+        const pend = pendingTransfers.get(msg.xferId);
+        if (!pend) return;
+        clearTimeout(pend.timeout);
+        pendingTransfers.delete(msg.xferId);
+        const ms = Math.max(1, Math.round(performance.now() - pend.t0));
+        const kbps = ((pend.kb / ms) * 1000).toFixed(1);
+        const row = {
+          dir: 'TX → RX',
+          kb: pend.kb,
+          mode: pend.mode,
+          via: pend.via,
+          ms,
+          kbps,
+          crc32: msg.rxCrc32,
+          ok: Boolean(msg.crcMatch),
+          status: msg.crcMatch ? 'PASS (CRC OK)' : 'CRC FAIL'
+        };
+        addTransferRow(row);
+        logEvent(
+          `Transfer ${pend.kb} KB (${pend.mode}) via ${pend.via.toUpperCase()} verified in ${ms}ms (${kbps} KB/s)`,
+          row.ok ? 'ok' : 'err'
+        );
+        pend.resolve(row);
+        return;
+      }
+
+      // 60Hz Stream Receiver
+      if (msg.type === 'diag_stream_start') {
+        rxStreamState = {
+          active: true,
+          streamId: msg.streamId,
+          via: msg.via || viaSource,
+          expectedCount: msg.totalFrames || 300,
+          receivedSeqs: new Set(),
+          lastSeq: -1,
+          outOfOrder: 0,
+          duplicates: 0,
+          lastRxTime: 0,
+          gapsMs: []
+        };
+        logEvent(`Receiving 60Hz stream (${rxStreamState.expectedCount} frames) via ${viaSource.toUpperCase()}...`);
+        return;
+      }
+
+      if (msg.type === 'diag_stream_pkt') {
+        if (!rxStreamState.active || msg.streamId !== rxStreamState.streamId) return;
+        const now = performance.now();
+        if (rxStreamState.lastRxTime > 0) {
+          rxStreamState.gapsMs.push(now - rxStreamState.lastRxTime);
+        }
+        rxStreamState.lastRxTime = now;
+
+        if (rxStreamState.receivedSeqs.has(msg.seq)) {
+          rxStreamState.duplicates++;
+        } else {
+          rxStreamState.receivedSeqs.add(msg.seq);
+          if (msg.seq < rxStreamState.lastSeq) {
+            rxStreamState.outOfOrder++;
+          } else {
+            rxStreamState.lastSeq = msg.seq;
+          }
+        }
+        return;
+      }
+
+      if (msg.type === 'diag_stream_finish') {
+        if (msg.streamId !== rxStreamState.streamId) return;
+        rxStreamState.active = false;
+        const received = rxStreamState.receivedSeqs.size;
+        const total = rxStreamState.expectedCount;
+        const lossPct = +(((total - received) / total) * 100).toFixed(1);
+        const gaps = computeGapStats(rxStreamState.gapsMs);
+        const summary = {
+          streamId: msg.streamId,
+          via: rxStreamState.via,
+          total,
+          received,
+          lossPct,
+          outOfOrder: rxStreamState.outOfOrder,
+          duplicates: rxStreamState.duplicates,
+          gaps
+        };
+        metrics.lastStreamReport = summary;
+        applyStreamSummaryToUi(summary);
+        sendViaTransport(viaSource, {
+          type: 'diag_stream_summary',
+          summary
+        });
+        return;
+      }
+
+      if (msg.type === 'diag_stream_summary') {
+        const s = msg.summary;
+        metrics.lastStreamReport = s;
+        applyStreamSummaryToUi(s);
+        logEvent(
+          `60Hz Stream Result (${s.via.toUpperCase()}): Rx ${s.received}/${s.total} (Loss ${s.lossPct}%), AvgGap=${s.gaps.avg}ms, MaxGap=${s.gaps.max}ms, Clumped=${s.gaps.clumpedPct}%`,
+          s.lossPct === 0 ? 'ok' : 'warn'
+        );
+        if (pendingStreamResolve) {
+          const r = pendingStreamResolve;
+          pendingStreamResolve = null;
+          r(s);
+        }
+        return;
+      }
+
+      if (msg.type === 'diag_suite_results') {
+        metrics.suiteResults = msg.suiteResults || [];
+        suiteStatusBadge.className = 'badge ok';
+        suiteStatusBadge.textContent = 'COMPLETE (SYNCED)';
+        renderSuiteScorecard();
+        return;
+      }
+
+      // Live 2-PC Cursor / Pad Arena Packet
+      if (msg.type === 'diag_arena_state') {
+        const now = performance.now();
+        if (remoteArena.lastRxAt > 0) {
+          remoteArena.lastGapMs = Math.round(now - remoteArena.lastRxAt);
+        }
+        remoteArena.lastRxAt = now;
+        remoteArena.rxCountThisSec++;
+        remoteArena.x = msg.x;
+        remoteArena.y = msg.y;
+        remoteArena.btn = msg.btn || 0;
+        remoteArena.seq = msg.seq || 0;
+        return;
+      }
+    }
+
+    function applyStreamSummaryToUi(s) {
+      streamProgressVal.textContent = `${s.received} / ${s.total} (Loss: ${s.lossPct}%)`;
+      streamOrderVal.textContent = `${s.outOfOrder} / ${s.duplicates}`;
+      streamGapVal.textContent = `${s.gaps.avg} / ${s.gaps.p95} / ${s.gaps.max} ms`;
+      streamClumpVal.textContent = `${s.gaps.clumpedPct}%`;
+    }
+
+    function updateRoomBanner() {
+      localRoleLabel.textContent = `You: PC ${localPlayerIndex}`;
+      peerRoleLabel.textContent = peerConnected ? `Partner: ${peerNick} (Connected)` : 'Partner: Waiting...';
+      activePeersBadge.className = peerConnected ? 'badge ok' : 'badge warn';
+      activePeersBadge.textContent = peerConnected ? '2 / 2 PCs READY' : '1 / 2 PCs';
+
+      if (!ws || ws.readyState !== 1) {
+        roomBadge.className = 'badge err';
+        roomBadge.textContent = 'OFFLINE';
+        roomStatusText.textContent = 'WebSocket Disconnected — Click "Connect Room"';
+      } else if (!peerConnected) {
+        roomBadge.className = 'badge warn';
+        roomBadge.textContent = `ROOM "${roomCode}"`;
+        roomStatusText.textContent = `Waiting for 2nd PC to open /nettest?room=${roomCode}...`;
+      } else {
+        roomBadge.className = 'badge ok';
+        roomBadge.textContent = `2-PC LINKED [${roomCode}]`;
+        roomStatusText.textContent = `Connected with "${peerNick}" — Ready for Manual & Automated Protocol Tests`;
+      }
+    }
+
+    function connectRoom() {
+      if (ws) {
+        try { ws.close(); } catch {}
+        ws = null;
+      }
+      closeWebRtc();
+
+      const code = (roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
+      roomInput.value = code;
+      backToNesLink.href = `/?room=${encodeURIComponent(code)}`;
+      const nick = (nickInput.value || 'PC').trim().slice(0, 14);
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${proto}//${window.location.host}/ws`;
+
+      wssStateVal.textContent = 'Connecting...';
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        wssStateVal.textContent = 'OPEN';
+        logEvent(`Connected to WebSocket Relay (${wsUrl})`, 'ok');
+        ws.send(
+          JSON.stringify({
+            type: 'join_room',
+            roomCode: code,
+            nick
+          })
+        );
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          handleIncomingMessage(msg, 'wss');
+        } catch {}
+      };
+
+      ws.onerror = () => {
+        logEvent('WebSocket error event fired.', 'err');
+      };
+
+      ws.onclose = (ev) => {
+        wsDropCount++;
+        lastWsCloseCode = `${ev.code}${ev.reason ? ' ' + ev.reason : ''}`;
+        wsCloseLabel.textContent = `WS Drops: ${wsDropCount} (Last code: ${lastWsCloseCode})`;
+        wssStateVal.textContent = `CLOSED (${ev.code})`;
+        peerConnected = false;
+        updateRoomBanner();
+        logEvent(`WebSocket CLOSED (code=${ev.code}, clean=${ev.wasClean})`, 'err');
+      };
+    }
+
+    connectBtn.addEventListener('click', connectRoom);
+
+    copyInviteBtn.addEventListener('click', () => {
+      const code = (roomInput.value || 'NOVA').trim().toUpperCase();
+      const url = `${window.location.origin}/nettest?room=${encodeURIComponent(code)}`;
+      navigator.clipboard.writeText(url).then(() => {
+        const orig = copyInviteBtn.textContent;
+        copyInviteBtn.textContent = '✔ Copied Link!';
+        setTimeout(() => (copyInviteBtn.textContent = orig), 1500);
+      });
+    });
+
+    // Periodic 1s Ping Loop + WebRTC Selected Candidate Pair Poller
+    setInterval(async () => {
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'ping', t: Date.now() }));
+        if (peerConnected) {
+          metrics.wssPeer.tx++;
+          wssPingCountVal.textContent = `${metrics.wssPeer.rx} / ${metrics.wssPeer.tx}`;
+          sendViaTransport('wss', { type: 'peer_ping', via: 'wss', t: performance.now() });
+        }
+      }
+      if (peerConnected && dcFast && dcFast.readyState === 'open') {
+        metrics.rtcFast.tx++;
+        sendViaTransport('rtc_fast', { type: 'peer_ping', via: 'rtc_fast', t: performance.now() });
+      }
+      if (peerConnected && dcReliable && dcReliable.readyState === 'open') {
+        metrics.rtcRel.tx++;
+        sendViaTransport('rtc_rel', { type: 'peer_ping', via: 'rtc_rel', t: performance.now() });
+      }
+
+      // Inspect WebRTC active candidate pair
+      if (rtcPeer && rtcPeer.getStats) {
+        try {
+          const stats = await rtcPeer.getStats();
+          stats.forEach((report) => {
+            if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated) {
+              const loc = stats.get(report.localCandidateId);
+              const rem = stats.get(report.remoteCandidateId);
+              if (loc && rem) {
+                selectedPairVal.textContent = `${loc.candidateType || 'loc'} (${loc.protocol}) ↔ ${rem.candidateType || 'rem'}`;
+              }
+            }
+          });
+        } catch {}
+      }
+    }, 1000);
+
+    // Interactive 2-PC Live Sandbox (60Hz)
+    const localArena = { x: 80, y: 85, btn: 0, seq: 0 };
+    const remoteArena = { x: 240, y: 85, btn: 0, seq: 0, lastRxAt: 0, lastGapMs: 0, rxCountThisSec: 0, rxPerSec: 0 };
+    const keysHeld = new Set();
+
+    window.addEventListener('keydown', (e) => {
+      if (document.activeElement === nickInput || document.activeElement === roomInput) return;
+      keysHeld.add(e.code);
+    });
+    window.addEventListener('keyup', (e) => {
+      keysHeld.delete(e.code);
+    });
+
+    let draggingArena = false;
+    function updateArenaFromPointer(e) {
+      const rect = arenaCanvas.getBoundingClientRect();
+      localArena.x = Math.max(12, Math.min(308, Math.round(e.clientX - rect.left)));
+      localArena.y = Math.max(12, Math.min(158, Math.round(e.clientY - rect.top)));
+    }
+    arenaCanvas.addEventListener('pointerdown', (e) => {
+      draggingArena = true;
+      localArena.btn |= 1;
+      updateArenaFromPointer(e);
+    });
+    window.addEventListener('pointermove', (e) => {
+      if (draggingArena) updateArenaFromPointer(e);
+    });
+    window.addEventListener('pointerup', () => {
+      draggingArena = false;
+      localArena.btn &= ~1;
+    });
+
+    setInterval(() => {
+      remoteArena.rxPerSec = remoteArena.rxCountThisSec;
+      remoteArena.rxCountThisSec = 0;
+      arenaRateVal.textContent = `${remoteArena.rxPerSec} pkt/s | Gap: ${remoteArena.lastGapMs} ms`;
+    }, 1000);
+
+    function stepArena60Hz() {
+      const speed = 3;
+      let btnMask = draggingArena ? 1 : 0;
+      if (keysHeld.has('KeyW') || keysHeld.has('ArrowUp')) { localArena.y = Math.max(12, localArena.y - speed); btnMask |= 16; }
+      if (keysHeld.has('KeyS') || keysHeld.has('ArrowDown')) { localArena.y = Math.min(158, localArena.y + speed); btnMask |= 32; }
+      if (keysHeld.has('KeyA') || keysHeld.has('ArrowLeft')) { localArena.x = Math.max(12, localArena.x - speed); btnMask |= 64; }
+      if (keysHeld.has('KeyD') || keysHeld.has('ArrowRight')) { localArena.x = Math.min(308, localArena.x + speed); btnMask |= 128; }
+      if (keysHeld.has('KeyZ') || keysHeld.has('KeyJ') || keysHeld.has('Space')) btnMask |= 1;
+      if (keysHeld.has('KeyX') || keysHeld.has('KeyK')) btnMask |= 2;
+      localArena.btn = btnMask;
+      localArena.seq++;
+
+      if (peerConnected) {
+        sendViaTransport(arenaTransportSelect.value, {
+          type: 'diag_arena_state',
+          x: localArena.x,
+          y: localArena.y,
+          btn: localArena.btn,
+          seq: localArena.seq
+        });
+      }
+
+      // Draw Arena
+      arenaCtx.fillStyle = '#07090e';
+      arenaCtx.fillRect(0, 0, 320, 170);
+
+      // Grid lines
+      arenaCtx.strokeStyle = '#141926';
+      arenaCtx.beginPath();
+      for (let x = 40; x < 320; x += 40) {
+        arenaCtx.moveTo(x, 0);
+        arenaCtx.lineTo(x, 170);
+      }
+      for (let y = 40; y < 170; y += 40) {
+        arenaCtx.moveTo(0, y);
+        arenaCtx.lineTo(320, y);
+      }
+      arenaCtx.stroke();
+
+      const p1 = localPlayerIndex === 1 ? localArena : remoteArena;
+      const p2 = localPlayerIndex === 1 ? remoteArena : localArena;
+
+      // Draw PC 1 (Red)
+      arenaCtx.fillStyle = '#f43f5e';
+      arenaCtx.fillRect(p1.x - 10, p1.y - 10, 20, 20);
+      if (p1.btn & 1) {
+        arenaCtx.strokeStyle = '#fff';
+        arenaCtx.strokeRect(p1.x - 13, p1.y - 13, 26, 26);
+      }
+      arenaCtx.fillStyle = '#fff';
+      arenaCtx.font = '10px Consolas, monospace';
+      arenaCtx.fillText('P1', p1.x - 6, p1.y + 4);
+
+      // Draw PC 2 (Cyan)
+      arenaCtx.fillStyle = '#38bdf8';
+      arenaCtx.fillRect(p2.x - 10, p2.y - 10, 20, 20);
+      if (p2.btn & 1) {
+        arenaCtx.strokeStyle = '#fff';
+        arenaCtx.strokeRect(p2.x - 13, p2.y - 13, 26, 26);
+      }
+      arenaCtx.fillStyle = '#041019';
+      arenaCtx.fillText('P2', p2.x - 6, p2.y + 4);
+
+      p1PosVal.textContent = `x:${p1.x}, y:${p1.y} | btn:0x${p1.btn.toString(16).padStart(2, '0')}`;
+      p2PosVal.textContent = `x:${p2.x}, y:${p2.y} | btn:0x${p2.btn.toString(16).padStart(2, '0')}`;
+
+      requestAnimationFrame(stepArena60Hz);
+    }
+    requestAnimationFrame(stepArena60Hz);
+
+    // Auto-connect on load
+    connectRoom();
+  </script>
+</body>
+</html>

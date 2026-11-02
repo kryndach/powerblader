@@ -114,6 +114,8 @@ export function createCoopServer(options = {}) {
     let filePath = null;
     if (pathname === '/' || pathname === '/index.html') {
       filePath = path.join(ROOT_DIR, 'public', 'index.html');
+    } else if (pathname === '/nettest' || pathname === '/net_debug.html') {
+      filePath = path.join(ROOT_DIR, 'public', 'net_debug.html');
     } else if (pathname === '/src/netplay_engine.mjs') {
       filePath = path.join(ROOT_DIR, 'src', 'netplay_engine.mjs');
     } else if (pathname === '/src/coop_core.mjs') {
@@ -219,7 +221,7 @@ export function createCoopServer(options = {}) {
         }
       }
 
-      // Forward all netplay, WebRTC signaling, ROM sync, state sync, and legacy messages to room peers
+      // Forward all netplay, WebRTC signaling, ROM sync, state sync, diagnostic, and legacy messages to room peers
       const forwardTypes = new Set([
         'netplay_input',
         'state_sync',
@@ -230,17 +232,20 @@ export function createCoopServer(options = {}) {
         'rom_request',
         'rom_sync',
         'webrtc_signal',
+        'peer_ping',
+        'peer_pong',
         'state',
         'event',
         'warp_request',
         'warp_snapshot'
       ]);
 
-      if (forwardTypes.has(msg.type)) {
+      if (forwardTypes.has(msg.type) || msg.type.startsWith('diag_')) {
         broadcastToRoom(ws.roomCode, ws, {
           ...msg,
           fromPlayer: ws.playerIndex,
-          fromNick: ws.nick
+          fromNick: ws.nick,
+          serverRxTime: Date.now()
         });
       }
     });
@@ -302,6 +307,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const app = createCoopServer();
   app.listen(port).then((actualPort) => {
     console.log(`Universal NES Netplay Server listening on http://localhost:${actualPort}`);
+    console.log(`2-PC Network & Protocol Diagnostic Tool: http://localhost:${actualPort}/nettest`);
     console.log(`WebSocket Relay & Signaling endpoint: ws://localhost:${actualPort}/ws`);
     console.log(`For internet tunnel: ssh -R 80:127.0.0.1:${actualPort} nokey@localhost.run`);
   });

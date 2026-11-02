@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node server/relay_server.mjs",
     "test": "node tools/test_coop_qa.mjs",
+    "test:net": "node tools/test_net_diagnostics.mjs",
     "probe": "node tools/re_probe.mjs"
   },
   "dependencies": {
