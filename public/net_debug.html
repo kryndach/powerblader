@@ -694,8 +694,12 @@
       logBox.innerHTML = '';
     });
 
-    // State
-    const clientId = `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    // State — persist clientId across page refreshes in the same tab so refreshing never creates zombie peers or swaps P1/P2!
+    let clientId = sessionStorage.getItem('nes_netbench_client_id');
+    if (!clientId) {
+      clientId = `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      sessionStorage.setItem('nes_netbench_client_id', clientId);
+    }
     let ws = null;
     let httpTunnelActive = false;
     let httpPollingBusy = false;
@@ -1060,15 +1064,6 @@
       }
     }
 
-    async function waitForBufferDrain(via) {
-      for (let tries = 0; tries < 200; tries++) {
-        const wsBuffered = ws && ws.readyState === 1 ? ws.bufferedAmount : 0;
-        const rtcBuffered = dcReliable && dcReliable.readyState === 'open' ? dcReliable.bufferedAmount : 0;
-        if (wsBuffered < 24576 && rtcBuffered < 24576) return;
-        await new Promise((r) => setTimeout(r, 15));
-      }
-    }
-
     async function runDataTransferTest(kb, mode, via) {
       if (!peerConnected) {
         logEvent('Connect 2nd PC before running data transfer tests.', 'warn');
@@ -1083,12 +1078,11 @@
       const crc = crc32Bytes(u8);
       const xferId = `xf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const t0 = performance.now();
-      // Dynamic timeout: localhost.run free SSH tunnels throttle to ~18 KB/s, so 256KB-512KB needs up to 45-60s
-      const timeoutMs = Math.max(18000, kb * 130);
+      const timeoutMs = Math.max(15000, kb * 120);
 
-      logEvent(`Starting ${kb} KB (${mode}) transfer via ${via.toUpperCase()} [CRC=${crc}, timeout=${Math.round(timeoutMs / 1000)}s]...`);
+      logEvent(`Starting ${kb} KB (${mode}) transfer via ${via.toUpperCase()} [CRC=${crc}]...`);
 
-      return new Promise(async (resolve) => {
+      return new Promise((resolve) => {
         const timeout = setTimeout(() => {
           if (pendingTransfers.has(xferId)) {
             pendingTransfers.delete(xferId);
@@ -1101,10 +1095,10 @@
               kbps: '0',
               crc32: crc,
               ok: false,
-              status: `TIMEOUT (> ${Math.round(timeoutMs / 1000)}s)`
+              status: 'TIMEOUT (Dropped)'
             };
             addTransferRow(row);
-            logEvent(`Transfer ${kb} KB (${mode}) via ${via} TIMED OUT after ${Math.round(timeoutMs / 1000)}s!`, 'err');
+            logEvent(`Transfer ${kb} KB (${mode}) via ${via} TIMED OUT!`, 'err');
             resolve(row);
           }
         }, timeoutMs);
@@ -1146,7 +1140,6 @@
             resolve(row);
           }
         } else {
-          // Paced 16KB chunk streaming with backpressure check so live cursor/input packets are never blocked!
           const chunkSize = 16 * 1024;
           const totalChunks = Math.ceil(u8.length / chunkSize);
           sendViaTransport(sendVia, {
@@ -1159,7 +1152,6 @@
             crc32: crc
           });
           for (let c = 0; c < totalChunks; c++) {
-            await waitForBufferDrain(sendVia);
             const slice = u8.subarray(c * chunkSize, Math.min(u8.length, (c + 1) * chunkSize));
             sendViaTransport(sendVia, {
               type: 'diag_xfer_chunk',
@@ -1167,10 +1159,6 @@
               index: c,
               dataB64: uint8ToBase64(slice)
             });
-            // Yield 8ms between chunks so real-time cursor/pad packets interleave smoothly
-            if (totalChunks > 4) {
-              await new Promise((r) => setTimeout(r, 8));
-            }
           }
           sendViaTransport(sendVia, {
             type: 'diag_xfer_end',
@@ -1762,21 +1750,6 @@
         remoteArena.btn = msg.btn || 0;
         remoteArena.seq = msg.seq || 0;
         remoteArena.via = viaSource.toUpperCase();
-        // Echo lightweight Arena timestamp ack (at most every 150ms) to measure exact directional cursor RTT
-        if (typeof msg.t === 'number' && now - remoteArena.lastAckSentAt > 150) {
-          remoteArena.lastAckSentAt = now;
-          sendViaTransport(arenaTransportSelect.value, {
-            type: 'diag_arena_ack',
-            t: msg.t
-          });
-        }
-        return;
-      }
-
-      if (msg.type === 'diag_arena_ack') {
-        if (typeof msg.t === 'number') {
-          localArena.rttMs = Math.max(1, Math.round(performance.now() - msg.t));
-        }
         return;
       }
     }
@@ -2043,9 +2016,9 @@
     }, 1000);
 
     // Interactive 2-PC Live Sandbox (Delta-Timed 60Hz Physics + Change-Triggered Network Sync)
-    const localArena = { x: 80, y: 85, btn: 0, seq: 0, txCountThisSec: 0, txPerSec: 0, rttMs: null };
+    const localArena = { x: 80, y: 85, btn: 0, seq: 0, txCountThisSec: 0, txPerSec: 0 };
     const lastSentArena = { x: 80, y: 85, btn: 0, sentAt: 0 };
-    const remoteArena = { x: 240, y: 85, renderX: 240, renderY: 85, btn: 0, seq: 0, lastRxAt: 0, lastGapMs: 0, rxCountThisSec: 0, rxPerSec: 0, lastAckSentAt: 0, via: '--' };
+    const remoteArena = { x: 240, y: 85, btn: 0, seq: 0, lastRxAt: 0, lastGapMs: 0, rxCountThisSec: 0, rxPerSec: 0, via: '--' };
     const keysHeld = new Set();
 
     window.addEventListener('keydown', (e) => {
@@ -2067,9 +2040,8 @@
       localArena.btn |= 1;
       updateArenaFromPointer(e);
     });
-    arenaCanvas.addEventListener('pointermove', (e) => {
-      // Allow moving cursor box simply by moving mouse inside the arena canvas!
-      updateArenaFromPointer(e);
+    window.addEventListener('pointermove', (e) => {
+      if (draggingArena) updateArenaFromPointer(e);
     });
     window.addEventListener('pointerup', () => {
       draggingArena = false;
@@ -2081,8 +2053,7 @@
       remoteArena.rxCountThisSec = 0;
       localArena.txPerSec = localArena.txCountThisSec;
       localArena.txCountThisSec = 0;
-      const lagStr = localArena.rttMs !== null ? `${localArena.rttMs}ms` : '--';
-      arenaRateVal.textContent = `Tx:${localArena.txPerSec}/Rx:${remoteArena.rxPerSec} (${remoteArena.via}) | RTT:${lagStr} | Gap:${remoteArena.lastGapMs}ms`;
+      arenaRateVal.textContent = `Tx:${localArena.txPerSec} / Rx:${remoteArena.rxPerSec} pkt/s (${remoteArena.via}) | Gap:${remoteArena.lastGapMs}ms`;
     }, 1000);
 
     let lastArenaFrameTime = performance.now();
@@ -2113,13 +2084,11 @@
         const usingDirectRtc =
           (dcFast && dcFast.readyState === 'open' && (arenaTransportSelect.value === 'auto' || arenaTransportSelect.value === 'rtc_fast')) ||
           (dcReliable && dcReliable.readyState === 'open' && arenaTransportSelect.value === 'rtc_rel');
-        // Cap send rate to 60Hz (16ms) on WebRTC UDP, or 25Hz (40ms) on WSS/HTTPS Tunnel to prevent SSH TCP bufferbloat!
-        const minIntervalMs = usingDirectRtc ? 16 : 40;
+        // Cap send rate to 60Hz (16ms) on WebRTC UDP, or 30Hz (33ms) on WSS/HTTPS Tunnel to prevent SSH TCP bufferbloat!
+        const minIntervalMs = usingDirectRtc ? 16 : 33;
         const elapsedSinceSend = now - lastSentArena.sentAt;
-        // Skip sending if WebSocket buffer has >8KB queued (e.g. during a big file transfer) so cursor packets never pile up!
-        const wsBackedUp = !usingDirectRtc && ws && ws.readyState === 1 && ws.bufferedAmount > 8192;
 
-        if (!wsBackedUp && ((changed && elapsedSinceSend >= minIntervalMs) || elapsedSinceSend >= 1000)) {
+        if ((changed && elapsedSinceSend >= minIntervalMs) || elapsedSinceSend >= 1000) {
           localArena.seq++;
           localArena.txCountThisSec++;
           lastSentArena.x = roundedX;
@@ -2132,15 +2101,10 @@
             x: roundedX,
             y: roundedY,
             btn: localArena.btn,
-            seq: localArena.seq,
-            t: now
+            seq: localArena.seq
           });
         }
       }
-
-      // Smooth interpolation for remote box
-      remoteArena.renderX += (remoteArena.x - remoteArena.renderX) * Math.min(1, 0.45 * stepScale);
-      remoteArena.renderY += (remoteArena.y - remoteArena.renderY) * Math.min(1, 0.45 * stepScale);
 
       // Draw Arena
       arenaCtx.fillStyle = '#07090e';
@@ -2160,7 +2124,7 @@
       arenaCtx.stroke();
 
       const localDraw = { x: roundedX, y: roundedY, btn: localArena.btn };
-      const remoteDraw = { x: Math.round(remoteArena.renderX), y: Math.round(remoteArena.renderY), btn: remoteArena.btn };
+      const remoteDraw = { x: Math.round(remoteArena.x), y: Math.round(remoteArena.y), btn: remoteArena.btn };
 
       const p1 = localPlayerIndex === 1 ? localDraw : remoteDraw;
       const p2 = localPlayerIndex === 1 ? remoteDraw : localDraw;

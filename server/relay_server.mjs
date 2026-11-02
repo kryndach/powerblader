@@ -108,6 +108,16 @@ export function createCoopServer(options = {}) {
     const isNewJoin = !peer;
 
     if (!peer) {
+      // Evict any zombie/disconnected peers if room already has 2 entries so a refresh never creates a 3rd peer or swaps P1/P2
+      if (roomMap.size >= 2) {
+        for (const [existingCid, existingPeer] of roomMap.entries()) {
+          const wsAlive = existingPeer.ws && existingPeer.ws.readyState === 1;
+          if (!wsAlive) {
+            roomMap.delete(existingCid);
+            break;
+          }
+        }
+      }
       const usedIndices = new Set(Array.from(roomMap.values()).map((p) => p.playerIndex));
       const playerIndex = usedIndices.has(1) ? 2 : 1;
       peer = {
@@ -212,13 +222,6 @@ export function createCoopServer(options = {}) {
     ]);
 
     if (forwardTypes.has(msg.type) || msg.type.startsWith('diag_')) {
-      // Defeat Windows loopback TCP Delayed-ACK + ssh.exe Nagle stall when traffic is one-way (e.g. Brother -> Host)
-      if (peer.ws && peer.ws.readyState === 1 && Date.now() - (peer.lastTxAt || 0) > 20) {
-        try {
-          peer.ws.ping();
-          peer.lastTxAt = Date.now();
-        } catch {}
-      }
       broadcastToRoom(peer.roomCode, peer.clientId, {
         ...msg,
         fromPlayer: peer.playerIndex,
@@ -481,14 +484,10 @@ export function createCoopServer(options = {}) {
 
     ws.on('close', () => {
       const peer = ws.peerSession;
-      if (peer) {
-        if (peer.ws === ws) {
-          peer.ws = null;
-        }
-        // If this peer is not using the HTTP tunnel fallback, remove immediately
-        if (!peer.httpActive) {
-          removePeerSession(peer.roomCode, peer.clientId);
-        }
+      if (peer && peer.ws === ws) {
+        peer.ws = null;
+        // Remove peer immediately when its WebSocket closes (e.g. tab refresh/close) so no zombie session holds P1/P2!
+        removePeerSession(peer.roomCode, peer.clientId);
       }
     });
   });
