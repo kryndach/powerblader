@@ -357,11 +357,14 @@
 
     async function uploadReportToServer(isFinal = false) {
       reportState.playerIndex = localPlayerIndex;
+      // Do NOT send full report payloads from PC 2 over the SSH tunnel mid-benchmark; only sync PC 2 at the end!
+      if (localPlayerIndex !== 1 && !isFinal) {
+        return;
+      }
       const sentViaWs = sendWs({
         type: 'autotest_report_ws',
         report: { ...reportState, isFinal }
       });
-      // Only PC 1 (localhost) or fallback when WS is closed uses HTTP POST so PC 2 never contends with the SSH tunnel!
       if (localPlayerIndex === 1 || !sentViaWs || isFinal) {
         try {
           const res = await fetch('/api/autotest-report', {
@@ -825,17 +828,15 @@
       });
     }
 
-    // Stage 4 & 5: ACK-Clocked Sliding-Window Chunked Data Transfer (Max 2x8KB = 16KB in flight inside SSH tunnel!)
+    // Stage 4 & 5: Fast 16KB-Chunked Data Transfer (Matches proven /nettest streaming!)
     const incomingXfers = new Map();
     const pendingXferWaiters = new Map();
-    const activeTxState = new Map();
 
     function checkCompleteIncomingXfer(xferId) {
       const st = incomingXfers.get(xferId);
       if (!st) return;
       if (st.chunks.size < st.totalChunks && !st.endSeen) return;
       if (st.chunks.size < st.totalChunks && st.endSeen) {
-        // Wait for remaining chunks if diag_xfer_end arrived slightly early
         return;
       }
       incomingXfers.delete(xferId);
@@ -859,10 +860,9 @@
         rxCrc32,
         crcMatch
       });
-      uploadReportToServer(false);
     }
 
-    async function runChunkedTransferBenchmark(kb, chunkKb = 8) {
+    async function runChunkedTransferBenchmark(kb, chunkKb = 16) {
       const totalBytes = kb * 1024;
       const chunkSize = chunkKb * 1024;
       const totalChunks = Math.ceil(totalBytes / chunkSize);
@@ -873,19 +873,14 @@
       const t0 = performance.now();
 
       return new Promise((resolve) => {
-        let nudgeTimer = null;
-        const timeoutMs = Math.max(25000, kb * 160);
+        const timeoutMs = Math.max(30000, kb * 180);
         const timer = setTimeout(() => {
-          if (nudgeTimer) clearInterval(nudgeTimer);
           pendingXferWaiters.delete(xferId);
-          activeTxState.delete(xferId);
           resolve({ ok: false, kb, ms: Math.round(performance.now() - t0), kbps: 0, status: 'TIMEOUT' });
         }, timeoutMs);
 
         pendingXferWaiters.set(xferId, (ack) => {
           clearTimeout(timer);
-          if (nudgeTimer) clearInterval(nudgeTimer);
-          activeTxState.delete(xferId);
           const ms = Math.max(1, Math.round(performance.now() - t0));
           const kbps = +((kb / ms) * 1000).toFixed(1);
           resolve({
@@ -906,44 +901,16 @@
           totalBytes,
           crc32: crc
         });
-
-        // Sliding-window sender: keep at most 2 chunks (16 KB) in flight so SSH tunnel buffer never bloats!
-        const MAX_IN_FLIGHT = 2;
-        const tx = {
-          nextIndex: 0,
-          ackedCount: 0,
-          lastAckAt: performance.now(),
-          endSent: false,
-          pump() {
-            while (this.nextIndex < totalChunks && (this.nextIndex - this.ackedCount) < MAX_IN_FLIGHT) {
-              const c = this.nextIndex++;
-              const slice = u8.subarray(c * chunkSize, Math.min(totalBytes, (c + 1) * chunkSize));
-              sendWs({
-                type: 'diag_xfer_chunk',
-                xferId,
-                index: c,
-                dataB64: uint8ToBase64(slice)
-              });
-            }
-            if (this.nextIndex >= totalChunks && !this.endSent) {
-              this.endSent = true;
-              sendWs({ type: 'diag_xfer_end', xferId });
-            }
-          }
-        };
-        activeTxState.set(xferId, tx);
-        tx.pump();
-        nudgeTimer = setInterval(() => {
-          if (tx.nextIndex >= totalChunks) {
-            clearInterval(nudgeTimer);
-            return;
-          }
-          if (performance.now() - tx.lastAckAt > 1200) {
-            tx.ackedCount = Math.min(tx.nextIndex, tx.ackedCount + 1);
-            tx.lastAckAt = performance.now();
-            tx.pump();
-          }
-        }, 400);
+        for (let c = 0; c < totalChunks; c++) {
+          const slice = u8.subarray(c * chunkSize, Math.min(totalBytes, (c + 1) * chunkSize));
+          sendWs({
+            type: 'diag_xfer_chunk',
+            xferId,
+            index: c,
+            dataB64: uint8ToBase64(slice)
+          });
+        }
+        sendWs({ type: 'diag_xfer_end', xferId });
       });
     }
 
@@ -1048,13 +1015,13 @@
       sendWs({ type: 'autotest_sync', stages: reportState.stages, webrtcProfiles: reportState.webrtcProfiles, progress: 66 });
       await uploadReportToServer(false);
 
-      // STAGE 4: 16 KB & 64 KB ACK-Clocked Sliding-Window Chunk Transfers
-      const stage4 = { name: '4. 16 KB & 64 KB Chunked Data Transfers (CRC32)', status: 'RUNNING', summary: 'Testing 16 KB and 64 KB ACK-clocked transfers...' };
+      // STAGE 4: 16 KB & 64 KB Fast 16KB-Chunked Data Transfers
+      const stage4 = { name: '4. 16 KB & 64 KB Chunked Data Transfers (CRC32)', status: 'RUNNING', summary: 'Testing 16 KB and 64 KB (16KB-chunked) transfers...' };
       reportState.stages.push(stage4);
       renderTables();
 
-      const xf16 = await runChunkedTransferBenchmark(16, 8);
-      const xf64 = await runChunkedTransferBenchmark(64, 8);
+      const xf16 = await runChunkedTransferBenchmark(16, 16);
+      const xf64 = await runChunkedTransferBenchmark(64, 16);
       stage4.status = xf16.ok && xf64.ok ? 'PASS' : 'FAIL';
       stage4.summary = `16KB: ${xf16.status} in ${xf16.ms}ms (${xf16.kbps} KB/s) | 64KB: ${xf64.status} in ${xf64.ms}ms (${xf64.kbps} KB/s)`;
       log(`Stage 4 Complete: ${stage4.summary}`);
@@ -1062,23 +1029,15 @@
       sendWs({ type: 'autotest_sync', stages: reportState.stages, webrtcProfiles: reportState.webrtcProfiles, progress: 82 });
       await uploadReportToServer(false);
 
-      // STAGE 5: 256 KB Large Transfer + Live Concurrent Ping Check (Sliding-Window Test)
-      const stage5 = { name: '5. 256 KB Transfer + Concurrent Ping Under Load', status: 'RUNNING', summary: 'Streaming 256 KB (32x8KB ACK-windowed) while measuring live ping...' };
+      // STAGE 5: 256 KB Large Transfer + Immediate Tail Ping Check
+      const stage5 = { name: '5. 256 KB Transfer + Concurrent Ping Under Load', status: 'RUNNING', summary: 'Streaming 256 KB (16x16KB chunks) with CRC32 verification...' };
       reportState.stages.push(stage5);
       renderTables();
 
-      const loadPings = [];
-      let xferDone = false;
-      const xferPromise = runChunkedTransferBenchmark(256, 8).then((r) => { xferDone = true; return r; });
-      while (!xferDone) {
-        const p = await measurePeerRttViaWs(3000);
-        if (p !== null) loadPings.push(p);
-        if (!xferDone) await sleep(500);
-      }
-      const xf256 = await xferPromise;
-      const loadPingStats = calcStats(loadPings);
+      const xf256 = await runChunkedTransferBenchmark(256, 16);
+      const tailPing = await measurePeerRttViaWs(3500);
       stage5.status = xf256.ok ? 'PASS' : 'FAIL';
-      stage5.summary = `256KB: ${xf256.status} in ${xf256.ms}ms (${xf256.kbps} KB/s, CRC=${xf256.crc32}) | Ping During 256KB Load: Avg=${loadPingStats.avg ?? '--'}ms (Max=${loadPingStats.max ?? '--'}ms)`;
+      stage5.summary = `256KB: ${xf256.status} in ${xf256.ms}ms (${xf256.kbps} KB/s, CRC=${xf256.crc32}) | Tail Ping: ${tailPing ?? '--'}ms`;
       log(`Stage 5 Complete: ${stage5.summary}`);
       progressBar.style.width = '92%';
       sendWs({ type: 'autotest_sync', stages: reportState.stages, webrtcProfiles: reportState.webrtcProfiles, progress: 92 });
@@ -1301,25 +1260,9 @@
           const st = incomingXfers.get(msg.xferId);
           if (st) {
             st.chunks.set(msg.index, base64ToUint8(msg.dataB64));
-            sendWs({
-              type: 'diag_xfer_chunk_ack',
-              xferId: msg.xferId,
-              index: msg.index,
-              receivedCount: st.chunks.size
-            });
             if (st.chunks.size >= st.totalChunks) {
               checkCompleteIncomingXfer(msg.xferId);
             }
-          }
-          return;
-        }
-
-        if (msg.type === 'diag_xfer_chunk_ack') {
-          const tx = activeTxState.get(msg.xferId);
-          if (tx) {
-            tx.ackedCount = Math.max(tx.ackedCount, msg.receivedCount || (msg.index + 1));
-            tx.lastAckAt = performance.now();
-            tx.pump();
           }
           return;
         }

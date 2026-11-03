@@ -279,8 +279,12 @@ export function createCoopServer(options = {}) {
         type: 'autotest_combined_text',
         combinedText: autotestSession.combinedText
       };
-      sendToPeer(peer, syncMsg);
-      broadcastToRoom(peer.roomCode, peer.clientId, syncMsg);
+      if (msg.report.isFinal) {
+        sendToPeer(peer, syncMsg);
+        broadcastToRoom(peer.roomCode, peer.clientId, syncMsg);
+      } else if (peer.playerIndex === 1) {
+        sendToPeer(peer, syncMsg);
+      }
       return;
     }
 
