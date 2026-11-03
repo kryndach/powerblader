@@ -357,19 +357,26 @@
 
     async function uploadReportToServer(isFinal = false) {
       reportState.playerIndex = localPlayerIndex;
-      try {
-        const res = await fetch('/api/autotest-report', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...reportState, isFinal })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.combinedText) {
-            reportBox.value = data.combinedText;
+      const sentViaWs = sendWs({
+        type: 'autotest_report_ws',
+        report: { ...reportState, isFinal }
+      });
+      // Only PC 1 (localhost) or fallback when WS is closed uses HTTP POST so PC 2 never contends with the SSH tunnel!
+      if (localPlayerIndex === 1 || !sentViaWs || isFinal) {
+        try {
+          const res = await fetch('/api/autotest-report', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...reportState, isFinal })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.combinedText) {
+              reportBox.value = data.combinedText;
+            }
           }
-        }
-      } catch {}
+        } catch {}
+      }
     }
 
     function sendWs(obj) {
@@ -476,6 +483,7 @@
     ];
 
     let activeRtc = null;
+    let activeProfileId = null;
     let activeDcFast = null;
     let activeDcRel = null;
     let pendingCandidates = [];
@@ -497,7 +505,7 @@
       pendingCandidates = [];
     }
 
-    function setupDataChannelHandlers(ch, isFast) {
+    function setupDataChannelHandlers(ch) {
       ch.onopen = () => {
         log(`WebRTC DataChannel [${ch.label}] OPEN!`);
         if (currentRtcProfileResult) {
@@ -518,8 +526,21 @@
       };
     }
 
+    function syncRtcIceState(rtc, resObj, profId) {
+      if (!rtc || !resObj) return;
+      resObj.iceState = `${rtc.signalingState}/${rtc.iceConnectionState}/${rtc.iceGatheringState}`;
+      renderTables();
+      sendWs({
+        type: 'autotest_rtc_cands',
+        profileId: profId,
+        candTypes: resObj.localTypes,
+        iceState: resObj.iceState
+      });
+    }
+
     async function testSingleWebRtcProfile(prof) {
       cleanupRtc();
+      activeProfileId = prof.id;
       const resObj = {
         id: prof.id,
         name: prof.name,
@@ -535,33 +556,53 @@
       renderTables();
 
       log(`Testing WebRTC ${prof.name}...`);
-      sendWs({ type: 'autotest_rtc_init', profileId: prof.id });
-      await sleep(150);
+      const rtc = new RTCPeerConnection({ iceServers: prof.iceServers });
+      activeRtc = rtc;
 
-      activeRtc = new RTCPeerConnection({ iceServers: prof.iceServers });
-      activeRtc.onicecandidate = (ev) => {
-        if (ev.candidate) {
-          const t = parseCandidateType(ev.candidate.candidate);
-          if (!resObj.localTypes.includes(t)) resObj.localTypes.push(t);
-          renderTables();
-          sendWs({ type: 'webrtc_signal', signal: { candidate: ev.candidate } });
-          sendWs({ type: 'autotest_rtc_cands', profileId: prof.id, candTypes: resObj.localTypes });
+      const onStateChange = () => {
+        if (activeRtc !== rtc) return;
+        syncRtcIceState(rtc, resObj, prof.id);
+      };
+      rtc.oniceconnectionstatechange = onStateChange;
+      rtc.onicegatheringstatechange = onStateChange;
+      rtc.onsignalingstatechange = onStateChange;
+
+      rtc.onicecandidate = (ev) => {
+        if (activeRtc !== rtc || !ev.candidate) return;
+        const t = parseCandidateType(ev.candidate.candidate);
+        if (!resObj.localTypes.includes(t)) resObj.localTypes.push(t);
+        syncRtcIceState(rtc, resObj, prof.id);
+        sendWs({
+          type: 'webrtc_signal',
+          profileId: prof.id,
+          signal: {
+            candidate: {
+              candidate: ev.candidate.candidate,
+              sdpMid: ev.candidate.sdpMid,
+              sdpMLineIndex: ev.candidate.sdpMLineIndex
+            }
+          }
+        });
+      };
+
+      activeDcFast = rtc.createDataChannel('diag_fast', { ordered: false, maxRetransmits: 0 });
+      activeDcRel = rtc.createDataChannel('diag_reliable', { ordered: true });
+      setupDataChannelHandlers(activeDcFast);
+      setupDataChannelHandlers(activeDcRel);
+
+      const offer = await rtc.createOffer();
+      await rtc.setLocalDescription(offer);
+      syncRtcIceState(rtc, resObj, prof.id);
+      sendWs({
+        type: 'webrtc_signal',
+        profileId: prof.id,
+        signal: {
+          sdp: {
+            type: rtc.localDescription.type,
+            sdp: rtc.localDescription.sdp
+          }
         }
-      };
-      activeRtc.oniceconnectionstatechange = () => {
-        if (!activeRtc) return;
-        resObj.iceState = `${activeRtc.iceConnectionState}/${activeRtc.iceGatheringState}`;
-        renderTables();
-      };
-
-      activeDcFast = activeRtc.createDataChannel('diag_fast', { ordered: false, maxRetransmits: 0 });
-      activeDcRel = activeRtc.createDataChannel('diag_reliable', { ordered: true });
-      setupDataChannelHandlers(activeDcFast, true);
-      setupDataChannelHandlers(activeDcRel, false);
-
-      const offer = await activeRtc.createOffer();
-      await activeRtc.setLocalDescription(offer);
-      sendWs({ type: 'webrtc_signal', signal: { sdp: activeRtc.localDescription } });
+      });
 
       // Wait up to 4.5s for DataChannel to open
       const startWait = performance.now();
@@ -573,10 +614,10 @@
         await sleep(120);
       }
 
-      if (activeRtc) {
-        resObj.iceState = `${activeRtc.iceConnectionState}/${activeRtc.iceGatheringState}`;
+      if (activeRtc === rtc) {
+        syncRtcIceState(rtc, resObj, prof.id);
         try {
-          const stats = await activeRtc.getStats();
+          const stats = await rtc.getStats();
           stats.forEach((rep) => {
             if (rep.type === 'candidate-pair' && (rep.state === 'succeeded' || rep.nominated)) {
               const loc = stats.get(rep.localCandidateId);
@@ -615,61 +656,96 @@
     function handleResponderRtcInit(profileId) {
       const prof = WEBRTC_PROFILES.find((p) => p.id === profileId) || WEBRTC_PROFILES[0];
       cleanupRtc();
-      const resObj = {
-        id: prof.id,
-        name: prof.name,
-        open: false,
-        iceState: 'responder',
-        localTypes: [],
-        remoteTypes: [],
-        selectedPair: null,
-        rttMs: null
-      };
+      activeProfileId = prof.id;
+      let resObj = reportState.webrtcProfiles.find((p) => p.id === prof.id);
+      if (!resObj) {
+        resObj = {
+          id: prof.id,
+          name: prof.name,
+          open: false,
+          iceState: 'responder',
+          localTypes: [],
+          remoteTypes: [],
+          selectedPair: null,
+          rttMs: null
+        };
+        reportState.webrtcProfiles.push(resObj);
+      }
       currentRtcProfileResult = resObj;
-      reportState.webrtcProfiles.push(resObj);
       renderTables();
 
-      activeRtc = new RTCPeerConnection({ iceServers: prof.iceServers });
-      activeRtc.onicecandidate = (ev) => {
-        if (ev.candidate) {
-          const t = parseCandidateType(ev.candidate.candidate);
-          if (!resObj.localTypes.includes(t)) resObj.localTypes.push(t);
-          renderTables();
-          sendWs({ type: 'webrtc_signal', signal: { candidate: ev.candidate } });
-          sendWs({ type: 'autotest_rtc_cands', profileId: prof.id, candTypes: resObj.localTypes });
-        }
+      const rtc = new RTCPeerConnection({ iceServers: prof.iceServers });
+      activeRtc = rtc;
+
+      const onStateChange = () => {
+        if (activeRtc !== rtc) return;
+        syncRtcIceState(rtc, resObj, prof.id);
       };
-      activeRtc.oniceconnectionstatechange = () => {
-        if (!activeRtc) return;
-        resObj.iceState = `${activeRtc.iceConnectionState}/${activeRtc.iceGatheringState}`;
-        renderTables();
+      rtc.oniceconnectionstatechange = onStateChange;
+      rtc.onicegatheringstatechange = onStateChange;
+      rtc.onsignalingstatechange = onStateChange;
+
+      rtc.onicecandidate = (ev) => {
+        if (activeRtc !== rtc || !ev.candidate) return;
+        const t = parseCandidateType(ev.candidate.candidate);
+        if (!resObj.localTypes.includes(t)) resObj.localTypes.push(t);
+        syncRtcIceState(rtc, resObj, prof.id);
+        sendWs({
+          type: 'webrtc_signal',
+          profileId: prof.id,
+          signal: {
+            candidate: {
+              candidate: ev.candidate.candidate,
+              sdpMid: ev.candidate.sdpMid,
+              sdpMLineIndex: ev.candidate.sdpMLineIndex
+            }
+          }
+        });
       };
-      activeRtc.ondatachannel = (ev) => {
+      rtc.ondatachannel = (ev) => {
         const ch = ev.channel;
         if (ch.label === 'diag_fast') {
           activeDcFast = ch;
-          setupDataChannelHandlers(ch, true);
+          setupDataChannelHandlers(ch);
         } else {
           activeDcRel = ch;
-          setupDataChannelHandlers(ch, false);
+          setupDataChannelHandlers(ch);
         }
       };
     }
 
-    function handleIncomingWebRtcSignal(signal) {
+    function handleIncomingWebRtcSignal(signal, profileId) {
       if (!signal) return;
       rtcSignalQueue = rtcSignalQueue.then(async () => {
         try {
-          if (!activeRtc && signal.sdp && signal.sdp.type === 'offer') {
-            handleResponderRtcInit('ru_sip');
+          const targetProfId = profileId || activeProfileId || 'ru_sip';
+          if (signal.sdp && signal.sdp.type === 'offer') {
+            handleResponderRtcInit(targetProfId);
           }
           if (!activeRtc) return;
+          if (profileId && activeProfileId && profileId !== activeProfileId) return;
+
           if (signal.sdp) {
             await activeRtc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
             if (signal.sdp.type === 'offer') {
               const ans = await activeRtc.createAnswer();
               await activeRtc.setLocalDescription(ans);
-              sendWs({ type: 'webrtc_signal', signal: { sdp: activeRtc.localDescription } });
+              syncRtcIceState(activeRtc, currentRtcProfileResult, targetProfId);
+              log(`WebRTC Responder answered profile "${targetProfId}" (ICE=${currentRtcProfileResult?.iceState})`);
+              sendWs({
+                type: 'webrtc_signal',
+                profileId: targetProfId,
+                signal: {
+                  sdp: {
+                    type: activeRtc.localDescription.type,
+                    sdp: activeRtc.localDescription.sdp
+                  }
+                }
+              });
+              uploadReportToServer(false);
+            } else if (signal.sdp.type === 'answer') {
+              syncRtcIceState(activeRtc, currentRtcProfileResult, targetProfId);
+              log(`WebRTC Offerer received SDP Answer for "${targetProfId}" (ICE=${currentRtcProfileResult?.iceState})`);
             }
             while (pendingCandidates.length > 0) {
               const c = pendingCandidates.shift();
@@ -680,13 +756,13 @@
               await activeRtc.addIceCandidate(new RTCIceCandidate(c));
             }
           } else if (signal.candidate) {
+            const t = parseCandidateType(signal.candidate.candidate);
+            if (currentRtcProfileResult && !currentRtcProfileResult.remoteTypes.includes(t)) {
+              currentRtcProfileResult.remoteTypes.push(t);
+            }
             if (!activeRtc.remoteDescription || !activeRtc.remoteDescription.type) {
               pendingCandidates.push(signal.candidate);
             } else {
-              const t = parseCandidateType(signal.candidate.candidate);
-              if (currentRtcProfileResult && !currentRtcProfileResult.remoteTypes.includes(t)) {
-                currentRtcProfileResult.remoteTypes.push(t);
-              }
               await activeRtc.addIceCandidate(new RTCIceCandidate(signal.candidate));
             }
           }
@@ -697,36 +773,94 @@
       });
     }
 
-    // 60Hz Bidirectional Stream State
-    let rxStream = { active: false, total: 180, seqs: new Set(), gaps: [], lastAt: 0 };
+    // Stage 3: Bidirectional 60fps NES Input Stream via 20Hz Micro-Batching (3 frames/pkt = 40 pkt/s total)
+    let rxStream = { active: false, total: 180, seqs: new Set(), gaps: [], lastAt: 0, reported: false };
     let remoteStreamSummaryWaiter = null;
+
+    function sendStreamReportIfNeeded() {
+      if (rxStream.reported) return;
+      rxStream.reported = true;
+      rxStream.active = false;
+      const g = calcStats(rxStream.gaps);
+      const clumped = rxStream.gaps.filter((x) => x < 5.0).length;
+      const clumpPct = rxStream.gaps.length > 0 ? Math.round((clumped / rxStream.gaps.length) * 100) : 0;
+      sendWs({
+        type: 'autotest_stream_report',
+        rx: rxStream.seqs.size,
+        total: rxStream.total,
+        maxGap: Math.round(g.max ?? 0),
+        avgGap: Math.round(g.avg ?? 0),
+        clumpPct
+      });
+    }
 
     function startLocal60HzTx(totalFrames = 180) {
       return new Promise((resolve) => {
         let sent = 0;
+        const batchSize = 3; // 3 frames per packet @ 20Hz = 60fps NES inputs with 3x fewer tunnel packets!
         const timer = setInterval(() => {
+          const frames = [];
+          for (let k = 0; k < batchSize && sent < totalFrames; k++) {
+            frames.push({
+              seq: sent,
+              p1: sent & 0xff,
+              p2: (sent * 3) & 0xff
+            });
+            sent++;
+          }
           sendWs({
             type: 'autotest_stream_pkt',
-            seq: sent,
-            p1: sent & 0xff,
-            p2: (sent * 3) & 0xff,
+            seq: frames[0].seq,
+            frames,
             t: performance.now()
           });
-          sent++;
           if (sent >= totalFrames) {
             clearInterval(timer);
             setTimeout(() => {
               sendWs({ type: 'autotest_stream_done', totalFrames });
               resolve();
-            }, 350);
+            }, 250);
           }
-        }, 1000 / 60);
+        }, 50);
       });
     }
 
-    // Chunked Data Transfer State
+    // Stage 4 & 5: ACK-Clocked Sliding-Window Chunked Data Transfer (Max 2x8KB = 16KB in flight inside SSH tunnel!)
     const incomingXfers = new Map();
     const pendingXferWaiters = new Map();
+    const activeTxState = new Map();
+
+    function checkCompleteIncomingXfer(xferId) {
+      const st = incomingXfers.get(xferId);
+      if (!st) return;
+      if (st.chunks.size < st.totalChunks && !st.endSeen) return;
+      if (st.chunks.size < st.totalChunks && st.endSeen) {
+        // Wait for remaining chunks if diag_xfer_end arrived slightly early
+        return;
+      }
+      incomingXfers.delete(xferId);
+      const full = new Uint8Array(st.totalBytes);
+      let offset = 0;
+      let missing = 0;
+      for (let i = 0; i < st.totalChunks; i++) {
+        const part = st.chunks.get(i);
+        if (!part) missing++;
+        else {
+          full.set(part, offset);
+          offset += part.length;
+        }
+      }
+      const rxCrc32 = missing === 0 ? crc32Bytes(full) : 'MISSING';
+      const crcMatch = missing === 0 && rxCrc32 === st.expectedCrc;
+      log(`Received ${st.kb} KB (${st.totalChunks} chunks) — CRC ${crcMatch ? 'OK' : 'FAIL'}`);
+      sendWs({
+        type: 'diag_xfer_ack',
+        xferId,
+        rxCrc32,
+        crcMatch
+      });
+      uploadReportToServer(false);
+    }
 
     async function runChunkedTransferBenchmark(kb, chunkKb = 8) {
       const totalBytes = kb * 1024;
@@ -739,14 +873,19 @@
       const t0 = performance.now();
 
       return new Promise((resolve) => {
-        const timeoutMs = Math.max(20000, kb * 140);
+        let nudgeTimer = null;
+        const timeoutMs = Math.max(25000, kb * 160);
         const timer = setTimeout(() => {
+          if (nudgeTimer) clearInterval(nudgeTimer);
           pendingXferWaiters.delete(xferId);
+          activeTxState.delete(xferId);
           resolve({ ok: false, kb, ms: Math.round(performance.now() - t0), kbps: 0, status: 'TIMEOUT' });
         }, timeoutMs);
 
         pendingXferWaiters.set(xferId, (ack) => {
           clearTimeout(timer);
+          if (nudgeTimer) clearInterval(nudgeTimer);
+          activeTxState.delete(xferId);
           const ms = Math.max(1, Math.round(performance.now() - t0));
           const kbps = +((kb / ms) * 1000).toFixed(1);
           resolve({
@@ -767,16 +906,44 @@
           totalBytes,
           crc32: crc
         });
-        for (let c = 0; c < totalChunks; c++) {
-          const slice = u8.subarray(c * chunkSize, Math.min(totalBytes, (c + 1) * chunkSize));
-          sendWs({
-            type: 'diag_xfer_chunk',
-            xferId,
-            index: c,
-            dataB64: uint8ToBase64(slice)
-          });
-        }
-        sendWs({ type: 'diag_xfer_end', xferId });
+
+        // Sliding-window sender: keep at most 2 chunks (16 KB) in flight so SSH tunnel buffer never bloats!
+        const MAX_IN_FLIGHT = 2;
+        const tx = {
+          nextIndex: 0,
+          ackedCount: 0,
+          lastAckAt: performance.now(),
+          endSent: false,
+          pump() {
+            while (this.nextIndex < totalChunks && (this.nextIndex - this.ackedCount) < MAX_IN_FLIGHT) {
+              const c = this.nextIndex++;
+              const slice = u8.subarray(c * chunkSize, Math.min(totalBytes, (c + 1) * chunkSize));
+              sendWs({
+                type: 'diag_xfer_chunk',
+                xferId,
+                index: c,
+                dataB64: uint8ToBase64(slice)
+              });
+            }
+            if (this.nextIndex >= totalChunks && !this.endSent) {
+              this.endSent = true;
+              sendWs({ type: 'diag_xfer_end', xferId });
+            }
+          }
+        };
+        activeTxState.set(xferId, tx);
+        tx.pump();
+        nudgeTimer = setInterval(() => {
+          if (tx.nextIndex >= totalChunks) {
+            clearInterval(nudgeTimer);
+            return;
+          }
+          if (performance.now() - tx.lastAckAt > 1200) {
+            tx.ackedCount = Math.min(tx.nextIndex, tx.ackedCount + 1);
+            tx.lastAckAt = performance.now();
+            tx.pump();
+          }
+        }, 400);
       });
     }
 
@@ -790,11 +957,11 @@
       suiteBadge.className = 'badge info';
       suiteBadge.textContent = 'RUNNING...';
       stateBadge.className = 'badge info';
-      stateText.textContent = 'Running 6-Stage Automated 2-PC Benchmark — please wait ~25 seconds...';
+      stateText.textContent = 'Running 6-Stage Automated 2-PC Benchmark — please wait ~30 seconds...';
       progressBar.style.width = '8%';
 
       log('=== STARTING 6-STAGE 2-PC AUTOMATED BENCHMARK ===');
-      sendWs({ type: 'autotest_ status_sync', stages: reportState.stages, progress: 8 });
+      sendWs({ type: 'autotest_sync', stages: reportState.stages, progress: 8 });
 
       // STAGE 1: Baseline Relay Ping & Jitter (15 Pings)
       const stage1 = { name: '1. Baseline WSS Relay Ping (15x)', status: 'RUNNING', summary: 'Measuring server & peer RTT...' };
@@ -852,14 +1019,14 @@
       sendWs({ type: 'autotest_sync', stages: reportState.stages, webrtcProfiles: reportState.webrtcProfiles, progress: 48 });
       await uploadReportToServer(false);
 
-      // STAGE 3: Bidirectional Simultaneous 60Hz NES Input Stream (180 frames = 3s)
-      const stage3 = { name: '3. Bidirectional 60Hz NES Input Stream (3s)', status: 'RUNNING', summary: 'Streaming 180 frames @ 60Hz in both directions simultaneously...' };
+      // STAGE 3: Bidirectional Simultaneous 60fps NES Input Stream (180 frames via 20Hz 3-frame micro-batches)
+      const stage3 = { name: '3. Bidirectional 60Hz NES Input Stream (3s)', status: 'RUNNING', summary: 'Streaming 180 NES frames (60fps via 20Hz micro-batches) in both directions...' };
       reportState.stages.push(stage3);
       renderTables();
 
-      rxStream = { active: true, total: 180, seqs: new Set(), gaps: [], lastAt: 0 };
+      rxStream = { active: true, total: 180, seqs: new Set(), gaps: [], lastAt: 0, reported: false };
       const remoteSummaryPromise = new Promise((resolve) => {
-        const t = setTimeout(() => { remoteStreamSummaryWaiter = null; resolve(null); }, 8000);
+        const t = setTimeout(() => { remoteStreamSummaryWaiter = null; resolve(null); }, 10000);
         remoteStreamSummaryWaiter = (s) => { clearTimeout(t); resolve(s); };
       });
       sendWs({ type: 'autotest_start_bidir_stream', totalFrames: 180 });
@@ -871,18 +1038,18 @@
       const pc2ToPc1Rx = rxStream.seqs.size;
       if (pc1ToPc2) {
         stage3.status = pc1ToPc2.rx >= 175 && pc2ToPc1Rx >= 175 ? 'PASS' : 'WARN';
-        stage3.summary = `PC1→PC2: ${pc1ToPc2.rx}/180 (MaxGap=${pc1ToPc2.maxGap}ms, Clump=${pc1ToPc2.clumpPct}%) | PC2→PC1: ${pc2ToPc1Rx}/180 (MaxGap=${pc2ToPc1Gaps.max ?? 0}ms)`;
+        stage3.summary = `PC1→PC2: ${pc1ToPc2.rx}/180 (MaxGap=${pc1ToPc2.maxGap}ms, Clump=${pc1ToPc2.clumpPct}%) | PC2→PC1: ${pc2ToPc1Rx}/180 (MaxGap=${Math.round(pc2ToPc1Gaps.max ?? 0)}ms)`;
       } else {
-        stage3.status = 'WARN';
-        stage3.summary = `PC2→PC1: ${pc2ToPc1Rx}/180 (MaxGap=${pc2ToPc1Gaps.max ?? 0}ms)`;
+        stage3.status = pc2ToPc1Rx >= 175 ? 'WARN' : 'FAIL';
+        stage3.summary = `PC2→PC1: ${pc2ToPc1Rx}/180 (MaxGap=${Math.round(pc2ToPc1Gaps.max ?? 0)}ms) | PC1→PC2 report pending`;
       }
       log(`Stage 3 Complete: ${stage3.summary}`);
       progressBar.style.width = '66%';
       sendWs({ type: 'autotest_sync', stages: reportState.stages, webrtcProfiles: reportState.webrtcProfiles, progress: 66 });
       await uploadReportToServer(false);
 
-      // STAGE 4: 16 KB & 64 KB Priority-Queued Chunk Transfers
-      const stage4 = { name: '4. 16 KB & 64 KB Chunked Data Transfers (CRC32)', status: 'RUNNING', summary: 'Testing 16 KB and 64 KB transfers...' };
+      // STAGE 4: 16 KB & 64 KB ACK-Clocked Sliding-Window Chunk Transfers
+      const stage4 = { name: '4. 16 KB & 64 KB Chunked Data Transfers (CRC32)', status: 'RUNNING', summary: 'Testing 16 KB and 64 KB ACK-clocked transfers...' };
       reportState.stages.push(stage4);
       renderTables();
 
@@ -895,8 +1062,8 @@
       sendWs({ type: 'autotest_sync', stages: reportState.stages, webrtcProfiles: reportState.webrtcProfiles, progress: 82 });
       await uploadReportToServer(false);
 
-      // STAGE 5: 256 KB Large Transfer + Live Concurrent Ping Check (Priority Queue Test)
-      const stage5 = { name: '5. 256 KB Transfer + Concurrent Ping Under Load', status: 'RUNNING', summary: 'Streaming 256 KB (32x8KB) while measuring live ping...' };
+      // STAGE 5: 256 KB Large Transfer + Live Concurrent Ping Check (Sliding-Window Test)
+      const stage5 = { name: '5. 256 KB Transfer + Concurrent Ping Under Load', status: 'RUNNING', summary: 'Streaming 256 KB (32x8KB ACK-windowed) while measuring live ping...' };
       reportState.stages.push(stage5);
       renderTables();
 
@@ -906,7 +1073,7 @@
       while (!xferDone) {
         const p = await measurePeerRttViaWs(3000);
         if (p !== null) loadPings.push(p);
-        if (!xferDone) await sleep(450);
+        if (!xferDone) await sleep(500);
       }
       const xf256 = await xferPromise;
       const loadPingStats = calcStats(loadPings);
@@ -930,9 +1097,9 @@
         await sleep(50);
       }
       const postStats = calcStats(postPings);
-      const deltaMs = (postStats.avg || 0) - (baseStats.avg || 0);
-      stage6.status = Math.abs(deltaMs) < 180 ? 'PASS' : 'WARN';
-      stage6.summary = `Before 256KB=${baseStats.avg}ms → After 256KB=${postStats.avg}ms (Min=${postStats.min}ms, Max=${postStats.max}ms, Delta=${deltaMs >= 0 ? '+' : ''}${deltaMs}ms)`;
+      const deltaMs = postStats.avg !== null && baseStats.avg !== null ? postStats.avg - baseStats.avg : null;
+      stage6.status = postStats.avg !== null && Math.abs(deltaMs) < 180 ? 'PASS' : postStats.avg !== null ? 'WARN' : 'FAIL';
+      stage6.summary = `Before 256KB=${baseStats.avg ?? '--'}ms → After 256KB=${postStats.avg ?? '--'}ms (Min=${postStats.min ?? '--'}ms, Max=${postStats.max ?? '--'}ms, Delta=${deltaMs !== null ? (deltaMs >= 0 ? '+' : '') + deltaMs + 'ms' : '--'})`;
       log(`Stage 6 Complete: ${stage6.summary}`);
 
       progressBar.style.width = '100%';
@@ -956,8 +1123,10 @@
       suiteRunning = false;
     }
 
+    let reconnectTimer = null;
     function connectAutoRoom() {
-      if (ws) { try { ws.close(); } catch {} }
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (ws) { try { ws.onclose = null; ws.close(); } catch {} }
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${proto}//${window.location.host}/ws`);
 
@@ -971,6 +1140,11 @@
         });
       };
 
+      ws.onclose = (ev) => {
+        log(`WebSocket closed (code=${ev.code}) — auto-reconnecting in 800ms...`);
+        reconnectTimer = setTimeout(() => connectAutoRoom(), 800);
+      };
+
       ws.onmessage = async (ev) => {
         let msg;
         try { msg = JSON.parse(ev.data); } catch { return; }
@@ -982,6 +1156,11 @@
             serverPingWaiter = null;
             w();
           }
+          return;
+        }
+
+        if (msg.type === 'autotest_combined_text' && msg.combinedText) {
+          reportBox.value = msg.combinedText;
           return;
         }
 
@@ -1014,6 +1193,7 @@
           partnerLabel.textContent = 'Partner: Disconnected';
           stateBadge.className = 'badge warn';
           stateBadge.textContent = 'PARTNER LEFT';
+          log('Partner WebSocket disconnected (waiting for auto-reconnect)...');
           return;
         }
 
@@ -1046,9 +1226,11 @@
 
         if (msg.type === 'autotest_rtc_cands') {
           const p = reportState.webrtcProfiles.find((x) => x.id === msg.profileId);
-          if (p && Array.isArray(msg.candTypes)) {
-            for (const ct of msg.candTypes) {
-              if (!p.remoteTypes.includes(ct)) p.remoteTypes.push(ct);
+          if (p) {
+            if (Array.isArray(msg.candTypes)) {
+              for (const ct of msg.candTypes) {
+                if (!p.remoteTypes.includes(ct)) p.remoteTypes.push(ct);
+              }
             }
             renderTables();
           }
@@ -1063,12 +1245,12 @@
         }
 
         if (msg.type === 'webrtc_signal') {
-          handleIncomingWebRtcSignal(msg.signal);
+          handleIncomingWebRtcSignal(msg.signal, msg.profileId);
           return;
         }
 
         if (msg.type === 'autotest_start_bidir_stream') {
-          rxStream = { active: true, total: msg.totalFrames || 180, seqs: new Set(), gaps: [], lastAt: 0 };
+          rxStream = { active: true, total: msg.totalFrames || 180, seqs: new Set(), gaps: [], lastAt: 0, reported: false };
           startLocal60HzTx(msg.totalFrames || 180);
           return;
         }
@@ -1078,23 +1260,19 @@
           const now = performance.now();
           if (rxStream.lastAt > 0) rxStream.gaps.push(now - rxStream.lastAt);
           rxStream.lastAt = now;
-          rxStream.seqs.add(msg.seq);
+          if (Array.isArray(msg.frames)) {
+            for (const f of msg.frames) rxStream.seqs.add(f.seq);
+          } else if (typeof msg.seq === 'number') {
+            rxStream.seqs.add(msg.seq);
+          }
+          if (rxStream.seqs.size >= rxStream.total) {
+            sendStreamReportIfNeeded();
+          }
           return;
         }
 
         if (msg.type === 'autotest_stream_done') {
-          rxStream.active = false;
-          const g = calcStats(rxStream.gaps);
-          const clumped = rxStream.gaps.filter((x) => x < 3.0).length;
-          const clumpPct = rxStream.gaps.length > 0 ? Math.round((clumped / rxStream.gaps.length) * 100) : 0;
-          sendWs({
-            type: 'autotest_stream_report',
-            rx: rxStream.seqs.size,
-            total: rxStream.total,
-            maxGap: g.max ?? 0,
-            avgGap: g.avg ?? 0,
-            clumpPct
-          });
+          sendStreamReportIfNeeded();
           return;
         }
 
@@ -1113,38 +1291,44 @@
             totalChunks: msg.totalChunks,
             totalBytes: msg.totalBytes,
             expectedCrc: msg.crc32,
-            chunks: new Map()
+            chunks: new Map(),
+            endSeen: false
           });
           return;
         }
 
         if (msg.type === 'diag_xfer_chunk') {
           const st = incomingXfers.get(msg.xferId);
-          if (st) st.chunks.set(msg.index, base64ToUint8(msg.dataB64));
+          if (st) {
+            st.chunks.set(msg.index, base64ToUint8(msg.dataB64));
+            sendWs({
+              type: 'diag_xfer_chunk_ack',
+              xferId: msg.xferId,
+              index: msg.index,
+              receivedCount: st.chunks.size
+            });
+            if (st.chunks.size >= st.totalChunks) {
+              checkCompleteIncomingXfer(msg.xferId);
+            }
+          }
+          return;
+        }
+
+        if (msg.type === 'diag_xfer_chunk_ack') {
+          const tx = activeTxState.get(msg.xferId);
+          if (tx) {
+            tx.ackedCount = Math.max(tx.ackedCount, msg.receivedCount || (msg.index + 1));
+            tx.lastAckAt = performance.now();
+            tx.pump();
+          }
           return;
         }
 
         if (msg.type === 'diag_xfer_end') {
           const st = incomingXfers.get(msg.xferId);
           if (!st) return;
-          incomingXfers.delete(msg.xferId);
-          const full = new Uint8Array(st.totalBytes);
-          let offset = 0;
-          let missing = 0;
-          for (let i = 0; i < st.totalChunks; i++) {
-            const part = st.chunks.get(i);
-            if (!part) missing++;
-            else { full.set(part, offset); offset += part.length; }
-          }
-          const rxCrc32 = missing === 0 ? crc32Bytes(full) : 'MISSING';
-          const crcMatch = missing === 0 && rxCrc32 === st.expectedCrc;
-          log(`Received ${st.kb} KB (${st.totalChunks} chunks) — CRC ${crcMatch ? 'OK' : 'FAIL'}`);
-          sendWs({
-            type: 'diag_xfer_ack',
-            xferId: msg.xferId,
-            rxCrc32,
-            crcMatch
-          });
+          st.endSeen = true;
+          checkCompleteIncomingXfer(msg.xferId);
           return;
         }
 
@@ -1166,6 +1350,11 @@
                 localProf.open = incomingProf.open;
                 localProf.rttMs = incomingProf.rttMs;
                 localProf.selectedPair = incomingProf.selectedPair || localProf.selectedPair;
+                if (Array.isArray(incomingProf.localTypes)) {
+                  for (const ct of incomingProf.localTypes) {
+                    if (!localProf.remoteTypes.includes(ct)) localProf.remoteTypes.push(ct);
+                  }
+                }
               } else {
                 reportState.webrtcProfiles.push(incomingProf);
               }

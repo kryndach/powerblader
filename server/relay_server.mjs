@@ -135,58 +135,17 @@ export function createCoopServer(options = {}) {
     return peers;
   }
 
-  function pumpPeerBulkQueue(peer) {
-    if (!peer.bulkWsQueue || peer.bulkWsQueue.length === 0) {
-      peer.bulkTimer = null;
-      return;
-    }
-    if (!peer.ws || peer.ws.readyState !== 1) {
-      peer.bulkWsQueue.length = 0;
-      peer.bulkTimer = null;
-      return;
-    }
-    const buffered = (peer.ws.bufferedAmount || 0) + (peer.ws._socket?.bufferSize || 0);
-    if (buffered <= 8192) {
-      const nextRaw = peer.bulkWsQueue.shift();
-      try {
-        peer.ws.send(nextRaw);
-        peer.lastTxAt = Date.now();
-      } catch {}
-    }
-    if (peer.bulkWsQueue.length > 0) {
-      peer.bulkTimer = setTimeout(() => pumpPeerBulkQueue(peer), 4);
-      peer.bulkTimer.unref?.();
-    } else {
-      peer.bulkTimer = null;
-    }
-  }
-
   function sendToPeer(peer, payloadObj) {
     const seq = peer.nextSeq++;
     const msgWithSeq = { ...payloadObj, _seq: seq };
     const raw = JSON.stringify(msgWithSeq);
 
     if (peer.ws && peer.ws.readyState === 1) {
-      const isBulkChunk =
-        raw.length > 2048 ||
-        payloadObj.type === 'diag_xfer_chunk' ||
-        payloadObj.type === 'diag_xfer_single';
-
-      // Two-Lane Priority Queue: small real-time packets (pings, 60Hz inputs, WebRTC signals) bypass bulk chunks immediately!
-      if (!isBulkChunk) {
-        try {
-          peer.ws.send(raw);
-          peer.lastTxAt = Date.now();
-          return;
-        } catch {}
-      } else {
-        if (!peer.bulkWsQueue) peer.bulkWsQueue = [];
-        peer.bulkWsQueue.push(raw);
-        if (!peer.bulkTimer) {
-          pumpPeerBulkQueue(peer);
-        }
+      try {
+        peer.ws.send(raw);
+        peer.lastTxAt = Date.now();
         return;
-      }
+      } catch {}
     }
 
     // Queue in HTTP outbox only when WebSocket is not open for this peer
@@ -302,6 +261,26 @@ export function createCoopServer(options = {}) {
 
     if (msg.type === 'ping') {
       sendToPeer(peer, { type: 'pong', t: msg.t, via: msg.via, serverTime: Date.now() });
+      return;
+    }
+
+    if (msg.type === 'autotest_report_ws' && msg.report) {
+      const pIdx = msg.report.playerIndex || peer.playerIndex || 1;
+      if (pIdx === 2) {
+        autotestSession.pc2 = msg.report;
+      } else {
+        autotestSession.pc1 = msg.report;
+      }
+      saveAutotestReportToDisk();
+      if (msg.report.isFinal && options.logAccess !== false) {
+        console.log(`[AUTOTEST] Saved final report from PC ${pIdx} to logs/autotest_latest.txt`);
+      }
+      const syncMsg = {
+        type: 'autotest_combined_text',
+        combinedText: autotestSession.combinedText
+      };
+      sendToPeer(peer, syncMsg);
+      broadcastToRoom(peer.roomCode, peer.clientId, syncMsg);
       return;
     }
 
