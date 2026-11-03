@@ -441,23 +441,25 @@
       return { count: valid.length, min, avg, med, p95, max, jitter };
     }
 
-    // Multi-Profile WebRTC Tester
+    // Multi-Profile WebRTC Tester (Includes Flowseal/zapret-discord-youtube UDP 19294-19344 & 443 profile)
     const WEBRTC_PROFILES = [
       {
-        id: 'ru_sip',
-        name: '1. RU/SIP + Global STUN (sipnet.ru, zadarma, ekiga, google)',
+        id: 'zapret_discord',
+        name: '1. Zapret/Discord UDP Ports (19302, 19305, 443 STUN)',
         iceServers: [
-          { urls: 'stun:stun.sipnet.ru:3478' },
-          { urls: 'stun:stun.zadarma.com:3478' },
-          { urls: 'stun:stun.ekiga.net:3478' },
-          { urls: 'stun:stun.l.google.com:19302' }
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19305' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun.nextcloud.com:443' }
         ]
       },
       {
-        id: 'port_443',
-        name: '2. Port-443 & Cloudflare STUN (nextcloud:443, cloudflare:3478)',
+        id: 'ru_sip',
+        name: '2. RU/SIP + Cloudflare STUN (sipnet.ru, zadarma, cloudflare)',
         iceServers: [
-          { urls: 'stun:stun.nextcloud.com:443' },
+          { urls: 'stun:stun.sipnet.ru:3478' },
+          { urls: 'stun:stun.zadarma.com:3478' },
           { urls: 'stun:stun.cloudflare.com:3478' }
         ]
       },
@@ -495,10 +497,39 @@
     let rtcPingResolve = null;
 
     function parseCandidateType(candStr) {
-      if (!candStr) return 'unknown';
+      if (!candStr || !candStr.trim()) return null;
       const parts = candStr.trim().split(/\s+/);
       const idx = parts.indexOf('typ');
-      return idx >= 0 ? parts[idx + 1] : 'unknown';
+      return idx >= 0 ? parts[idx + 1] : null;
+    }
+
+    function extractSdpCandidateTypes(sdpStr, targetArr) {
+      if (!sdpStr || !Array.isArray(targetArr)) return;
+      const lines = sdpStr.split(/\r?\n/);
+      for (const line of lines) {
+        if (line.startsWith('a=candidate:')) {
+          const t = parseCandidateType(line.slice(2));
+          if (t && !targetArr.includes(t)) targetArr.push(t);
+        }
+      }
+    }
+
+    function waitForIceGathering(rtc, maxWaitMs = 1200) {
+      if (!rtc || rtc.iceGatheringState === 'complete') return Promise.resolve();
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          rtc.removeEventListener('icegatheringstatechange', check);
+          resolve();
+        }, maxWaitMs);
+        function check() {
+          if (rtc.iceGatheringState === 'complete') {
+            clearTimeout(timer);
+            rtc.removeEventListener('icegatheringstatechange', check);
+            resolve();
+          }
+        }
+        rtc.addEventListener('icegatheringstatechange', check);
+      });
     }
 
     function cleanupRtc() {
@@ -570,22 +601,25 @@
       rtc.onicegatheringstatechange = onStateChange;
       rtc.onsignalingstatechange = onStateChange;
 
+      let offerSent = false;
       rtc.onicecandidate = (ev) => {
-        if (activeRtc !== rtc || !ev.candidate) return;
+        if (activeRtc !== rtc || !ev.candidate || !ev.candidate.candidate) return;
         const t = parseCandidateType(ev.candidate.candidate);
-        if (!resObj.localTypes.includes(t)) resObj.localTypes.push(t);
+        if (t && !resObj.localTypes.includes(t)) resObj.localTypes.push(t);
         syncRtcIceState(rtc, resObj, prof.id);
-        sendWs({
-          type: 'webrtc_signal',
-          profileId: prof.id,
-          signal: {
-            candidate: {
-              candidate: ev.candidate.candidate,
-              sdpMid: ev.candidate.sdpMid,
-              sdpMLineIndex: ev.candidate.sdpMLineIndex
+        if (offerSent) {
+          sendWs({
+            type: 'webrtc_signal',
+            profileId: prof.id,
+            signal: {
+              candidate: {
+                candidate: ev.candidate.candidate,
+                sdpMid: ev.candidate.sdpMid,
+                sdpMLineIndex: ev.candidate.sdpMLineIndex
+              }
             }
-          }
-        });
+          });
+        }
       };
 
       activeDcFast = rtc.createDataChannel('diag_fast', { ordered: false, maxRetransmits: 0 });
@@ -595,7 +629,10 @@
 
       const offer = await rtc.createOffer();
       await rtc.setLocalDescription(offer);
+      await waitForIceGathering(rtc, 1200);
+      extractSdpCandidateTypes(rtc.localDescription?.sdp, resObj.localTypes);
       syncRtcIceState(rtc, resObj, prof.id);
+      offerSent = true;
       sendWs({
         type: 'webrtc_signal',
         profileId: prof.id,
@@ -656,9 +693,11 @@
       return resObj;
     }
 
+    let responderAnswerSent = false;
     function handleResponderRtcInit(profileId) {
       const prof = WEBRTC_PROFILES.find((p) => p.id === profileId) || WEBRTC_PROFILES[0];
       cleanupRtc();
+      responderAnswerSent = false;
       activeProfileId = prof.id;
       let resObj = reportState.webrtcProfiles.find((p) => p.id === prof.id);
       if (!resObj) {
@@ -689,21 +728,23 @@
       rtc.onsignalingstatechange = onStateChange;
 
       rtc.onicecandidate = (ev) => {
-        if (activeRtc !== rtc || !ev.candidate) return;
+        if (activeRtc !== rtc || !ev.candidate || !ev.candidate.candidate) return;
         const t = parseCandidateType(ev.candidate.candidate);
-        if (!resObj.localTypes.includes(t)) resObj.localTypes.push(t);
+        if (t && !resObj.localTypes.includes(t)) resObj.localTypes.push(t);
         syncRtcIceState(rtc, resObj, prof.id);
-        sendWs({
-          type: 'webrtc_signal',
-          profileId: prof.id,
-          signal: {
-            candidate: {
-              candidate: ev.candidate.candidate,
-              sdpMid: ev.candidate.sdpMid,
-              sdpMLineIndex: ev.candidate.sdpMLineIndex
+        if (responderAnswerSent) {
+          sendWs({
+            type: 'webrtc_signal',
+            profileId: prof.id,
+            signal: {
+              candidate: {
+                candidate: ev.candidate.candidate,
+                sdpMid: ev.candidate.sdpMid,
+                sdpMLineIndex: ev.candidate.sdpMLineIndex
+              }
             }
-          }
-        });
+          });
+        }
       };
       rtc.ondatachannel = (ev) => {
         const ch = ev.channel;
@@ -721,7 +762,7 @@
       if (!signal) return;
       rtcSignalQueue = rtcSignalQueue.then(async () => {
         try {
-          const targetProfId = profileId || activeProfileId || 'ru_sip';
+          const targetProfId = profileId || activeProfileId || 'zapret_discord';
           if (signal.sdp && signal.sdp.type === 'offer') {
             handleResponderRtcInit(targetProfId);
           }
@@ -729,12 +770,24 @@
           if (profileId && activeProfileId && profileId !== activeProfileId) return;
 
           if (signal.sdp) {
+            if (currentRtcProfileResult && signal.sdp.sdp) {
+              extractSdpCandidateTypes(signal.sdp.sdp, currentRtcProfileResult.remoteTypes);
+            }
             await activeRtc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
             if (signal.sdp.type === 'offer') {
               const ans = await activeRtc.createAnswer();
               await activeRtc.setLocalDescription(ans);
+              await waitForIceGathering(activeRtc, 1200);
+              if (currentRtcProfileResult) {
+                extractSdpCandidateTypes(activeRtc.localDescription?.sdp, currentRtcProfileResult.localTypes);
+              }
               syncRtcIceState(activeRtc, currentRtcProfileResult, targetProfId);
-              log(`WebRTC Responder answered profile "${targetProfId}" (ICE=${currentRtcProfileResult?.iceState})`);
+              responderAnswerSent = true;
+              const locStr = currentRtcProfileResult ? currentRtcProfileResult.localTypes.join(',') : '';
+              log(`WebRTC Responder answered "${targetProfId}" (ICE=${currentRtcProfileResult?.iceState}, Local=[${locStr}])`);
+              if (currentRtcProfileResult && currentRtcProfileResult.localTypes.length === 0 && targetProfId === 'zapret_discord') {
+                log('WARN: Browser gathered 0 UDP candidates (Local=[]). A Chrome VPN/Proxy/WebRTC extension is blocking UDP in this browser! Try Incognito or Edge.');
+              }
               sendWs({
                 type: 'webrtc_signal',
                 profileId: targetProfId,
@@ -745,22 +798,21 @@
                   }
                 }
               });
-              uploadReportToServer(false);
             } else if (signal.sdp.type === 'answer') {
               syncRtcIceState(activeRtc, currentRtcProfileResult, targetProfId);
-              log(`WebRTC Offerer received SDP Answer for "${targetProfId}" (ICE=${currentRtcProfileResult?.iceState})`);
+              log(`WebRTC Offerer received SDP Answer for "${targetProfId}" (ICE=${currentRtcProfileResult?.iceState}, Remote=[${currentRtcProfileResult?.remoteTypes.join(',')}])`);
             }
             while (pendingCandidates.length > 0) {
               const c = pendingCandidates.shift();
               const t = parseCandidateType(c.candidate);
-              if (currentRtcProfileResult && !currentRtcProfileResult.remoteTypes.includes(t)) {
+              if (t && currentRtcProfileResult && !currentRtcProfileResult.remoteTypes.includes(t)) {
                 currentRtcProfileResult.remoteTypes.push(t);
               }
               await activeRtc.addIceCandidate(new RTCIceCandidate(c));
             }
           } else if (signal.candidate) {
             const t = parseCandidateType(signal.candidate.candidate);
-            if (currentRtcProfileResult && !currentRtcProfileResult.remoteTypes.includes(t)) {
+            if (t && currentRtcProfileResult && !currentRtcProfileResult.remoteTypes.includes(t)) {
               currentRtcProfileResult.remoteTypes.push(t);
             }
             if (!activeRtc.remoteDescription || !activeRtc.remoteDescription.type) {
