@@ -111,7 +111,7 @@ if ($publicBaseUrl) {
 
   Write-Host ""
   Write-Host "====================================================================" -ForegroundColor Green
-  Write-Host "   READY! NO ROOM CODE NEEDED — JUST OPEN THESE LINKS:" -ForegroundColor Green
+  Write-Host "   READY! NO ROOM CODE NEEDED -- JUST OPEN THESE LINKS:" -ForegroundColor Green
   Write-Host "====================================================================" -ForegroundColor Green
   Write-Host ""
   Write-Host "  1. SEND THIS LINK TO BROTHER (Already copied to your Clipboard!):" -ForegroundColor Yellow
@@ -150,7 +150,7 @@ try {
       break
     }
     if ($sshProc.HasExited) {
-      Write-Host "[WARN] SSH tunnel closed — restarting SSH tunnel..." -ForegroundColor Yellow
+      Write-Host "[WARN] SSH tunnel closed -- restarting SSH tunnel..." -ForegroundColor Yellow
       $sshProc = Start-Process -FilePath "ssh.exe" `
         -ArgumentList $sshArgs `
         -WorkingDirectory $RootDir `
