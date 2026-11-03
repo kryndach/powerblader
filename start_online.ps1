@@ -98,7 +98,7 @@ for ($i = 0; $i -lt 60; $i++) {
   if (Test-Path $sshOut) { $combined += (Get-Content $sshOut -Raw -ErrorAction SilentlyContinue) + "`n" }
   if (Test-Path $sshErr) { $combined += (Get-Content $sshErr -Raw -ErrorAction SilentlyContinue) + "`n" }
 
-  if ($combined -match "(https://[a-zA-Z0-9\-\.]+\.(lhr\.life|pinggy\.link|pinggy\.online))") {
+  if ($combined -match "(https://[a-zA-Z0-9\-\.]+\.(lhr\.life|pinggy-free\.link|free\.pinggy\.net|pinggy\.link|pinggy\.online))") {
     $publicBaseUrl = $Matches[1]
     break
   }
