@@ -602,22 +602,23 @@
       rtc.onsignalingstatechange = onStateChange;
 
       let offerSent = false;
+      const gatheredLocalCandidates = [];
       rtc.onicecandidate = (ev) => {
         if (activeRtc !== rtc || !ev.candidate || !ev.candidate.candidate) return;
         const t = parseCandidateType(ev.candidate.candidate);
         if (t && !resObj.localTypes.includes(t)) resObj.localTypes.push(t);
+        const candObj = {
+          candidate: ev.candidate.candidate,
+          sdpMid: ev.candidate.sdpMid,
+          sdpMLineIndex: ev.candidate.sdpMLineIndex
+        };
+        gatheredLocalCandidates.push(candObj);
         syncRtcIceState(rtc, resObj, prof.id);
         if (offerSent) {
           sendWs({
             type: 'webrtc_signal',
             profileId: prof.id,
-            signal: {
-              candidate: {
-                candidate: ev.candidate.candidate,
-                sdpMid: ev.candidate.sdpMid,
-                sdpMLineIndex: ev.candidate.sdpMLineIndex
-              }
-            }
+            signal: { candidate: candObj }
           });
         }
       };
@@ -640,7 +641,8 @@
           sdp: {
             type: rtc.localDescription.type,
             sdp: rtc.localDescription.sdp
-          }
+          },
+          candidates: gatheredLocalCandidates
         }
       });
 
@@ -694,10 +696,12 @@
     }
 
     let responderAnswerSent = false;
+    let responderGatheredCandidates = [];
     function handleResponderRtcInit(profileId) {
       const prof = WEBRTC_PROFILES.find((p) => p.id === profileId) || WEBRTC_PROFILES[0];
       cleanupRtc();
       responderAnswerSent = false;
+      responderGatheredCandidates = [];
       activeProfileId = prof.id;
       let resObj = reportState.webrtcProfiles.find((p) => p.id === prof.id);
       if (!resObj) {
@@ -731,18 +735,18 @@
         if (activeRtc !== rtc || !ev.candidate || !ev.candidate.candidate) return;
         const t = parseCandidateType(ev.candidate.candidate);
         if (t && !resObj.localTypes.includes(t)) resObj.localTypes.push(t);
+        const candObj = {
+          candidate: ev.candidate.candidate,
+          sdpMid: ev.candidate.sdpMid,
+          sdpMLineIndex: ev.candidate.sdpMLineIndex
+        };
+        responderGatheredCandidates.push(candObj);
         syncRtcIceState(rtc, resObj, prof.id);
         if (responderAnswerSent) {
           sendWs({
             type: 'webrtc_signal',
             profileId: prof.id,
-            signal: {
-              candidate: {
-                candidate: ev.candidate.candidate,
-                sdpMid: ev.candidate.sdpMid,
-                sdpMLineIndex: ev.candidate.sdpMLineIndex
-              }
-            }
+            signal: { candidate: candObj }
           });
         }
       };
@@ -774,6 +778,15 @@
               extractSdpCandidateTypes(signal.sdp.sdp, currentRtcProfileResult.remoteTypes);
             }
             await activeRtc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+            if (Array.isArray(signal.candidates)) {
+              for (const c of signal.candidates) {
+                const t = parseCandidateType(c.candidate);
+                if (t && currentRtcProfileResult && !currentRtcProfileResult.remoteTypes.includes(t)) {
+                  currentRtcProfileResult.remoteTypes.push(t);
+                }
+                try { await activeRtc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
+              }
+            }
             if (signal.sdp.type === 'offer') {
               const ans = await activeRtc.createAnswer();
               await activeRtc.setLocalDescription(ans);
@@ -795,7 +808,8 @@
                   sdp: {
                     type: activeRtc.localDescription.type,
                     sdp: activeRtc.localDescription.sdp
-                  }
+                  },
+                  candidates: responderGatheredCandidates
                 }
               });
             } else if (signal.sdp.type === 'answer') {
