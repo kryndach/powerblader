@@ -336,6 +336,25 @@ async function runNetDiagnosticsTests() {
   assert.ok(hostSawHttpPeer && hostGotHttpPong, 'HTTPS Tunnel fallback failed');
   console.log('[PASS] Stage 5: Pure HTTPS Tunnel Fallback (/api/http-tunnel) When WebSocket Is Blocked Verified');
 
+  // 6. Test Zero-Click Auto-Tester Page (/autotest) & Auto-Save Report Endpoint (/api/autotest-report)
+  const autoHtml = await httpGetText(`${baseUrl}/autotest`);
+  assert.strictEqual(autoHtml.status, 200);
+  assert.ok(autoHtml.text.includes('AUTOBENCH'), 'Expected /autotest page content');
+
+  const repRes = await httpPostJson(`${baseUrl}/api/autotest-report`, {
+    playerIndex: 1,
+    overallStatus: 'COMPLETE',
+    serverRttMs: 1,
+    wssRttMs: 250,
+    stages: [{ name: '1. Baseline WSS Relay Ping', status: 'PASS', summary: 'Avg=250ms' }],
+    webrtcProfiles: [{ id: 'ru_sip', name: 'RU SIP STUN', open: false, iceState: 'failed', localTypes: ['host', 'srflx'], remoteTypes: ['host'] }],
+    logs: ['[Test] Auto-benchmark completed'],
+    isFinal: true
+  });
+  assert.strictEqual(repRes.ok, true);
+  assert.ok(repRes.combinedText.includes('2-PC AUTOMATED NETWORK'), 'Expected combined report text');
+  console.log('[PASS] Stage 6: Zero-Click /autotest Page & /api/autotest-report Disk Auto-Save Verified');
+
   wsHost.close();
   await app.close();
 

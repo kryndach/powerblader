@@ -6,6 +6,9 @@
   "main": "server/relay_server.mjs",
   "scripts": {
     "start": "node server/relay_server.mjs",
+    "autotest": "powershell -ExecutionPolicy Bypass -File ./start_online.ps1 -Mode autotest",
+    "online": "powershell -ExecutionPolicy Bypass -File ./start_online.ps1 -Mode game",
+    "online:pinggy": "powershell -ExecutionPolicy Bypass -File ./start_online.ps1 -Tunnel pinggy -Mode autotest",
     "test": "node tools/test_coop_qa.mjs",
     "test:net": "node tools/test_net_diagnostics.mjs",
     "probe": "node tools/re_probe.mjs"

@@ -21,6 +21,75 @@ export function createCoopServer(options = {}) {
   // rooms: Map<roomCode, Map<clientId, PeerSession>>
   const rooms = new Map();
   const accessLog = [];
+  const autotestSession = {
+    startedAt: new Date().toISOString(),
+    updatedAt: null,
+    pc1: null,
+    pc2: null,
+    combinedText: ''
+  };
+
+  function saveAutotestReportToDisk() {
+    try {
+      const logsDir = path.join(ROOT_DIR, 'logs');
+      if (!fs.existsSync(logsDir)) {
+        fs.mkdirSync(logsDir, { recursive: true });
+      }
+      autotestSession.updatedAt = new Date().toISOString();
+
+      const lines = [];
+      lines.push('====================================================================');
+      lines.push('   2-PC AUTOMATED NETWORK, P2P & PROTOCOL BENCHMARK REPORT');
+      lines.push(`   Updated: ${autotestSession.updatedAt}`);
+      lines.push('====================================================================');
+
+      for (const [label, pc] of [['PC 1 (HOST / SINGAPORE)', autotestSession.pc1], ['PC 2 (REMOTE / BROTHER)', autotestSession.pc2]]) {
+        lines.push(`\n--- ${label} ---`);
+        if (!pc) {
+          lines.push('  (No report received from this PC yet)');
+          continue;
+        }
+        lines.push(`  URL: ${pc.url || '--'} | UA: ${pc.userAgent || '--'}`);
+        lines.push(`  Stage Status: ${pc.overallStatus || '--'} | Active Transport: ${pc.activeTransport || '--'}`);
+        lines.push(`  Server RTT: ${pc.serverRttMs ?? '--'} ms | WSS Peer RTT: ${pc.wssRttMs ?? '--'} ms (Jitter: ±${pc.wssJitterMs ?? 0}ms)`);
+        lines.push(`  WebRTC Fast UDP RTT: ${pc.rtcFastRttMs ?? 'BLOCKED'} ms | WebRTC Reliable RTT: ${pc.rtcRelRttMs ?? 'BLOCKED'} ms`);
+        if (Array.isArray(pc.stages) && pc.stages.length > 0) {
+          lines.push('  Benchmark Stages:');
+          for (const s of pc.stages) {
+            lines.push(`    - [${s.status}] ${s.name}: ${s.summary}`);
+          }
+        }
+        if (Array.isArray(pc.webrtcProfiles) && pc.webrtcProfiles.length > 0) {
+          lines.push('  WebRTC P2P & STUN/TURN Profile Matrix:');
+          for (const p of pc.webrtcProfiles) {
+            lines.push(
+              `    - [${p.open ? 'OPEN' : 'BLOCKED'}] ${p.name}: ICE=${p.iceState}, LocalCand=[${(p.localTypes || []).join(',')}], RemoteCand=[${(p.remoteTypes || []).join(',')}], Pair=${p.selectedPair || 'none'}, RTT=${p.rttMs ?? '--'}ms`
+            );
+          }
+        }
+        if (Array.isArray(pc.logs) && pc.logs.length > 0) {
+          lines.push('  Recent Event Log (Chronological):');
+          for (const l of pc.logs.slice(-35)) {
+            lines.push(`    ${l}`);
+          }
+        }
+      }
+
+      lines.push('\n--- RECENT SERVER ACCESS LOG ---');
+      for (const a of accessLog.slice(-15)) {
+        lines.push(`  [${a.ts}] ${a.note} | host=${a.host} | ip=${a.ip}`);
+      }
+      lines.push('====================================================================\n');
+
+      autotestSession.combinedText = lines.join('\n');
+      fs.writeFileSync(path.join(logsDir, 'autotest_latest.json'), JSON.stringify(autotestSession, null, 2), 'utf8');
+      fs.writeFileSync(path.join(logsDir, 'autotest_latest.txt'), autotestSession.combinedText, 'utf8');
+    } catch (e) {
+      if (options.logAccess !== false) {
+        console.error('Failed saving autotest report:', e.message);
+      }
+    }
+  }
 
   function recordAccess(req, note) {
     const xff = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
@@ -66,17 +135,58 @@ export function createCoopServer(options = {}) {
     return peers;
   }
 
+  function pumpPeerBulkQueue(peer) {
+    if (!peer.bulkWsQueue || peer.bulkWsQueue.length === 0) {
+      peer.bulkTimer = null;
+      return;
+    }
+    if (!peer.ws || peer.ws.readyState !== 1) {
+      peer.bulkWsQueue.length = 0;
+      peer.bulkTimer = null;
+      return;
+    }
+    const buffered = (peer.ws.bufferedAmount || 0) + (peer.ws._socket?.bufferSize || 0);
+    if (buffered <= 8192) {
+      const nextRaw = peer.bulkWsQueue.shift();
+      try {
+        peer.ws.send(nextRaw);
+        peer.lastTxAt = Date.now();
+      } catch {}
+    }
+    if (peer.bulkWsQueue.length > 0) {
+      peer.bulkTimer = setTimeout(() => pumpPeerBulkQueue(peer), 4);
+      peer.bulkTimer.unref?.();
+    } else {
+      peer.bulkTimer = null;
+    }
+  }
+
   function sendToPeer(peer, payloadObj) {
     const seq = peer.nextSeq++;
     const msgWithSeq = { ...payloadObj, _seq: seq };
     const raw = JSON.stringify(msgWithSeq);
 
     if (peer.ws && peer.ws.readyState === 1) {
-      try {
-        peer.ws.send(raw);
-        peer.lastTxAt = Date.now();
+      const isBulkChunk =
+        raw.length > 2048 ||
+        payloadObj.type === 'diag_xfer_chunk' ||
+        payloadObj.type === 'diag_xfer_single';
+
+      // Two-Lane Priority Queue: small real-time packets (pings, 60Hz inputs, WebRTC signals) bypass bulk chunks immediately!
+      if (!isBulkChunk) {
+        try {
+          peer.ws.send(raw);
+          peer.lastTxAt = Date.now();
+          return;
+        } catch {}
+      } else {
+        if (!peer.bulkWsQueue) peer.bulkWsQueue = [];
+        peer.bulkWsQueue.push(raw);
+        if (!peer.bulkTimer) {
+          pumpPeerBulkQueue(peer);
+        }
         return;
-      } catch {}
+      }
     }
 
     // Queue in HTTP outbox only when WebSocket is not open for this peer
@@ -221,7 +331,11 @@ export function createCoopServer(options = {}) {
       'warp_snapshot'
     ]);
 
-    if (forwardTypes.has(msg.type) || msg.type.startsWith('diag_')) {
+    if (
+      forwardTypes.has(msg.type) ||
+      msg.type.startsWith('diag_') ||
+      msg.type.startsWith('autotest_')
+    ) {
       broadcastToRoom(peer.roomCode, peer.clientId, {
         ...msg,
         fromPlayer: peer.playerIndex,
@@ -270,6 +384,49 @@ export function createCoopServer(options = {}) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ ok: true, activeRooms: rooms.size, accessLog }));
       return;
+    }
+
+    if (pathname === '/api/autotest-report') {
+      if (req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, session: autotestSession }));
+        return;
+      }
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk) => {
+          body += chunk;
+          if (body.length > 4 * 1024 * 1024) req.destroy();
+        });
+        req.on('end', () => {
+          try {
+            const report = JSON.parse(body || '{}');
+            if (report.playerIndex === 1) {
+              autotestSession.pc1 = report;
+            } else if (report.playerIndex === 2) {
+              autotestSession.pc2 = report;
+            } else {
+              autotestSession.pc1 = report;
+            }
+            saveAutotestReportToDisk();
+            if (report.isFinal && options.logAccess !== false) {
+              console.log(`[AUTOTEST] Saved final report from PC ${report.playerIndex} to logs/autotest_latest.txt`);
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end(
+              JSON.stringify({
+                ok: true,
+                savedTo: 'logs/autotest_latest.txt',
+                combinedText: autotestSession.combinedText
+              })
+            );
+          } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ ok: false, error: e.message }));
+          }
+        });
+        return;
+      }
     }
 
     // Pure HTTPS Fetch Relay & Room Tunnel (Works even when ISP/Tunnel blocks WebSockets!)
@@ -402,6 +559,9 @@ export function createCoopServer(options = {}) {
     } else if (pathname === '/nettest' || pathname === '/net_debug.html') {
       recordAccess(req, `NETTEST_LOAD ${req.url}`);
       filePath = path.join(ROOT_DIR, 'public', 'net_debug.html');
+    } else if (pathname === '/autotest' || pathname === '/autotest.html') {
+      recordAccess(req, `AUTOTEST_LOAD ${req.url}`);
+      filePath = path.join(ROOT_DIR, 'public', 'autotest.html');
     } else if (pathname === '/src/netplay_engine.mjs') {
       filePath = path.join(ROOT_DIR, 'src', 'netplay_engine.mjs');
     } else if (pathname === '/src/coop_core.mjs') {
@@ -422,8 +582,13 @@ export function createCoopServer(options = {}) {
     fs.createReadStream(filePath).pipe(res);
   });
 
-  // Allow up to 8 MB payloads for ROM / savestate transfers
-  const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 8 * 1024 * 1024 });
+  // Allow up to 8 MB payloads for ROM / savestate transfers; disable perMessageDeflate to eliminate zlib framing latency
+  const wss = new WebSocketServer({
+    server,
+    path: '/ws',
+    maxPayload: 8 * 1024 * 1024,
+    perMessageDeflate: false
+  });
 
   // Disable Nagle's algorithm (enable TCP_NODELAY) on all incoming sockets for minimum real-time latency
   server.on('connection', (socket) => {
