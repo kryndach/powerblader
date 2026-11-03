@@ -71,8 +71,13 @@ Remove-Item $sshOut -Force -ErrorAction SilentlyContinue
 Remove-Item $sshErr -Force -ErrorAction SilentlyContinue
 
 if ($Tunnel -eq "pinggy") {
+  $tunnelKey = Join-Path $RootDir "logs\pinggy_ed25519"
+  if (!(Test-Path $tunnelKey)) {
+    Write-Host "      Generating local SSH key for passwordless Pinggy tunnel..." -ForegroundColor DarkGray
+    cmd.exe /c "ssh-keygen -t ed25519 -f `"$tunnelKey`" -q -N `"`"" | Out-Null
+  }
   Write-Host "[3/4] Starting low-latency SSH tunnel via Pinggy (a.pinggy.io)..." -ForegroundColor Green
-  $sshArgs = "-T -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o IPQoS=lowdelay -R0:127.0.0.1:$Port a.pinggy.io"
+  $sshArgs = "-T -p 443 -i `"$tunnelKey`" -o StrictHostKeyChecking=no -o BatchMode=yes -o ServerAliveInterval=15 -o IPQoS=lowdelay -R0:127.0.0.1:$Port a.pinggy.io"
 } else {
   Write-Host "[3/4] Starting SSH tunnel via localhost.run (with -T -o IPQoS=lowdelay)..." -ForegroundColor Green
   $sshArgs = "-T -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o IPQoS=lowdelay -R 80:127.0.0.1:$Port nokey@localhost.run"
