@@ -650,6 +650,25 @@ async function runTests() {
     loadFastState(nesChr, slot1);
     assert.strictEqual(nesChr.ppu.ptTile[1].pix[0], mutatedPixVal, 'CHR-RAM dirty-tile epoch load of slot 1 must restore 0x55 tile pixels');
 
+    // 6A-2: Verify fast cached setMirroring (Single-Screen 0 <-> Single-Screen 1 HUD splits),
+    //       load32kRomBank deduplication, RLE tail-trimmed packets, and Auto (RTT) input delay
+    nesChr.ppu.setMirroring(nesChr.rom.SINGLESCREEN_MIRRORING);
+    assert.strictEqual(nesChr.ppu.ntable1[1], 0);
+    assert.strictEqual(nesChr.ppu.vramMirrorTable[0x2400], 0x2000);
+    nesChr.ppu.setMirroring(nesChr.rom.SINGLESCREEN_MIRRORING2);
+    assert.strictEqual(nesChr.ppu.ntable1[1], 1);
+    assert.strictEqual(nesChr.ppu.vramMirrorTable[0x2400], 0x2400);
+    // Switching back hits the precomputed _mirrorCache
+    nesChr.ppu.setMirroring(nesChr.rom.SINGLESCREEN_MIRRORING);
+    assert.strictEqual(nesChr.ppu.ntable1[1], 0);
+    assert.strictEqual(nesChr.ppu.vramMirrorTable[0x2400], 0x2000);
+    assert.ok(nesChr.ppu._mirrorCache.size >= 2, 'Expected ppu._mirrorCache to cache Single-Screen mirroring modes');
+
+    assert.strictEqual(NesNetplayEngine.computeRecommendedInputDelay(60, 5), 2);
+    assert.strictEqual(NesNetplayEngine.computeRecommendedInputDelay(140, 10), 3);
+    assert.strictEqual(NesNetplayEngine.computeRecommendedInputDelay(225, 20), 4);
+    assert.strictEqual(NesNetplayEngine.computeRecommendedInputDelay(310, 30), 5);
+
     // 6B: Verify GGPO Clock-Rift Pacing converges a 10-frame clock lead down to < 2.5f without hard stalls
     const nes1 = new jsnes.NES({});
     const nes2 = new jsnes.NES({});
@@ -663,8 +682,15 @@ async function runTests() {
     // Give P1 an artificial 8-frame head start before P2 begins ticking at the same 60Hz rate
     for (let f = 0; f < 8; f++) {
       const r1 = eng1.stepNetplayFrame(INPUT_BITS.RIGHT);
-      if (r1.packetToSend) q12.push({ at: f * 16.667 + 110, pkt: r1.packetToSend });
+      if (r1.packetToSend) {
+        if (f === 7) {
+          assert.strictEqual(r1.packetToSend.inputs.length, 9, 'Expected 3 trailing initial delay zeros to be RLE tail-trimmed (11 -> 9)');
+          assert.strictEqual(r1.packetToSend.tailCount, 11, 'Expected tailCount to preserve full 11-frame window length');
+        }
+        q12.push({ at: f * 16.667 + 110, pkt: r1.packetToSend });
+      }
     }
+    let checkedSteadySingleInputRle = false;
     for (let tick = 8; tick < 450; tick++) {
       const now = tick * 16.667;
       while (q12.length > 0 && q12[0].at <= now) eng2.receiveRemoteInputPacket(q12.shift().pkt);
@@ -672,9 +698,17 @@ async function runTests() {
 
       const r1 = eng1.stepNetplayFrame(INPUT_BITS.RIGHT);
       const r2 = eng2.stepNetplayFrame(INPUT_BITS.LEFT);
-      if (r1.packetToSend) q12.push({ at: now + 110, pkt: r1.packetToSend });
+      if (r1.packetToSend) {
+        if (tick >= 50 && !checkedSteadySingleInputRle) {
+          assert.strictEqual(r1.packetToSend.inputs.length, 1, 'Expected steady 32-frame input history to be RLE tail-trimmed to length 1');
+          assert.strictEqual(r1.packetToSend.tailCount, 32, 'Expected tailCount to preserve full 32-frame redundant window length');
+          checkedSteadySingleInputRle = true;
+        }
+        q12.push({ at: now + 110, pkt: r1.packetToSend });
+      }
       if (r2.packetToSend) q21.push({ at: now + 110, pkt: r2.packetToSend });
     }
+    assert.ok(checkedSteadySingleInputRle, 'Expected steady single-input RLE check to execute');
     const tel1 = eng1.getTelemetry();
     assert.ok(tel1.riftWaitFrames >= 5, `Expected P1 to pace via riftWaitFrames >= 5, got ${tel1.riftWaitFrames}`);
     assert.ok(Math.abs(eng1.currentFrame - eng2.currentFrame) <= 3, `Expected P1/P2 frames to converge within <=3f, got ${eng1.currentFrame} vs ${eng2.currentFrame}`);

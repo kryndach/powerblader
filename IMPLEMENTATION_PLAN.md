@@ -94,6 +94,27 @@
 
 ---
 
-## 6. Deferred Backlog (Do Not Work On Yet)
+## 6. Deep Rollback & Emulator Netcode Optimizations (GGPO / Slippi / Fightcade Best Practices)
+**Goal:** Eliminate remaining emulator & protocol bottlenecks discovered during deep netcode research:
+
+1. **Mapper 7 (AxROM) `setMirroring` & Bank-Switch Caching (*Battletoads & Double Dragon* Fix):**
+   - Pre-computed nametable mirroring lookup cache (`ppu._mirrorCache`) in [`src/netplay_engine.mjs`](file:///C:/Users/Egor/Documents/Projects/NES_Online/src/netplay_engine.mjs) eliminates `56,192` JS loop iterations per frame (`3.37M/sec` during rollback) when AxROM switches Single-Screen 0 ↔ Single-Screen 1 twice per frame for its top status bar.
+   - Patched `mmap.load32kRomBank` / `loadRomBank` / `load8kRomBank` / `loadVromBank` to use native `Uint8Array.set()` (`memcpy`) and skip redundant `32 KB` PRG-ROM copies when `_bankAt8000` is unchanged.
+   - Shrunk `vramMirrorTable` in savestates from `64 KB` to `8 KB` (`vramMirrorSlice2k`: `0x2000..0x2FFF`).
+2. **True "Headless PPU" Fast-Forward During Rollback Re-Simulation (`ppu._headlessFrame = true`):**
+   - Skips `ppu.buffer.fill(bgColor)` in `startFrame()`, skips `renderFramePartially()` (OAM sprite evaluation/compositing and `bgbuffer -> buffer` pixel copy for non-MMC2/4/5 mappers), skips `endFrame()` border clipping, and skips redundant `saveFastState` on `f === rbFrame` during rollback replay.
+3. **60Hz Real-Time WSS Input Streaming + RLE Tail-Trimming (`tailCount`):**
+   - Removed the `every 3rd frame (20Hz)` WSS input hold in [`public/index.html`](file:///C:/Users/Egor/Documents/Projects/NES_Online/public/index.html) so `lastConfirmedRemoteFrame` and `peerLead` advance smoothly every `16.6ms` instead of jumping in `50ms` bursts.
+   - Added RLE tail-trimming (`pkt.tailCount`) in `_buildInputPacket` / `receiveRemoteInputPacket` so steady input windows compress to a single integer on the wire.
+4. **Sub-Frame Fractional Time-Sync (Slippi / GGPO Style):**
+   - Dynamically scales `effectiveFrameMs = FRAME_DURATION_MS * (1 + clamp(riftFrames * 0.008, -0.03, +0.03))` in `runTick` so small clock drift between Singapore and Omsk is absorbed smoothly without frame-drop stutters.
+5. **`Auto (RTT)` Dynamic Input Delay (`NesNetplayEngine.computeRecommendedInputDelay`):**
+   - Default `Auto (RTT Adaptive)` mode in `#inputDelaySelect` automatically adapts `inputDelayFrames` (`2f` for `<=85ms`, `3f` for `<=165ms`, `4f` for `<=250ms`, `5f` for `>250ms`) with hysteresis based on measured RTT + jitter.
+6. **Audio Ring-Buffer Drift Clamping & Click-Free Underrun Decay:**
+   - Uses a `512`-sample WebAudio buffer, clamps maximum queued audio to `2048` samples (`~42ms`), and smoothly decays `lastAudioSampleL *= 0.985` on underruns to eliminate speaker clicks/pops during rollbacks.
+
+---
+
+## 7. Deferred Backlog (Do Not Work On Yet)
 - **WebRTC Direct UDP Unblocking on Brother's Chrome (`PC 2`):**
   - Documented in `AGENT_ONBOARDING.md`. Brother's Chrome in Isilkul currently reports `LocalCand=[]` due to a browser extension/setting (`disable_non_proxied_udp`). Keep on hold while we optimize the ~215ms Pinggy WSS Relay path.

@@ -205,6 +205,166 @@ export function patchJsnes8x16Sprites(nes) {
     return origPatternWrite(address, value);
   };
 
+  // Fix 1c: Fast cached nametable mirroring switch (eliminates 56,192 loop iterations per HUD split
+  // in AxROM Mapper 7 games like Battletoads & Double Dragon).
+  ppu._mirrorCache = new Map();
+  const origSetMirroring = ppu.setMirroring.bind(ppu);
+  ppu.setMirroring = function (mirroring) {
+    if (mirroring === this.currentMirroring) return;
+    const cached = this._mirrorCache.get(mirroring);
+    if (!cached) {
+      origSetMirroring(mirroring);
+      this._mirrorCache.set(mirroring, {
+        vramSlice: this.vramMirrorTable.slice(0x2000, 0x3000),
+        ntable1: [this.ntable1[0], this.ntable1[1], this.ntable1[2], this.ntable1[3]]
+      });
+      return;
+    }
+    this.currentMirroring = mirroring;
+    this.triggerRendering();
+    this.vramMirrorTable.set(cached.vramSlice, 0x2000);
+    this.ntable1[0] = cached.ntable1[0];
+    this.ntable1[1] = cached.ntable1[1];
+    this.ntable1[2] = cached.ntable1[2];
+    this.ntable1[3] = cached.ntable1[3];
+  };
+
+  // Fix 1d: True Headless PPU mode during intermediate rollback re-simulation frames (_headlessFrame = true).
+  // Skips RGB framebuffer clears, OAM sprite pixel compositing, and border clipping while preserving
+  // 100% of CPU/PPU scroll counters, Sprite-0 hit detection, and Mapper scanline IRQs.
+  ppu._headlessFrame = false;
+  const origStartFrame = ppu.startFrame.bind(ppu);
+  ppu.startFrame = function () {
+    if (this._headlessFrame) {
+      this.scanlineSpriteCount.fill(0);
+      this.scanlineSprite0.fill(0);
+      this.pixrendered.fill(65);
+      return;
+    }
+    return origStartFrame();
+  };
+
+  const origRenderFramePartially = ppu.renderFramePartially.bind(ppu);
+  ppu.renderFramePartially = function (startScan, scanCount) {
+    if (
+      this._headlessFrame &&
+      (!this.nes.rom ||
+        (this.nes.rom.mapperType !== 9 &&
+          this.nes.rom.mapperType !== 10 &&
+          this.nes.rom.mapperType !== 5))
+    ) {
+      this.validTileData = false;
+      return;
+    }
+    return origRenderFramePartially(startScan, scanCount);
+  };
+
+  const origEndFrame = ppu.endFrame.bind(ppu);
+  ppu.endFrame = function () {
+    if (this._headlessFrame) return;
+    return origEndFrame();
+  };
+
+  // Fix 1e: Native Uint8Array.set() PRG/CHR bank switching + redundant bank-switch deduplication
+  const mmap = nes.mmap;
+  if (mmap && !mmap._fastBankPatched) {
+    mmap._fastBankPatched = true;
+    mmap._bankAt8000 = -1;
+    mmap._bankAtC000 = -1;
+
+    mmap.loadRomBank = function (bank, address) {
+      const romCount = this.nes.rom ? this.nes.rom.romCount : 0;
+      if (!romCount) return;
+      bank %= romCount;
+      if (address === 0x8000) {
+        if (this._bankAt8000 === bank) return;
+        this._bankAt8000 = bank;
+      } else if (address === 0xc000) {
+        if (this._bankAtC000 === bank) return;
+        this._bankAtC000 = bank;
+      }
+      this.nes.cpu.mem.set(this.nes.rom.rom[bank], address);
+    };
+
+    mmap.load32kRomBank = function (bank, address) {
+      const romCount = this.nes.rom ? this.nes.rom.romCount : 0;
+      if (!romCount) return;
+      const b0 = (bank * 2) % romCount;
+      const b1 = (bank * 2 + 1) % romCount;
+      if (address === 0x8000 && this._bankAt8000 === b0 && this._bankAtC000 === b1) {
+        return;
+      }
+      if (address === 0x8000) {
+        this._bankAt8000 = b0;
+        this._bankAtC000 = b1;
+      }
+      this.nes.cpu.mem.set(this.nes.rom.rom[b0], address);
+      this.nes.cpu.mem.set(this.nes.rom.rom[b1], address + 16384);
+    };
+
+    mmap.load8kRomBank = function (bank8k, address) {
+      const romCount = this.nes.rom ? this.nes.rom.romCount : 0;
+      if (!romCount) return;
+      this._bankAt8000 = -1;
+      this._bankAtC000 = -1;
+      const bank16k = (bank8k >> 1) % romCount;
+      const offset = (bank8k & 1) << 13;
+      this.nes.cpu.mem.set(this.nes.rom.rom[bank16k].subarray(offset, offset + 8192), address);
+    };
+
+    mmap.loadVromBank = function (bank, address) {
+      const vromCount = this.nes.rom ? this.nes.rom.vromCount : 0;
+      if (vromCount === 0) return;
+      this.nes.ppu.triggerRendering();
+      const b = bank % vromCount;
+      this.nes.ppu.vramMem.set(this.nes.rom.vrom[b], address);
+      const vromTile = this.nes.rom.vromTile[b];
+      const baseIndex = address >> 4;
+      const ptTile = this.nes.ppu.ptTile;
+      for (let i = 0; i < 256; i++) {
+        ptTile[baseIndex + i] = vromTile[i];
+      }
+    };
+
+    mmap.load1kVromBank = function (bank1k, address) {
+      const vromCount = this.nes.rom ? this.nes.rom.vromCount : 0;
+      if (vromCount === 0) return;
+      this.nes.ppu.triggerRendering();
+      const bank4k = Math.floor(bank1k / 4) % vromCount;
+      const bankoffset = (bank1k % 4) * 1024;
+      this.nes.ppu.vramMem.set(
+        this.nes.rom.vrom[bank4k].subarray(bankoffset, bankoffset + 1024),
+        address
+      );
+      const vromTile = this.nes.rom.vromTile[bank4k];
+      const baseIndex = address >> 4;
+      const tileOffset = (bank1k % 4) << 6;
+      const ptTile = this.nes.ppu.ptTile;
+      for (let i = 0; i < 64; i++) {
+        ptTile[baseIndex + i] = vromTile[tileOffset + i];
+      }
+    };
+
+    mmap.load2kVromBank = function (bank2k, address) {
+      const vromCount = this.nes.rom ? this.nes.rom.vromCount : 0;
+      if (vromCount === 0) return;
+      this.nes.ppu.triggerRendering();
+      const bank4k = Math.floor(bank2k / 2) % vromCount;
+      const bankoffset = (bank2k % 2) * 2048;
+      this.nes.ppu.vramMem.set(
+        this.nes.rom.vrom[bank4k].subarray(bankoffset, bankoffset + 2048),
+        address
+      );
+      const vromTile = this.nes.rom.vromTile[bank4k];
+      const baseIndex = address >> 4;
+      const tileOffset = (bank2k % 2) << 7;
+      const ptTile = this.nes.ppu.ptTile;
+      for (let i = 0; i < 128; i++) {
+        ptTile[baseIndex + i] = vromTile[tileOffset + i];
+      }
+    };
+  }
+
   // Fix 2: 8x16 sprite rendering (fix odd-bank topTileNum + 256 without double-flipping vertFlip rows)
   ppu.renderSpritesPartially = function (startscan, scancount, bgPri) {
     if (this.f_spVisibility !== 1) return;
@@ -317,7 +477,7 @@ function createFastSnapshotSlot() {
     cpuScalars: new Array(CPU_SCALAR_PROPS.length),
     vramMem: new Uint8Array(0x8000),
     spriteMem: new Uint8Array(0x100),
-    vramMirrorTable: new Uint16Array(0x8000),
+    vramMirrorSlice2k: new Uint16Array(0x1000),
     ntable1: [0, 0, 0, 0],
     ntTile: [
       new Uint8Array(1024),
@@ -364,7 +524,7 @@ export function saveFastState(nes, slot, frameNum = 0) {
 
   slot.vramMem.set(ppu.vramMem);
   slot.spriteMem.set(ppu.spriteMem);
-  slot.vramMirrorTable.set(ppu.vramMirrorTable);
+  slot.vramMirrorSlice2k.set(ppu.vramMirrorTable.subarray(0x2000, 0x3000));
   for (let i = 0; i < 4; i++) {
     slot.ntable1[i] = ppu.ntable1[i];
     slot.ntTile[i].set(ppu.nameTable[i].tile);
@@ -415,6 +575,10 @@ export function loadFastState(nes, slot) {
   if (nes.mmap && slot.mmapState) {
     nes.mmap.fromJSON(slot.mmapState);
   }
+  if (nes.mmap) {
+    nes.mmap._bankAt8000 = -1;
+    nes.mmap._bankAtC000 = -1;
+  }
 
   cpu.mem.set(slot.cpuMem);
   for (let i = 0; i < CPU_SCALAR_PROPS.length; i++) {
@@ -423,7 +587,7 @@ export function loadFastState(nes, slot) {
 
   ppu.vramMem.set(slot.vramMem);
   ppu.spriteMem.set(slot.spriteMem);
-  ppu.vramMirrorTable.set(slot.vramMirrorTable);
+  ppu.vramMirrorTable.set(slot.vramMirrorSlice2k, 0x2000);
   for (let i = 0; i < 4; i++) {
     ppu.ntable1[i] = slot.ntable1[i];
     ppu.nameTable[i].tile.set(slot.ntTile[i]);
@@ -620,8 +784,19 @@ export class NesNetplayEngine {
       this.saveRing[i].chrRamTileEpochs.fill(0);
     }
     if (this.nes && this.nes.mmap) {
+      this.nes.mmap._bankAt8000 = -1;
+      this.nes.mmap._bankAtC000 = -1;
       saveFastState(this.nes, this.saveRing[startFrame % this.saveBufferSize], startFrame);
     }
+  }
+
+  static computeRecommendedInputDelay(rttMs, jitterMs = 0) {
+    if (!Number.isFinite(rttMs) || rttMs <= 0) return 3;
+    const effectiveRtt = rttMs + Math.min(40, Math.max(0, jitterMs) * 0.5);
+    if (effectiveRtt <= 85) return 2;
+    if (effectiveRtt <= 165) return 3;
+    if (effectiveRtt <= 250) return 4;
+    return 5;
   }
 
   setInputDelay(frames) {
@@ -691,12 +866,16 @@ export class NesNetplayEngine {
       this.currentFrame - (this.saveBufferSize - 4)
     );
 
-    // Process from oldest to newest in the redundant window
-    for (let i = packet.inputs.length - 1; i >= 0; i--) {
+    // Process from oldest to newest in the redundant window (expanding RLE tailCount if present)
+    const rawLen = packet.inputs.length;
+    if (rawLen === 0) return;
+    const totalLen = Math.max(rawLen, packet.tailCount || 0);
+    const tailVal = packet.inputs[rawLen - 1] & 0xff;
+    for (let i = totalLen - 1; i >= 0; i--) {
       const f = packet.startFrame - i;
       if (f < minValidFrame) continue;
 
-      const mask = packet.inputs[i] & 0xff;
+      const mask = i < rawLen ? (packet.inputs[i] & 0xff) : tailVal;
       const idx = f % this.historySize;
       const wasConfirmed = confirmedArr[idx] === f;
 
@@ -861,8 +1040,11 @@ export class NesNetplayEngine {
         // Restore state at rbFrame and re-simulate rbFrame .. currentFrame - 1 in silent/headless mode
         loadFastState(this.nes, slot);
         this.suppressCallbacks = true;
+        this.nes.ppu._headlessFrame = true;
         for (let f = rbFrame; f < this.currentFrame; f++) {
-          saveFastState(this.nes, this.saveRing[f % this.saveBufferSize], f);
+          if (f > rbFrame) {
+            saveFastState(this.nes, this.saveRing[f % this.saveBufferSize], f);
+          }
           const m1 = this.getPlayerInput(1, f);
           const m2 = this.getPlayerInput(2, f);
           const idx = f % this.historySize;
@@ -878,6 +1060,7 @@ export class NesNetplayEngine {
             this.localHashes.set(f + 1, computeDeterministicHash(this.nes));
           }
         }
+        this.nes.ppu._headlessFrame = false;
         this.suppressCallbacks = false;
       }
     }
@@ -974,10 +1157,17 @@ export class NesNetplayEngine {
   _buildInputPacket(latestScheduledFrame) {
     const available = Math.max(1, latestScheduledFrame - this.timelineStartFrame + 1);
     const count = Math.min(32, available);
-    const inputs = new Array(count);
+    const fullInputs = new Array(count);
     for (let i = 0; i < count; i++) {
-      inputs[i] = this.getLocalInputAt(latestScheduledFrame - i);
+      fullInputs[i] = this.getLocalInputAt(latestScheduledFrame - i);
     }
+    // Trim redundant identical tail values to keep packet size compact over WSS tunnels
+    const tailVal = fullInputs[count - 1];
+    let trimLen = count;
+    while (trimLen > 1 && fullInputs[trimLen - 2] === tailVal) {
+      trimLen--;
+    }
+    const inputs = trimLen < count ? fullInputs.slice(0, trimLen) : fullInputs;
     const pkt = {
       type: 'netplay_input',
       sessionId: this.sessionId,
@@ -986,6 +1176,9 @@ export class NesNetplayEngine {
       peerLead: this.currentFrame - Math.max(this.timelineStartFrame, this.lastConfirmedRemoteFrame),
       inputs
     };
+    if (trimLen < count) {
+      pkt.tailCount = count;
+    }
     // Attach most recent confirmed hash checkpoint (where both P1 and P2 inputs are confirmed)
     if (this.localHashes.size > 0 && this.earliestMispredictedFrame === null) {
       let latestConfirmedHashFrame = -1;
