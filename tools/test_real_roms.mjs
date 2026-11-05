@@ -308,6 +308,107 @@ async function runRealRomsSuite() {
     await serverApp.close();
   }
 
+  // Stage 4: Verify Asymmetric Independent Input Delay (P1=4f vs P2=1f/0f) & Mid-Game Delay Reduction (5f -> 1f -> 0f)
+  {
+    const btddFile = romFiles.find((f) => f.toLowerCase().includes('battletoads')) || romFiles[0];
+    const buf = fs.readFileSync(path.join(LOCAL_ROMS_DIR, btddFile));
+    const binStr = buf.toString('binary');
+
+    const nesA = new jsnes.NES({});
+    const nesB = new jsnes.NES({});
+    nesA.loadROM(binStr);
+    nesB.loadROM(binStr);
+
+    // P1 starts with 4f delay, P2 (Brother) starts with 5f and dynamically drops to 1f then 0f mid-game!
+    const engA = new NesNetplayEngine(nesA, {
+      localPlayer: 1,
+      online: true,
+      enableRiftPacing: true,
+      inputDelayFrames: 4,
+      sessionId: 'asym_delay_test'
+    });
+    const engB = new NesNetplayEngine(nesB, {
+      localPlayer: 2,
+      online: true,
+      enableRiftPacing: true,
+      inputDelayFrames: 5,
+      sessionId: 'asym_delay_test'
+    });
+
+    const qAB = [];
+    const qBA = [];
+    for (let tick = 0; tick < 260; tick++) {
+      const nowMs = tick * 16.667;
+      if (tick === 40) {
+        engB.setInputDelay(1);
+      }
+      if (tick === 130) {
+        engB.setInputDelay(0);
+      }
+
+      while (qAB.length > 0 && qAB[0].at <= nowMs) engB.receiveRemoteInputPacket(qAB.shift().pkt, nowMs);
+      while (qBA.length > 0 && qBA[0].at <= nowMs) engA.receiveRemoteInputPacket(qBA.shift().pkt, nowMs);
+
+      const p1In =
+        (tick % 50 === 12 ? INPUT_BITS.START : 0) |
+        (tick > 60 && Math.floor(tick / 7) % 2 === 0 ? INPUT_BITS.RIGHT | INPUT_BITS.B : 0);
+      const p2In =
+        (tick % 50 === 28 ? INPUT_BITS.START : 0) |
+        (tick > 60 && Math.floor(tick / 6) % 2 === 0 ? INPUT_BITS.LEFT | INPUT_BITS.A : 0);
+      const rA = engA.stepNetplayFrame(p1In);
+      const rB = engB.stepNetplayFrame(p2In);
+
+      if (tick === 55 && rB.stepped) {
+        // After dropping 5f -> 1f at tick 40, lastLocalScheduledFrame must have caught up to (currentFrame - 1) + 1
+        assert.strictEqual(
+          engB.lastLocalScheduledFrame - (engB.currentFrame - 1),
+          1,
+          'Expected P2 input delay lead to shrink from 5f down to 1f within 15 frames'
+        );
+      }
+      if (tick === 145 && rB.stepped) {
+        assert.strictEqual(
+          engB.lastLocalScheduledFrame - (engB.currentFrame - 1),
+          0,
+          'Expected P2 input delay lead to shrink from 1f down to 0f within 15 frames'
+        );
+      }
+
+      if (rA.packetToSend) qAB.push({ at: nowMs + 100, pkt: rA.packetToSend });
+      if (rB.packetToSend) qBA.push({ at: nowMs + 100, pkt: rB.packetToSend });
+    }
+
+    // Drain & settle
+    let drainT = 260 * 16.667 + 200;
+    while (qAB.length > 0) engB.receiveRemoteInputPacket(qAB.shift().pkt, drainT);
+    while (qBA.length > 0) engA.receiveRemoteInputPacket(qBA.shift().pkt, drainT);
+    const finalTarget = Math.max(engA.currentFrame, engB.currentFrame) + 10;
+    while (engA.currentFrame < finalTarget || engB.currentFrame < finalTarget) {
+      drainT += 16.667;
+      if (engA.currentFrame < finalTarget) {
+        const rA = engA.stepNetplayFrame(0);
+        if (rA.packetToSend) engB.receiveRemoteInputPacket(rA.packetToSend, drainT);
+      }
+      if (engB.currentFrame < finalTarget) {
+        const rB = engB.stepNetplayFrame(0);
+        if (rB.packetToSend) engA.receiveRemoteInputPacket(rB.packetToSend, drainT);
+      }
+    }
+    engB.receiveRemoteInputPacket(engA._buildInputPacket(engA.lastLocalScheduledFrame), drainT + 10);
+    engA.receiveRemoteInputPacket(engB._buildInputPacket(engB.lastLocalScheduledFrame), drainT + 10);
+    engA.stepNetplayFrame(0);
+    engB.stepNetplayFrame(0);
+
+    assert.strictEqual(engA.desyncCount, 0, 'Expected 0 desyncs on P1 with asymmetric input delay');
+    assert.strictEqual(engB.desyncCount, 0, 'Expected 0 desyncs on P2 with asymmetric input delay (5f -> 1f -> 0f)');
+    const hashA = formatHex32(computeDeterministicHash(nesA));
+    const hashB = formatHex32(computeDeterministicHash(nesB));
+    assert.strictEqual(hashA, hashB, `Expected identical hash after asymmetric delay run: ${hashA} vs ${hashB}`);
+    console.log(
+      `[PASS] Stage 4: Asymmetric Independent Input Delay (P1=4f vs P2=5f->1f->0f) Verified (0 Desyncs, Hash=${hashA})`
+    );
+  }
+
   console.log('\nALL REAL NES ROM & ADVANCED NETCODE TESTS PASSED!');
 }
 

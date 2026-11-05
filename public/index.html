@@ -572,7 +572,20 @@
     <!-- Console Controls -->
     <div class="deck-group">
       <button id="resetBtn" title="Reset NES console for both players at Frame #0">Reset</button>
-      <button id="muteBtn" title="Toggle Audio">Audio: ON</button>
+      <select id="topInputDelaySelect" title="Select Your Local Input Lag vs Rollback Smoothness (Independent per PC)">
+        <option value="0">Lag: 0f (0ms Instant)</option>
+        <option value="1">Lag: 1f (16ms Ultra Fast)</option>
+        <option value="2" selected>Lag: 2f (33ms Fast)</option>
+        <option value="3">Lag: 3f (50ms Balanced)</option>
+        <option value="4">Lag: 4f (66ms Smooth)</option>
+        <option value="5">Lag: 5f (83ms Extra Smooth)</option>
+        <option value="auto">Lag: Auto (RTT)</option>
+      </select>
+      <div style="display:inline-flex; align-items:center; gap:5px; background:#0d0e12; border:1px solid var(--border); border-radius:4px; padding:3px 7px;" title="Game Audio Volume">
+        <button id="muteBtn" style="padding:2px 6px; border:none; background:transparent; font-size:0.82rem;" title="Toggle Audio Mute">🔊</button>
+        <input type="range" id="volumeSlider" min="0" max="100" step="5" value="80" style="width:68px; accent-color:var(--nes-red); cursor:pointer;" />
+        <span id="volumeValLabel" style="font-size:0.72rem; color:var(--muted); min-width:30px; text-align:right;">80%</span>
+      </div>
       <button id="crtToggleBtn" title="Toggle retro CRT scanlines overlay (Default: OFF for sharp pixels)">CRT: OFF</button>
       <button id="debugToggleBtn" title="Show/Hide Netplay & P2P Debug Telemetry">Debug</button>
       <a class="btn-label" id="autoBenchLink" href="/autotest" style="text-decoration:none; border-color:var(--green); color:var(--green);" title="Open Zero-Click 2-PC Auto-Benchmark">/autotest</a>
@@ -721,14 +734,14 @@
         <div class="dbg-row">
           <span class="k">Input Delay Frames:</span>
           <select id="inputDelaySelect" style="padding:2px 6px; font-size:0.74rem;">
-            <option value="auto" selected>Auto (RTT Adaptive)</option>
-            <option value="0">0 frames (0ms)</option>
-            <option value="1">1 frame (16ms)</option>
-            <option value="2">2 frames (33ms)</option>
-            <option value="3">3 frames (50ms)</option>
-            <option value="4">4 frames (66ms)</option>
+            <option value="0">0 frames (0ms - Max Rollback)</option>
+            <option value="1">1 frame (16ms - Ultra Fast)</option>
+            <option value="2" selected>2 frames (33ms - Fast)</option>
+            <option value="3">3 frames (50ms - Balanced)</option>
+            <option value="4">4 frames (66ms - Smooth)</option>
             <option value="5">5 frames (83ms)</option>
             <option value="6">6 frames (100ms - High Ping)</option>
+            <option value="auto">Auto (RTT Adaptive)</option>
           </select>
         </div>
         <div class="dbg-row">
@@ -839,7 +852,10 @@
     const connectBtn = document.getElementById('connectBtn');
     const copyLinkBtn = document.getElementById('copyLinkBtn');
     const resetBtn = document.getElementById('resetBtn');
+    const topInputDelaySelect = document.getElementById('topInputDelaySelect');
     const muteBtn = document.getElementById('muteBtn');
+    const volumeSlider = document.getElementById('volumeSlider');
+    const volumeValLabel = document.getElementById('volumeValLabel');
     const crtToggleBtn = document.getElementById('crtToggleBtn');
     const scanlinesOverlay = document.getElementById('scanlinesOverlay');
     const debugToggleBtn = document.getElementById('debugToggleBtn');
@@ -961,6 +977,18 @@
     // Audio Engine (Fixed 48000 Hz to match jsnes deterministic APU rate + Click-Free Underrun Decay & Drift Clamping)
     let audioCtx = null;
     let audioMuted = false;
+    let audioVolume = 0.80;
+    try {
+      const savedVol = localStorage.getItem('nes_volume');
+      if (savedVol !== null) {
+        const v = Number(savedVol);
+        if (Number.isFinite(v) && v >= 0 && v <= 100) {
+          audioVolume = v / 100;
+          if (volumeSlider) volumeSlider.value = String(Math.round(v));
+          if (volumeValLabel) volumeValLabel.textContent = `${Math.round(v)}%`;
+        }
+      }
+    } catch {}
     const AUDIO_BUFFER_MASK = 8191;
     const AUDIO_MAX_QUEUED_SAMPLES = 2048; // ~42ms max latency cap to prevent audio drifting behind video
     const audioRingL = new Float32Array(8192);
@@ -986,15 +1014,19 @@
       proc.onaudioprocess = (e) => {
         const outL = e.outputBuffer.getChannelData(0);
         const outR = e.outputBuffer.getChannelData(1);
+        const vol = audioMuted ? 0 : audioVolume;
         for (let i = 0; i < outL.length; i++) {
-          if (audioMuted) {
+          if (vol <= 0) {
             outL[i] = 0;
             outR[i] = 0;
             lastAudioSampleL = 0;
             lastAudioSampleR = 0;
+            if (audioReadPtr !== audioWritePtr) {
+              audioReadPtr = (audioReadPtr + 1) & AUDIO_BUFFER_MASK;
+            }
           } else if (audioReadPtr !== audioWritePtr) {
-            const sL = audioRingL[audioReadPtr];
-            const sR = audioRingR[audioReadPtr];
+            const sL = audioRingL[audioReadPtr] * vol;
+            const sR = audioRingR[audioReadPtr] * vol;
             audioReadPtr = (audioReadPtr + 1) & AUDIO_BUFFER_MASK;
             lastAudioSampleL = sL;
             lastAudioSampleR = sR;
@@ -1057,16 +1089,25 @@
     let simLossPct = 0;
     let canvasDirty = false;
 
+    try {
+      const savedDelay = localStorage.getItem('nes_input_delay');
+      if (savedDelay !== null) {
+        if (topInputDelaySelect) topInputDelaySelect.value = savedDelay;
+        if (inputDelaySelect) inputDelaySelect.value = savedDelay;
+      }
+    } catch {}
+
     function resolveDesiredInputDelay() {
-      if (inputDelaySelect.value === 'auto') {
+      const val = (topInputDelaySelect ? topInputDelaySelect.value : inputDelaySelect.value) || '2';
+      if (val === 'auto') {
         return NesNetplayEngine.computeRecommendedInputDelay(
           rttMs,
           jitterMs,
           engine ? engine.rxClumpFrames : 0
         );
       }
-      const parsed = Number(inputDelaySelect.value);
-      return Number.isFinite(parsed) ? parsed : 3;
+      const parsed = Number(val);
+      return Number.isFinite(parsed) ? parsed : 2;
     }
 
     function renderFrameToCanvas(fb) {
@@ -1262,11 +1303,11 @@
       if (xfer.syncState && engine) {
         engine.localPlayer = localPlayerIndex;
         engine.online = true;
-        engine.importSyncState(xfer.syncState);
+        engine.inputDelayFrames = resolveDesiredInputDelay();
+        engine.importSyncState(xfer.syncState, { preserveLocalInputDelay: true });
         engine.syncPaused = false;
         matchStarted = true;
-        inputDelaySelect.value = String(engine.inputDelayFrames);
-        logDebug(`Locked to chunked ROM "${xfer.romName}" at frame #${engine.currentFrame} (CRC=${romCrc32})`);
+        logDebug(`Locked to chunked ROM "${xfer.romName}" at frame #${engine.currentFrame} (CRC=${romCrc32}, localDelay=${engine.inputDelayFrames}f)`);
         if (ws && ws.readyState === 1) {
           ws.send(
             JSON.stringify({
@@ -1890,6 +1931,12 @@
           if (autoOpt) {
             autoOpt.textContent = `Auto (${recDelay}f @ ${rttMs}ms)`;
           }
+          if (topInputDelaySelect) {
+            const topAutoOpt = topInputDelaySelect.querySelector('option[value="auto"]');
+            if (topAutoOpt) {
+              topAutoOpt.textContent = `Auto (${recDelay}f)`;
+            }
+          }
           if (recDelay !== engine.inputDelayFrames) {
             if (autoDelayCandidate === recDelay) {
               autoDelayStreak++;
@@ -2048,12 +2095,8 @@
           engine.localPlayer = localPlayerIndex;
           engine.online = true;
           engine.enableRiftPacing = true;
-          if (typeof msg.inputDelayFrames === 'number') {
-            engine.inputDelayFrames = msg.inputDelayFrames;
-            if (inputDelaySelect.value !== 'auto') {
-              inputDelaySelect.value = String(msg.inputDelayFrames);
-            }
-          }
+          // Preserve each player's own independent local input lag selection!
+          engine.inputDelayFrames = resolveDesiredInputDelay();
           engine.resetTimeline(0, msg.sessionId);
           engine.syncPaused = false;
           matchStarted = true;
@@ -2152,11 +2195,11 @@
         if (msg.syncState && engine) {
           engine.localPlayer = localPlayerIndex;
           engine.online = true;
-          engine.importSyncState(msg.syncState);
+          engine.inputDelayFrames = resolveDesiredInputDelay();
+          engine.importSyncState(msg.syncState, { preserveLocalInputDelay: true });
           engine.syncPaused = false;
           matchStarted = true;
-          inputDelaySelect.value = String(engine.inputDelayFrames);
-          logDebug(`Locked to partner ROM "${msg.romName}" at frame #${engine.currentFrame} (session=${engine.sessionId})`);
+          logDebug(`Locked to partner ROM "${msg.romName}" at frame #${engine.currentFrame} (session=${engine.sessionId}, localDelay=${engine.inputDelayFrames}f)`);
           if (ws && ws.readyState === 1) {
             ws.send(
               JSON.stringify({
@@ -2179,11 +2222,11 @@
           partnerRomCrc32 = msg.romCrc32 || romCrc32;
           engine.localPlayer = localPlayerIndex;
           engine.online = true;
-          engine.importSyncState(msg.syncState);
+          engine.inputDelayFrames = resolveDesiredInputDelay();
+          engine.importSyncState(msg.syncState, { preserveLocalInputDelay: true });
           engine.syncPaused = false;
           matchStarted = true;
-          inputDelaySelect.value = String(engine.inputDelayFrames);
-          logDebug(`Locked to partner savestate at frame #${engine.currentFrame} (session=${engine.sessionId})`);
+          logDebug(`Locked to partner savestate at frame #${engine.currentFrame} (session=${engine.sessionId}, localDelay=${engine.inputDelayFrames}f)`);
           if (ws && ws.readyState === 1) {
             ws.send(
               JSON.stringify({
@@ -2339,10 +2382,67 @@
       }
     });
 
+    function updateAudioControlsUI() {
+      const pct = Math.round(audioVolume * 100);
+      const isEffectivelyMuted = audioMuted || pct === 0;
+      muteBtn.textContent = isEffectivelyMuted ? '🔇' : '🔊';
+      if (volumeValLabel) {
+        volumeValLabel.textContent = audioMuted ? 'MUTE' : `${pct}%`;
+      }
+    }
+    updateAudioControlsUI();
+
     muteBtn.addEventListener('click', () => {
       initAudio();
       audioMuted = !audioMuted;
-      muteBtn.textContent = audioMuted ? 'Audio: OFF' : 'Audio: ON';
+      if (!audioMuted && audioVolume <= 0) {
+        audioVolume = 0.80;
+        if (volumeSlider) volumeSlider.value = '80';
+      }
+      updateAudioControlsUI();
+    });
+
+    if (volumeSlider) {
+      volumeSlider.addEventListener('input', () => {
+        initAudio();
+        const val = Math.max(0, Math.min(100, Number(volumeSlider.value) || 0));
+        audioVolume = val / 100;
+        audioMuted = val === 0;
+        try {
+          localStorage.setItem('nes_volume', String(val));
+        } catch {}
+        updateAudioControlsUI();
+      });
+    }
+
+    function applyInputDelaySelection(newValue) {
+      if (topInputDelaySelect && topInputDelaySelect.value !== newValue) {
+        topInputDelaySelect.value = newValue;
+      }
+      if (inputDelaySelect && inputDelaySelect.value !== newValue) {
+        inputDelaySelect.value = newValue;
+      }
+      try {
+        localStorage.setItem('nes_input_delay', newValue);
+      } catch {}
+      const nextDelay = resolveDesiredInputDelay();
+      if (engine) {
+        engine.setInputDelay(nextDelay);
+      }
+      const ms = Math.round(nextDelay * (1000 / 60.0988));
+      logDebug(`Local Input Delay set to ${nextDelay} frames (${ms}ms, mode=${newValue === 'auto' ? 'Auto' : 'Manual'}).`);
+      showScreenBanner(`LOCAL INPUT LAG: ${nextDelay}f (${ms}ms)${newValue === 'auto' ? ' [AUTO]' : ''}`, 'ok', 2200);
+      pushGameplayTelemetryToServer();
+    }
+
+    if (topInputDelaySelect) {
+      topInputDelaySelect.addEventListener('change', () => {
+        applyInputDelaySelection(topInputDelaySelect.value);
+      });
+    }
+
+    inputDelaySelect.addEventListener('change', () => {
+      applyInputDelaySelection(inputDelaySelect.value);
     });
 
     crtToggleBtn.addEventListener('click', () => {
@@ -2375,14 +2475,6 @@
         }
       } catch (e) {
         logDebug(`Copy telemetry failed: ${e.message}`);
-      }
-    });
-
-    inputDelaySelect.addEventListener('change', () => {
-      if (engine) {
-        const nextDelay = resolveDesiredInputDelay();
-        engine.setInputDelay(nextDelay);
-        logDebug(`Input delay set to ${engine.inputDelayFrames} frames (${inputDelaySelect.value === 'auto' ? 'Auto' : 'Manual'}).`);
       }
     });
 

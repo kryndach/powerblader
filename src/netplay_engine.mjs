@@ -815,16 +815,13 @@ export class NesNetplayEngine {
     this.lastLocalScheduledFrame = startFrame - 1;
     this.earliestMispredictedFrame = null;
 
-    // Seed initial delay frames (startFrame .. startFrame + inputDelayFrames - 1) with neutral 0 input for both players
+    // Seed initial delay frames (startFrame .. startFrame + inputDelayFrames - 1) with neutral 0 input
+    // for localPlayer only; remote player frames will be confirmed when remote packets arrive (allowing
+    // P1 and P2 to use completely independent inputDelayFrames without desyncing!).
     for (let f = startFrame; f < startFrame + this.inputDelayFrames; f++) {
-      const idx = f % this.historySize;
-      this.p1Inputs[idx] = 0;
-      this.p2Inputs[idx] = 0;
-      this.p1Confirmed[idx] = f;
-      this.p2Confirmed[idx] = f;
+      this._setPlayerInput(this.localPlayer, f, 0, true);
     }
     if (this.inputDelayFrames > 0) {
-      this.lastConfirmedRemoteFrame = startFrame + this.inputDelayFrames - 1;
       this.lastLocalScheduledFrame = startFrame + this.inputDelayFrames - 1;
     }
 
@@ -870,12 +867,12 @@ export class NesNetplayEngine {
   }
 
   static computeRecommendedInputDelay(rttMs, jitterMs = 0, rxClumpFrames = 0) {
-    if (!Number.isFinite(rttMs) || rttMs <= 0) return 3;
-    const clumpExtraMs = Math.min(50, Math.max(0, (rxClumpFrames || 0) - 1) * 10);
-    const effectiveRtt = rttMs + Math.min(40, Math.max(0, jitterMs) * 0.5) + clumpExtraMs;
+    if (!Number.isFinite(rttMs) || rttMs <= 0) return 2;
+    const clumpExtraMs = Math.min(25, Math.max(0, (rxClumpFrames || 0) - 1) * 5);
+    const effectiveRtt = rttMs + Math.min(35, Math.max(0, jitterMs) * 0.5) + clumpExtraMs;
     if (effectiveRtt <= 85) return 2;
     if (effectiveRtt <= 165) return 3;
-    if (effectiveRtt <= 250) return 4;
+    if (effectiveRtt <= 295) return 4;
     return 5;
   }
 
@@ -1226,11 +1223,11 @@ export class NesNetplayEngine {
       this._riftCooldown = 0;
     }
 
-    // 3. Schedule local input at (currentFrame + inputDelayFrames) without overwriting already-sent frames
-    const targetInputFrame = Math.max(
-      this.lastLocalScheduledFrame + 1,
-      this.currentFrame + this.inputDelayFrames
-    );
+    // 3. Schedule local input at (currentFrame + inputDelayFrames) without overwriting already-sent frames.
+    // If inputDelayFrames was just lowered (e.g. 5f -> 1f), lastLocalScheduledFrame is already >= targetInputFrame,
+    // so we hold lastLocalScheduledFrame steady until currentFrame catches up (within 1-4 frames) instead of
+    // permanently locking input delay at the previous maximum.
+    const targetInputFrame = this.currentFrame + this.inputDelayFrames;
     while (this.lastLocalScheduledFrame < targetInputFrame) {
       this.lastLocalScheduledFrame++;
       this._setPlayerInput(this.localPlayer, this.lastLocalScheduledFrame, localButtonsMask, true);
@@ -1357,7 +1354,7 @@ export class NesNetplayEngine {
   /**
    * Imports a portable state object and locks timeline to that exact frame and sessionId.
    */
-  importSyncState(syncObj) {
+  importSyncState(syncObj, options = {}) {
     if (!syncObj || !syncObj.nesState) return false;
     patchJsnes8x16Sprites(this.nes);
     const s = syncObj.nesState;
@@ -1417,7 +1414,7 @@ export class NesNetplayEngine {
       if (s.controllers[2]) this.nes.controllers[2].fromJSON(s.controllers[2]);
     }
 
-    if (typeof syncObj.inputDelayFrames === 'number') {
+    if (!options?.preserveLocalInputDelay && typeof syncObj.inputDelayFrames === 'number') {
       this.inputDelayFrames = syncObj.inputDelayFrames;
     }
     if (syncObj.sessionId) {
