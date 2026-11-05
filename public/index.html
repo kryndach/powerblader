@@ -1026,6 +1026,9 @@
     const customRomsMap = new Map();
 
     let ws = null;
+    let wsAux = null;
+    let localClientId = null;
+    let lastRxInputDedupKey = '';
     let rtcPeer = null;
     let rtcChannel = null;
     let roomCode = null;
@@ -1052,10 +1055,15 @@
     let maxRxGapMs = 0;
     let simLagMs = 0;
     let simLossPct = 0;
+    let canvasDirty = false;
 
     function resolveDesiredInputDelay() {
       if (inputDelaySelect.value === 'auto') {
-        return NesNetplayEngine.computeRecommendedInputDelay(rttMs, jitterMs);
+        return NesNetplayEngine.computeRecommendedInputDelay(
+          rttMs,
+          jitterMs,
+          engine ? engine.rxClumpFrames : 0
+        );
       }
       const parsed = Number(inputDelaySelect.value);
       return Number.isFinite(parsed) ? parsed : 3;
@@ -1065,7 +1073,11 @@
       for (let i = 0; i < 61440; i++) {
         imgBuf32[i] = 0xff000000 | fb[i];
       }
-      ctx.putImageData(imgData, 0, 0);
+      canvasDirty = true;
+      if (document.hidden) {
+        ctx.putImageData(imgData, 0, 0);
+        canvasDirty = false;
+      }
     }
 
     function uint8ToBinaryString(u8) {
@@ -1757,6 +1769,33 @@
       }
     }
 
+    function connectAuxWebSocket(code, cid) {
+      if (wsAux) {
+        try { wsAux.close(); } catch {}
+        wsAux = null;
+      }
+      if (!code || !cid) return;
+      try {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const auxUrl = `${proto}//${window.location.host}/ws?aux=1`;
+        wsAux = new WebSocket(auxUrl);
+        wsAux.onopen = () => {
+          if (wsAux && wsAux.readyState === 1) {
+            wsAux.send(JSON.stringify({ type: 'bind_aux', roomCode: code, clientId: cid }));
+          }
+        };
+        wsAux.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            handleIncomingNetMessage(msg, 'wss_aux');
+          } catch {}
+        };
+        wsAux.onclose = () => {
+          wsAux = null;
+        };
+      } catch {}
+    }
+
     function sendFastNetplayPacket(pkt) {
       if (!pkt) return;
       // Apply optional test lag/loss simulator
@@ -1776,15 +1815,21 @@
         } else if (mode === 'wss') {
           if (ws && ws.readyState === 1) {
             ws.send(raw);
+            if (wsAux && wsAux.readyState === 1) {
+              try { wsAux.send(raw); } catch {}
+            }
             txCountThisSec++;
           }
         } else {
-          // Auto: prefer P2P when open, always fall back to WSS
+          // Auto: prefer P2P when open, always fall back to Dual-Stream WSS
           if (p2pReady) {
             rtcChannel.send(raw);
             txCountThisSec++;
           } else if (ws && ws.readyState === 1) {
             ws.send(raw);
+            if (wsAux && wsAux.readyState === 1) {
+              try { wsAux.send(raw); } catch {}
+            }
             txCountThisSec++;
           }
         }
@@ -1798,6 +1843,27 @@
     }
 
     function handleIncomingNetMessage(msg, source) {
+      if (msg.type === 'aux_bound') return;
+      if (msg.type === 'netplay_input') {
+        const dedupKey = `${msg.sessionId || ''}:${msg.startFrame}:${Array.isArray(msg.inputs) ? msg.inputs[0] : 0}:${msg.hashFrame || ''}`;
+        if (dedupKey === lastRxInputDedupKey) {
+          return;
+        }
+        lastRxInputDedupKey = dedupKey;
+        rxCountThisSec++;
+        const nowPerf = performance.now();
+        if (lastRxInputAt > 0) {
+          const gap = Math.round(nowPerf - lastRxInputAt);
+          if (gap > maxRxGapMs && gap < 10000) {
+            maxRxGapMs = gap;
+          }
+        }
+        lastRxInputAt = nowPerf;
+        if (engine && peerConnected) {
+          engine.receiveRemoteInputPacket(msg, nowPerf);
+        }
+        return;
+      }
       rxCountThisSec++;
       if (msg.type === 'peer_ping') {
         if (ws && ws.readyState === 1) {
@@ -1815,7 +1881,11 @@
 
         // Dynamic Auto Input Delay adaptation with hysteresis when in 'auto' mode
         if (msg.type === 'peer_pong' && inputDelaySelect.value === 'auto' && engine) {
-          const recDelay = NesNetplayEngine.computeRecommendedInputDelay(rttMs, jitterMs);
+          const recDelay = NesNetplayEngine.computeRecommendedInputDelay(
+            rttMs,
+            jitterMs,
+            engine.rxClumpFrames
+          );
           const autoOpt = inputDelaySelect.querySelector('option[value="auto"]');
           if (autoOpt) {
             autoOpt.textContent = `Auto (${recDelay}f @ ${rttMs}ms)`;
@@ -1832,7 +1902,7 @@
               lastAutoDelayChangeAt = nowMs;
               autoDelayStreak = 0;
               engine.setInputDelay(recDelay);
-              logDebug(`Auto Input Delay adjusted to ${recDelay}f (RTT=${rttMs}ms, Jitter=±${jitterMs}ms)`);
+              logDebug(`Auto Input Delay adjusted to ${recDelay}f (RTT=${rttMs}ms, Jitter=±${jitterMs}ms, Clump=${engine.rxClumpFrames}f)`);
             }
           } else {
             autoDelayStreak = 0;
@@ -1841,24 +1911,11 @@
         return;
       }
 
-      if (msg.type === 'netplay_input') {
-        const nowPerf = performance.now();
-        if (lastRxInputAt > 0) {
-          const gap = Math.round(nowPerf - lastRxInputAt);
-          if (gap > maxRxGapMs && gap < 10000) {
-            maxRxGapMs = gap;
-          }
-        }
-        lastRxInputAt = nowPerf;
-        if (engine && peerConnected) {
-          engine.receiveRemoteInputPacket(msg);
-        }
-        return;
-      }
-
       if (msg.type === 'room_joined') {
         roomCode = msg.roomCode;
+        localClientId = msg.clientId || null;
         localPlayerIndex = msg.playerIndex;
+        connectAuxWebSocket(roomCode, localClientId);
         const otherPeers = (msg.peers || []).filter((p) => p.playerIndex !== localPlayerIndex);
         peerConnected = otherPeers.length > 0;
         matchStarted = false;
@@ -2186,6 +2243,10 @@
         try { ws.close(); } catch {}
         ws = null;
       }
+      if (wsAux) {
+        try { wsAux.close(); } catch {}
+        wsAux = null;
+      }
       closeWebRtc();
 
       const code = (roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
@@ -2225,6 +2286,10 @@
         partnerRomName = null;
         partnerRomCrc32 = null;
         matchStarted = false;
+        if (wsAux) {
+          try { wsAux.close(); } catch {}
+          wsAux = null;
+        }
         closeWebRtc();
         if (engine) {
           engine.online = false;
@@ -2429,6 +2494,10 @@
         jitterMs,
         riftFrames: t.riftFrames ?? 0,
         riftWaitFrames: t.riftWaitFrames ?? 0,
+        clumpBiasFrames: t.clumpBiasFrames ?? 0,
+        rxGapP95Ms: t.rxGapP95Ms ?? 0,
+        rxClumpFrames: t.rxClumpFrames ?? 0,
+        smoothedFramesCount: t.smoothedFramesCount ?? 0,
         inputDelayFrames: t.inputDelayFrames ?? Number(inputDelaySelect.value),
         fps: lastFpsVal,
         lastStepMs: t.lastStepMs ?? 0,
@@ -2594,15 +2663,34 @@
       }
     }
 
+    // Dedicated Web Worker High-Precision 60.0988 Hz Timer (decoupled from 60Hz/144Hz/240Hz monitor VSync & background throttling)
+    let workerTimerActive = false;
+    try {
+      const workerBlob = new Blob(['setInterval(() => postMessage(0), 4);'], {
+        type: 'application/javascript'
+      });
+      const tickWorker = new Worker(URL.createObjectURL(workerBlob));
+      tickWorker.onmessage = () => {
+        workerTimerActive = true;
+        runTick(performance.now());
+      };
+    } catch {}
+
     function rafLoop(now) {
-      runTick(now);
+      if (!workerTimerActive) {
+        runTick(now);
+      }
+      if (canvasDirty) {
+        ctx.putImageData(imgData, 0, 0);
+        canvasDirty = false;
+      }
       requestAnimationFrame(rafLoop);
     }
     requestAnimationFrame(rafLoop);
 
-    // Keep stepping at 60Hz even when browser window is unfocused (for 2-window local testing)
+    // Fallback interval if Web Worker creation is restricted
     setInterval(() => {
-      if (document.hidden || !document.hasFocus()) {
+      if (!workerTimerActive && (document.hidden || !document.hasFocus())) {
         runTick(performance.now());
       }
     }, 16);

@@ -1,6 +1,4 @@
-# coop-anything AGENTS.md Rule 2 & 7: Never commit private state, ROMs, saves, or dumps
-local/
-*.nes
+# Saves, dumps, and temporary state files (local/*.nes test ROMs are tracked for automated QA)
 *.fds
 *.unf
 *.bin

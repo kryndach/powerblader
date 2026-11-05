@@ -222,13 +222,24 @@ export function createCoopServer(options = {}) {
     const msgWithSeq = { ...payloadObj, _seq: seq };
     const raw = JSON.stringify(msgWithSeq);
 
+    let sentViaWs = false;
     if (peer.ws && peer.ws.readyState === 1) {
       try {
         peer.ws.send(raw);
         peer.lastTxAt = Date.now();
-        return;
+        sentViaWs = true;
       } catch {}
     }
+    // Stripe latency-critical netplay_input packets across the secondary parallel WebSocket (wsAux)
+    // to defeat TCP Head-of-Line blocking over SSH/WSS tunnels.
+    if (payloadObj.type === 'netplay_input' && peer.wsAux && peer.wsAux.readyState === 1) {
+      try {
+        peer.wsAux.send(raw);
+        peer.lastTxAt = Date.now();
+        sentViaWs = true;
+      } catch {}
+    }
+    if (sentViaWs) return;
 
     // Queue in HTTP outbox only when WebSocket is not open for this peer
     peer.httpOutbox.push(msgWithSeq);
@@ -417,6 +428,13 @@ export function createCoopServer(options = {}) {
       msg.type.startsWith('autotest_') ||
       msg.type.startsWith('telemetry_')
     ) {
+      if (msg.type === 'netplay_input' && typeof msg.startFrame === 'number') {
+        const dedupKey = `${msg.sessionId || ''}:${msg.startFrame}:${Array.isArray(msg.inputs) ? msg.inputs[0] : 0}:${msg.hashFrame || ''}`;
+        if (peer._lastInputDedupKey === dedupKey) {
+          return;
+        }
+        peer._lastInputDedupKey = dedupKey;
+      }
       broadcastToRoom(peer.roomCode, peer.clientId, {
         ...msg,
         fromPlayer: peer.playerIndex,
@@ -763,6 +781,25 @@ export function createCoopServer(options = {}) {
         return;
       }
 
+      if (msg.type === 'bind_aux') {
+        const roomCode = String(msg.roomCode || 'NOVA')
+          .trim()
+          .toUpperCase()
+          .slice(0, 12);
+        const clientId = String(msg.clientId || '');
+        const roomMap = rooms.get(roomCode);
+        const peer = roomMap && roomMap.get(clientId);
+        if (peer) {
+          peer.wsAux = ws;
+          ws.peerSession = peer;
+          ws.isAux = true;
+          try {
+            ws.send(JSON.stringify({ type: 'aux_bound', roomCode, clientId }));
+          } catch {}
+        }
+        return;
+      }
+
       if (msg.type === 'join_room') {
         const roomCode = String(msg.roomCode || 'NOVA')
           .trim()
@@ -798,8 +835,20 @@ export function createCoopServer(options = {}) {
 
     ws.on('close', () => {
       const peer = ws.peerSession;
+      if (ws.isAux) {
+        if (peer && peer.wsAux === ws) {
+          peer.wsAux = null;
+        }
+        return;
+      }
       if (peer && peer.ws === ws) {
         peer.ws = null;
+        if (peer.wsAux) {
+          try {
+            peer.wsAux.close();
+          } catch {}
+          peer.wsAux = null;
+        }
         // Remove peer immediately when its WebSocket closes (e.g. tab refresh/close) so no zombie session holds P1/P2!
         removePeerSession(peer.roomCode, peer.clientId);
       }

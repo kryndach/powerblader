@@ -265,6 +265,46 @@ export function patchJsnes8x16Sprites(nes) {
     return origEndFrame();
   };
 
+  // Fix 1d-2: O(1) Headless renderBgScanline fast-forward during rollback re-simulation.
+  // When _headlessFrame is active and Sprite 0 is either not on this scanline or has already
+  // triggered hitSpr0, skip the 32-tile / 256-pixel RGB rendering loop and advance the PPU
+  // horizontal/vertical scroll counters directly in O(1).
+  const origRenderBgScanline = ppu.renderBgScanline.bind(ppu);
+  ppu.renderBgScanline = function (bgbuffer, scan) {
+    if (
+      this._headlessFrame &&
+      (this.hitSpr0 || !this.scanlineSprite0[scan]) &&
+      (!this.nes.rom ||
+        (this.nes.rom.mapperType !== 9 &&
+          this.nes.rom.mapperType !== 10 &&
+          this.nes.rom.mapperType !== 5))
+    ) {
+      this.cntHT = this.regHT;
+      this.cntH = this.regH;
+      this.curNt = this.ntable1[(this.cntV << 1) + this.cntH];
+      if (scan < 240 && scan - this.cntFV >= 0) {
+        this.cntH = (this.regH + 1) & 1;
+        this.curNt = this.ntable1[(this.cntV << 1) + this.cntH];
+        this.validTileData = true;
+      }
+      this.cntFV++;
+      if (this.cntFV === 8) {
+        this.cntFV = 0;
+        this.cntVT++;
+        if (this.cntVT === 30) {
+          this.cntVT = 0;
+          this.cntV = (this.cntV + 1) & 1;
+          this.curNt = this.ntable1[(this.cntV << 1) + this.cntH];
+        } else if (this.cntVT === 32) {
+          this.cntVT = 0;
+        }
+        this.validTileData = false;
+      }
+      return;
+    }
+    return origRenderBgScanline(bgbuffer, scan);
+  };
+
   // Fix 1e: Native Uint8Array.set() PRG/CHR bank switching + redundant bank-switch deduplication
   const mmap = nes.mmap;
   if (mmap && !mmap._fastBankPatched) {
@@ -689,10 +729,14 @@ export class NesNetplayEngine {
     this.inputDelayFrames = options.inputDelayFrames ?? 2;
     this.maxRollbackFrames = options.maxRollbackFrames ?? 20;
     this.enableRiftPacing = Boolean(options.enableRiftPacing);
+    this.enableVisualSmoothing = options.enableVisualSmoothing !== false;
     this.historySize = 256;
     this.saveBufferSize = options.saveBufferSize ?? 64;
     this.sessionId = options.sessionId || 'default';
     this.syncPaused = false;
+    this._preRollbackBuffer = new Uint32Array(256 * 240);
+    this._smoothedDisplayBuffer = new Uint32Array(256 * 240);
+    this.lastRollbackBlendAlpha = 0;
 
     // Hook nes.opts.onAudioSample and nes.opts.onFrame so we can suppress duplicate audio/video during rollback re-simulation
     this.suppressCallbacks = false;
@@ -709,14 +753,41 @@ export class NesNetplayEngine {
   _wrapNesCallbacks() {
     if (!this.nes || !this.nes.opts || this.nes._netplayWrapped) return;
     this.nes._netplayWrapped = true;
-    const origFrame = this.nes.opts.onFrame;
+    const origFrame = (this.nes.ui && this.nes.ui.writeFrame) || this.nes.opts.onFrame;
     const origAudio = this.nes.opts.onAudioSample;
 
-    this.nes.opts.onFrame = (fb) => {
+    const wrappedFrame = (fb) => {
       if (!this.suppressCallbacks && origFrame) {
+        if (this.enableVisualSmoothing && this.lastRollbackBlendAlpha > 0 && fb) {
+          const alphaOld = this.lastRollbackBlendAlpha;
+          const wOld = Math.round(alphaOld * 256);
+          const wNew = 256 - wOld;
+          const prev = this._preRollbackBuffer;
+          const out = this._smoothedDisplayBuffer;
+          for (let i = 0; i < 61440; i++) {
+            const cNew = fb[i] >>> 0;
+            const cOld = prev[i] >>> 0;
+            if (cNew === cOld) {
+              out[i] = cNew;
+            } else {
+              const r = (((cNew & 0xff) * wNew + (cOld & 0xff) * wOld) >> 8) & 0xff;
+              const g = ((((cNew >> 8) & 0xff) * wNew + ((cOld >> 8) & 0xff) * wOld) >> 8) & 0xff;
+              const b = ((((cNew >> 16) & 0xff) * wNew + ((cOld >> 16) & 0xff) * wOld) >> 8) & 0xff;
+              out[i] = (cNew & 0xff000000) | (b << 16) | (g << 8) | r;
+            }
+          }
+          this.lastRollbackBlendAlpha = 0;
+          this.smoothedFramesCount = (this.smoothedFramesCount || 0) + 1;
+          origFrame(out);
+          return;
+        }
         origFrame(fb);
       }
     };
+    this.nes.opts.onFrame = wrappedFrame;
+    if (this.nes.ui) {
+      this.nes.ui.writeFrame = wrappedFrame;
+    }
     this.nes.opts.onAudioSample = (l, r) => {
       if (!this.suppressCallbacks && origAudio) {
         origAudio(l, r);
@@ -766,7 +837,7 @@ export class NesNetplayEngine {
     this.lastRemoteHash = 0;
     this.desyncCount = 0;
 
-    // Telemetry
+    // Telemetry & Clump-Aware Pacing
     this.rollbacksTotal = 0;
     this.rollbacksThisSec = 0;
     this.rollbacksPerSec = 0;
@@ -778,6 +849,14 @@ export class NesNetplayEngine {
     this.riftWaitFrames = 0;
     this._riftCooldown = 0;
     this.lastStepMs = 0;
+    this._lastRxAtMs = 0;
+    this._rxGapSamples = [];
+    this.rxGapP95Ms = 0;
+    this.rxClumpFrames = 0;
+    this.peerClumpFrames = 0;
+    this.clumpBiasFrames = 0;
+    this.lastRollbackBlendAlpha = 0;
+    this.smoothedFramesCount = 0;
 
     for (let i = 0; i < this.saveBufferSize; i++) {
       this.saveRing[i].frame = -1;
@@ -790,9 +869,10 @@ export class NesNetplayEngine {
     }
   }
 
-  static computeRecommendedInputDelay(rttMs, jitterMs = 0) {
+  static computeRecommendedInputDelay(rttMs, jitterMs = 0, rxClumpFrames = 0) {
     if (!Number.isFinite(rttMs) || rttMs <= 0) return 3;
-    const effectiveRtt = rttMs + Math.min(40, Math.max(0, jitterMs) * 0.5);
+    const clumpExtraMs = Math.min(50, Math.max(0, (rxClumpFrames || 0) - 1) * 10);
+    const effectiveRtt = rttMs + Math.min(40, Math.max(0, jitterMs) * 0.5) + clumpExtraMs;
     if (effectiveRtt <= 85) return 2;
     if (effectiveRtt <= 165) return 3;
     if (effectiveRtt <= 250) return 4;
@@ -850,7 +930,7 @@ export class NesNetplayEngine {
    * Called when remote input packet arrives:
    * packet = { startFrame, inputs: [mask_start, mask_{start-1}, ...], sessionId?, hashFrame?, hash? }
    */
-  receiveRemoteInputPacket(packet) {
+  receiveRemoteInputPacket(packet, nowMs = performance.now()) {
     if (!packet || typeof packet.startFrame !== 'number' || !Array.isArray(packet.inputs)) {
       return;
     }
@@ -871,6 +951,7 @@ export class NesNetplayEngine {
     if (rawLen === 0) return;
     const totalLen = Math.max(rawLen, packet.tailCount || 0);
     const tailVal = packet.inputs[rawLen - 1] & 0xff;
+    let newlyConfirmedCount = 0;
     for (let i = totalLen - 1; i >= 0; i--) {
       const f = packet.startFrame - i;
       if (f < minValidFrame) continue;
@@ -880,6 +961,7 @@ export class NesNetplayEngine {
       const wasConfirmed = confirmedArr[idx] === f;
 
       if (!wasConfirmed) {
+        newlyConfirmedCount++;
         // Check against the exact mask that was used when frame f was last simulated
         if (f < this.currentFrame && this.simulatedFrameTag[idx] === f) {
           const usedMask = simulatedArr[idx];
@@ -900,11 +982,44 @@ export class NesNetplayEngine {
       }
     }
 
-    // Update GGPO Clock-Rift estimate: riftFrames = (myLead - peerLead) * 0.5
+    // Track TCP burst clumping & 95th-percentile arrival gap (only on non-duplicate packets)
+    if (newlyConfirmedCount > 0) {
+      if (this._lastRxAtMs > 0 && nowMs >= this._lastRxAtMs) {
+        const gapMs = nowMs - this._lastRxAtMs;
+        this._rxGapSamples.push(gapMs);
+        if (this._rxGapSamples.length > 40) {
+          this._rxGapSamples.shift();
+        }
+        const sorted = this._rxGapSamples.slice().sort((a, b) => a - b);
+        const p95Idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95));
+        this.rxGapP95Ms = Number(sorted[p95Idx].toFixed(1));
+      }
+      this._lastRxAtMs = nowMs;
+      const burstClump = Math.max(
+        0,
+        newlyConfirmedCount - 1,
+        (this.rxGapP95Ms - 20) / 16.667
+      );
+      this.rxClumpFrames = Number(
+        (this.rxClumpFrames * 0.8 + Math.min(8, burstClump) * 0.2).toFixed(2)
+      );
+    }
+
+    if (typeof packet.rxClump === 'number' && Number.isFinite(packet.rxClump)) {
+      this.peerClumpFrames = packet.rxClump;
+    }
+
+    // Update GGPO Clock-Rift estimate + Asymmetric Clump Bias:
+    // If our incoming TCP stream is clumpier than peer's, bias our target rift slightly positive
+    // so we gently pace back by up to 1.5f, giving incoming TCP clumps an arrival cushion.
     if (typeof packet.peerLead === 'number' && Number.isFinite(packet.peerLead)) {
       const myLead =
         this.currentFrame - Math.max(this.timelineStartFrame, this.lastConfirmedRemoteFrame);
-      const sampleRift = (myLead - packet.peerLead) * 0.5;
+      const rawRift = (myLead - packet.peerLead) * 0.5;
+      this.clumpBiasFrames = Number(
+        Math.max(-1.5, Math.min(1.5, (this.rxClumpFrames - this.peerClumpFrames) * 0.35)).toFixed(2)
+      );
+      const sampleRift = rawRift + this.clumpBiasFrames;
       this.riftFrames = Number((this.riftFrames * 0.7 + sampleRift * 0.3).toFixed(2));
     }
 
@@ -1035,6 +1150,10 @@ export class NesNetplayEngine {
         this.lastRollbackDepth = depth;
         if (depth > this.maxRollbackDepthSeen) {
           this.maxRollbackDepthSeen = depth;
+        }
+        if (this.enableVisualSmoothing && depth >= 4 && this.nes.ppu && this.nes.ppu.buffer) {
+          this._preRollbackBuffer.set(this.nes.ppu.buffer);
+          this.lastRollbackBlendAlpha = depth >= 6 ? 0.25 : 0.18;
         }
 
         // Restore state at rbFrame and re-simulate rbFrame .. currentFrame - 1 in silent/headless mode
@@ -1174,6 +1293,7 @@ export class NesNetplayEngine {
       player: this.localPlayer,
       startFrame: latestScheduledFrame,
       peerLead: this.currentFrame - Math.max(this.timelineStartFrame, this.lastConfirmedRemoteFrame),
+      rxClump: this.rxClumpFrames,
       inputs
     };
     if (trimLen < count) {
@@ -1314,6 +1434,11 @@ export class NesNetplayEngine {
       frameAdvantage: this.currentFrame - Math.max(0, this.lastConfirmedRemoteFrame),
       riftFrames: this.riftFrames,
       riftWaitFrames: this.riftWaitFrames,
+      clumpBiasFrames: this.clumpBiasFrames,
+      rxGapP95Ms: this.rxGapP95Ms,
+      rxClumpFrames: this.rxClumpFrames,
+      peerClumpFrames: this.peerClumpFrames,
+      smoothedFramesCount: this.smoothedFramesCount || 0,
       inputDelayFrames: this.inputDelayFrames,
       maxRollbackFrames: this.maxRollbackFrames,
       rollbacksTotal: this.rollbacksTotal,

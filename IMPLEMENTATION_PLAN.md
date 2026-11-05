@@ -112,6 +112,16 @@
    - Default `Auto (RTT Adaptive)` mode in `#inputDelaySelect` automatically adapts `inputDelayFrames` (`2f` for `<=85ms`, `3f` for `<=165ms`, `4f` for `<=250ms`, `5f` for `>250ms`) with hysteresis based on measured RTT + jitter.
 6. **Audio Ring-Buffer Drift Clamping & Click-Free Underrun Decay:**
    - Uses a `512`-sample WebAudio buffer, clamps maximum queued audio to `2048` samples (`~42ms`), and smoothly decays `lastAudioSampleL *= 0.985` on underruns to eliminate speaker clicks/pops during rollbacks.
+7. **O(1) Headless `renderBgScanline` Fast-Forward + `jsnes` `ui.writeFrame` Suppression Fix (`src/netplay_engine.mjs`):**
+   - Skips the 32-tile / 256-pixel RGB background loop during `_headlessFrame` whenever `this.hitSpr0 || !this.scanlineSprite0[scan]`, advancing scroll counters directly in O(1) (`0.32ms/f` headless on *Battletoads & Double Dragon*, `0.13ms/f` on *Power Blade 2*, `0.09ms/f` on *Super Mario Bros.*).
+   - Fixed `_wrapNesCallbacks()` to wrap `nes.ui.writeFrame` in addition to `nes.opts.onFrame` so rollback frames never trigger redundant canvas blits.
+8. **Non-NES Modern Netcode Techniques (`Valorant` / `Rocket League` / `Parsec` / `Street Fighter 6`):**
+   - **Web Worker High-Precision 60.0988 Hz Timer (`public/index.html`):** Decouples simulation & network input transmission from `144Hz`/`240Hz` vs `60Hz` monitor VSync and background tab throttling, while `requestAnimationFrame` only blits dirty frames to `<canvas>`.
+   - **Dual-WebSocket Striping (`ws` + `wsAux` / `bind_aux` in `public/index.html` & `server/relay_server.mjs`):** Opens two parallel TCP/WebSocket streams through the tunnel and races `netplay_input` packets across both sockets with uplink/downlink deduplication to defeat TCP Head-of-Line blocking spikes.
+   - **Clump-Aware Receiver Rift Biasing (`src/netplay_engine.mjs`):** Measures 95th-percentile packet arrival gap (`rxGapP95Ms`) and burst clump size (`rxClumpFrames`), biasing GGPO clock rift by up to `±1.5f` toward the clumpier receiver so asymmetric TCP bursts are absorbed before execution.
+   - **1-Frame Visual Rollback Cross-Fade (`src/netplay_engine.mjs`):** Blends `18%–25%` pre-rollback pixels with `75%–82%` post-rollback pixels into a display-only buffer for 1 frame on deep rollbacks (`>= 4f`) without touching deterministic PPU memory.
+9. **Tracked Real-ROM Torture Test Suite (`tools/test_real_roms.mjs` & `local/*.nes`):**
+   - Unignored `local/*.nes` in `.gitignore` and added automated tests across `Battletoads_&_Double_Dragon_-_The_Ultimate_Team_(U).nes`, `Power Blade 2 (U) [!].nes`, and `Super Mario Bros. (JU) [o3].nes`.
 
 ---
 

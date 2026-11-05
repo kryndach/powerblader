@@ -11,6 +11,7 @@
     "online:pinggy": "powershell -ExecutionPolicy Bypass -File ./start_online.ps1 -Tunnel pinggy -Mode autotest",
     "test": "node tools/test_coop_qa.mjs",
     "test:net": "node tools/test_net_diagnostics.mjs",
+    "test:roms": "node tools/test_real_roms.mjs",
     "probe": "node tools/re_probe.mjs"
   },
   "dependencies": {
