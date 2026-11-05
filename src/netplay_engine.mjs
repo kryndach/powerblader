@@ -141,8 +141,37 @@ const PPU_SCALAR_PROPS = [
  * subtracted 1 from an already-even topTileNum (`topTileNum - 1 + 256` -> `topTileNum + 256`).
  */
 export function patchJsnes8x16Sprites(nes) {
-  if (!nes || !nes.ppu) return;
-  if (nes.rom && nes.rom.vromCount > 0 && Array.isArray(nes.rom.vromTile)) {
+  if (!nes) return;
+
+  // Automatically re-apply all PPU, Mapper, and VROM patches whenever nes.loadROM() or nes.reset()
+  // recreates nes.ppu, nes.mmap, or nes.rom (e.g. on 2-PC Frame #0 lockstep start or console reset).
+  if (!nes._patchedLoadRomHook) {
+    nes._patchedLoadRomHook = true;
+    if (typeof nes.loadROM === 'function') {
+      const origLoadROM = nes.loadROM.bind(nes);
+      nes.loadROM = function (data) {
+        const res = origLoadROM(data);
+        patchJsnes8x16Sprites(this);
+        return res;
+      };
+    }
+    if (typeof nes.reset === 'function') {
+      const origReset = nes.reset.bind(nes);
+      nes.reset = function () {
+        const res = origReset();
+        patchJsnes8x16Sprites(this);
+        return res;
+      };
+    }
+  }
+
+  if (
+    nes.rom &&
+    !nes.rom._vromRefTagged &&
+    nes.rom.vromCount > 0 &&
+    Array.isArray(nes.rom.vromTile)
+  ) {
+    nes.rom._vromRefTagged = true;
     for (let b = 0; b < nes.rom.vromTile.length; b++) {
       const bank = nes.rom.vromTile[b];
       if (!bank) continue;
@@ -151,15 +180,117 @@ export function patchJsnes8x16Sprites(nes) {
       }
     }
   }
-  if (nes.ppu._patched8x16) return;
+
+  // Fix 1e: Native Uint8Array.set() PRG/CHR bank switching + redundant bank-switch deduplication
+  const mmap = nes.mmap;
+  if (mmap && !mmap._fastBankPatched) {
+    mmap._fastBankPatched = true;
+    mmap._bankAt8000 = -1;
+    mmap._bankAtC000 = -1;
+
+    mmap.loadRomBank = function (bank, address) {
+      const romCount = this.nes.rom ? this.nes.rom.romCount : 0;
+      if (!romCount) return;
+      bank %= romCount;
+      if (address === 0x8000) {
+        if (this._bankAt8000 === bank) return;
+        this._bankAt8000 = bank;
+      } else if (address === 0xc000) {
+        if (this._bankAtC000 === bank) return;
+        this._bankAtC000 = bank;
+      }
+      this.nes.cpu.mem.set(this.nes.rom.rom[bank], address);
+    };
+
+    mmap.load32kRomBank = function (bank, address) {
+      const romCount = this.nes.rom ? this.nes.rom.romCount : 0;
+      if (!romCount) return;
+      const b0 = (bank * 2) % romCount;
+      const b1 = (bank * 2 + 1) % romCount;
+      if (address === 0x8000 && this._bankAt8000 === b0 && this._bankAtC000 === b1) {
+        return;
+      }
+      if (address === 0x8000) {
+        this._bankAt8000 = b0;
+        this._bankAtC000 = b1;
+      }
+      this.nes.cpu.mem.set(this.nes.rom.rom[b0], address);
+      this.nes.cpu.mem.set(this.nes.rom.rom[b1], address + 16384);
+    };
+
+    mmap.load8kRomBank = function (bank8k, address) {
+      const romCount = this.nes.rom ? this.nes.rom.romCount : 0;
+      if (!romCount) return;
+      this._bankAt8000 = -1;
+      this._bankAtC000 = -1;
+      const bank16k = (bank8k >> 1) % romCount;
+      const offset = (bank8k & 1) << 13;
+      this.nes.cpu.mem.set(this.nes.rom.rom[bank16k].subarray(offset, offset + 8192), address);
+    };
+
+    mmap.loadVromBank = function (bank, address) {
+      const vromCount = this.nes.rom ? this.nes.rom.vromCount : 0;
+      if (vromCount === 0) return;
+      this.nes.ppu.triggerRendering();
+      const b = bank % vromCount;
+      this.nes.ppu.vramMem.set(this.nes.rom.vrom[b], address);
+      const vromTile = this.nes.rom.vromTile[b];
+      const baseIndex = address >> 4;
+      const ptTile = this.nes.ppu.ptTile;
+      for (let i = 0; i < 256; i++) {
+        ptTile[baseIndex + i] = vromTile[i];
+      }
+    };
+
+    mmap.load1kVromBank = function (bank1k, address) {
+      const vromCount = this.nes.rom ? this.nes.rom.vromCount : 0;
+      if (vromCount === 0) return;
+      this.nes.ppu.triggerRendering();
+      const bank4k = Math.floor(bank1k / 4) % vromCount;
+      const bankoffset = (bank1k % 4) * 1024;
+      this.nes.ppu.vramMem.set(
+        this.nes.rom.vrom[bank4k].subarray(bankoffset, bankoffset + 1024),
+        address
+      );
+      const vromTile = this.nes.rom.vromTile[bank4k];
+      const baseIndex = address >> 4;
+      const tileOffset = (bank1k % 4) << 6;
+      const ptTile = this.nes.ppu.ptTile;
+      for (let i = 0; i < 64; i++) {
+        ptTile[baseIndex + i] = vromTile[tileOffset + i];
+      }
+    };
+
+    mmap.load2kVromBank = function (bank2k, address) {
+      const vromCount = this.nes.rom ? this.nes.rom.vromCount : 0;
+      if (vromCount === 0) return;
+      this.nes.ppu.triggerRendering();
+      const bank4k = Math.floor(bank2k / 2) % vromCount;
+      const bankoffset = (bank2k % 2) * 2048;
+      this.nes.ppu.vramMem.set(
+        this.nes.rom.vrom[bank4k].subarray(bankoffset, bankoffset + 2048),
+        address
+      );
+      const vromTile = this.nes.rom.vromTile[bank4k];
+      const baseIndex = address >> 4;
+      const tileOffset = (bank2k % 2) << 7;
+      const ptTile = this.nes.ppu.ptTile;
+      for (let i = 0; i < 128; i++) {
+        ptTile[baseIndex + i] = vromTile[tileOffset + i];
+      }
+    };
+  }
+
+  if (!nes.ppu || nes.ppu._patched8x16) return;
   const ppu = nes.ppu;
   ppu._patched8x16 = true;
 
   // Fix 1: Flush visible scanline background before HBlank ($2006/$2005/$2000) scroll changes
-  // On real NES hardware, visible pixels are output during dots 0..255 and HUD split-screen IRQ
-  // scroll writes happen in HBlank (dots 256..340) for the NEXT scanline. Because jsnes normally
-  // waits until dot 341 (endScanline) to call renderBgScanline, HBlank scroll writes at dot ~335
-  // would otherwise shift the current scanline and make bottom HUDs/menus jump by 1-2 scanlines.
+  // On real NES hardware, visible pixels are output during dots 0..255 and HUD split-screen IRQ /
+  // Sprite-0 scroll writes happen in HBlank (dots 256..340) for the NEXT scanline. Because jsnes
+  // normally waits until dot 341 (endScanline) to call renderBgScanline, HBlank scroll writes
+  // (including the first write to $2006 which updates regH/regV/regFV/regVT) at dot ~325..340
+  // would otherwise shift or corrupt the current scanline and make bottom HUDs jump by 1-2 scanlines.
   function flushCurrentScanlineIfHblank() {
     if (
       ppu.scanline >= 21 &&
@@ -178,8 +309,8 @@ export function patchJsnes8x16Sprites(nes) {
 
   const origWriteVRAMAddress = ppu.writeVRAMAddress.bind(ppu);
   ppu.writeVRAMAddress = function (address) {
+    flushCurrentScanlineIfHblank();
     if (!this.firstWrite) {
-      flushCurrentScanlineIfHblank();
       this.validTileData = false;
     }
     return origWriteVRAMAddress(address);
@@ -189,6 +320,12 @@ export function patchJsnes8x16Sprites(nes) {
   ppu.scrollWrite = function (value) {
     flushCurrentScanlineIfHblank();
     return origScrollWrite(value);
+  };
+
+  const origUpdateControlReg1 = ppu.updateControlReg1.bind(ppu);
+  ppu.updateControlReg1 = function (value) {
+    flushCurrentScanlineIfHblank();
+    return origUpdateControlReg1(value);
   };
 
   // Fix 1b: Track per-tile dirty epochs on CHR-RAM pattern table writes ($0000-$1FFF)
@@ -304,106 +441,6 @@ export function patchJsnes8x16Sprites(nes) {
     }
     return origRenderBgScanline(bgbuffer, scan);
   };
-
-  // Fix 1e: Native Uint8Array.set() PRG/CHR bank switching + redundant bank-switch deduplication
-  const mmap = nes.mmap;
-  if (mmap && !mmap._fastBankPatched) {
-    mmap._fastBankPatched = true;
-    mmap._bankAt8000 = -1;
-    mmap._bankAtC000 = -1;
-
-    mmap.loadRomBank = function (bank, address) {
-      const romCount = this.nes.rom ? this.nes.rom.romCount : 0;
-      if (!romCount) return;
-      bank %= romCount;
-      if (address === 0x8000) {
-        if (this._bankAt8000 === bank) return;
-        this._bankAt8000 = bank;
-      } else if (address === 0xc000) {
-        if (this._bankAtC000 === bank) return;
-        this._bankAtC000 = bank;
-      }
-      this.nes.cpu.mem.set(this.nes.rom.rom[bank], address);
-    };
-
-    mmap.load32kRomBank = function (bank, address) {
-      const romCount = this.nes.rom ? this.nes.rom.romCount : 0;
-      if (!romCount) return;
-      const b0 = (bank * 2) % romCount;
-      const b1 = (bank * 2 + 1) % romCount;
-      if (address === 0x8000 && this._bankAt8000 === b0 && this._bankAtC000 === b1) {
-        return;
-      }
-      if (address === 0x8000) {
-        this._bankAt8000 = b0;
-        this._bankAtC000 = b1;
-      }
-      this.nes.cpu.mem.set(this.nes.rom.rom[b0], address);
-      this.nes.cpu.mem.set(this.nes.rom.rom[b1], address + 16384);
-    };
-
-    mmap.load8kRomBank = function (bank8k, address) {
-      const romCount = this.nes.rom ? this.nes.rom.romCount : 0;
-      if (!romCount) return;
-      this._bankAt8000 = -1;
-      this._bankAtC000 = -1;
-      const bank16k = (bank8k >> 1) % romCount;
-      const offset = (bank8k & 1) << 13;
-      this.nes.cpu.mem.set(this.nes.rom.rom[bank16k].subarray(offset, offset + 8192), address);
-    };
-
-    mmap.loadVromBank = function (bank, address) {
-      const vromCount = this.nes.rom ? this.nes.rom.vromCount : 0;
-      if (vromCount === 0) return;
-      this.nes.ppu.triggerRendering();
-      const b = bank % vromCount;
-      this.nes.ppu.vramMem.set(this.nes.rom.vrom[b], address);
-      const vromTile = this.nes.rom.vromTile[b];
-      const baseIndex = address >> 4;
-      const ptTile = this.nes.ppu.ptTile;
-      for (let i = 0; i < 256; i++) {
-        ptTile[baseIndex + i] = vromTile[i];
-      }
-    };
-
-    mmap.load1kVromBank = function (bank1k, address) {
-      const vromCount = this.nes.rom ? this.nes.rom.vromCount : 0;
-      if (vromCount === 0) return;
-      this.nes.ppu.triggerRendering();
-      const bank4k = Math.floor(bank1k / 4) % vromCount;
-      const bankoffset = (bank1k % 4) * 1024;
-      this.nes.ppu.vramMem.set(
-        this.nes.rom.vrom[bank4k].subarray(bankoffset, bankoffset + 1024),
-        address
-      );
-      const vromTile = this.nes.rom.vromTile[bank4k];
-      const baseIndex = address >> 4;
-      const tileOffset = (bank1k % 4) << 6;
-      const ptTile = this.nes.ppu.ptTile;
-      for (let i = 0; i < 64; i++) {
-        ptTile[baseIndex + i] = vromTile[tileOffset + i];
-      }
-    };
-
-    mmap.load2kVromBank = function (bank2k, address) {
-      const vromCount = this.nes.rom ? this.nes.rom.vromCount : 0;
-      if (vromCount === 0) return;
-      this.nes.ppu.triggerRendering();
-      const bank4k = Math.floor(bank2k / 2) % vromCount;
-      const bankoffset = (bank2k % 2) * 2048;
-      this.nes.ppu.vramMem.set(
-        this.nes.rom.vrom[bank4k].subarray(bankoffset, bankoffset + 2048),
-        address
-      );
-      const vromTile = this.nes.rom.vromTile[bank4k];
-      const baseIndex = address >> 4;
-      const tileOffset = (bank2k % 2) << 7;
-      const ptTile = this.nes.ppu.ptTile;
-      for (let i = 0; i < 128; i++) {
-        ptTile[baseIndex + i] = vromTile[tileOffset + i];
-      }
-    };
-  }
 
   // Fix 2: 8x16 sprite rendering (fix odd-bank topTileNum + 256 without double-flipping vertFlip rows)
   ppu.renderSpritesPartially = function (startscan, scancount, bgPri) {
@@ -790,12 +827,23 @@ export class NesNetplayEngine {
     }
     this.nes.opts.onAudioSample = (l, r) => {
       if (!this.suppressCallbacks && origAudio) {
-        origAudio(l, r);
+        let outL = l;
+        let outR = r;
+        if (this._rollbackDeclickSamples > 0) {
+          const alpha = this._rollbackDeclickSamples / 48;
+          outL = l * (1 - alpha) + this._rollbackDeclickL * alpha;
+          outR = r * (1 - alpha) + this._rollbackDeclickR * alpha;
+          this._rollbackDeclickSamples--;
+        }
+        this._lastEmittedAudioL = outL;
+        this._lastEmittedAudioR = outR;
+        origAudio(outL, outR);
       }
     };
   }
 
   resetTimeline(startFrame = 0, newSessionId = null) {
+    patchJsnes8x16Sprites(this.nes);
     if (newSessionId) {
       this.sessionId = newSessionId;
     }
@@ -852,8 +900,14 @@ export class NesNetplayEngine {
     this.rxClumpFrames = 0;
     this.peerClumpFrames = 0;
     this.clumpBiasFrames = 0;
+    this.remoteInputDelayFrames = 0;
     this.lastRollbackBlendAlpha = 0;
     this.smoothedFramesCount = 0;
+    this._lastEmittedAudioL = 0;
+    this._lastEmittedAudioR = 0;
+    this._rollbackDeclickL = 0;
+    this._rollbackDeclickR = 0;
+    this._rollbackDeclickSamples = 0;
 
     for (let i = 0; i < this.saveBufferSize; i++) {
       this.saveRing[i].frame = -1;
@@ -1005,13 +1059,19 @@ export class NesNetplayEngine {
     if (typeof packet.rxClump === 'number' && Number.isFinite(packet.rxClump)) {
       this.peerClumpFrames = packet.rxClump;
     }
+    if (typeof packet.inputDelay === 'number' && Number.isFinite(packet.inputDelay)) {
+      this.remoteInputDelayFrames = Math.max(0, Math.min(20, Math.floor(packet.inputDelay)));
+    }
 
     // Update GGPO Clock-Rift estimate + Asymmetric Clump Bias:
-    // If our incoming TCP stream is clumpier than peer's, bias our target rift slightly positive
-    // so we gently pace back by up to 1.5f, giving incoming TCP clumps an arrival cushion.
+    // Normalize myLead by subtracting remoteInputDelayFrames so asymmetric input lag settings
+    // (e.g. P1=2f vs P2=0f) measure true emulation clock difference (F1 - F2) without bias.
     if (typeof packet.peerLead === 'number' && Number.isFinite(packet.peerLead)) {
-      const myLead =
-        this.currentFrame - Math.max(this.timelineStartFrame, this.lastConfirmedRemoteFrame);
+      const peerEmulConfirmed = Math.max(
+        this.timelineStartFrame,
+        this.lastConfirmedRemoteFrame - (this.remoteInputDelayFrames || 0)
+      );
+      const myLead = this.currentFrame - peerEmulConfirmed;
       const rawRift = (myLead - packet.peerLead) * 0.5;
       this.clumpBiasFrames = Number(
         Math.max(-1.5, Math.min(1.5, (this.rxClumpFrames - this.peerClumpFrames) * 0.35)).toFixed(2)
@@ -1152,6 +1212,9 @@ export class NesNetplayEngine {
           this._preRollbackBuffer.set(this.nes.ppu.buffer);
           this.lastRollbackBlendAlpha = depth >= 6 ? 0.25 : 0.18;
         }
+        this._rollbackDeclickL = this._lastEmittedAudioL || 0;
+        this._rollbackDeclickR = this._lastEmittedAudioR || 0;
+        this._rollbackDeclickSamples = 48;
 
         // Restore state at rbFrame and re-simulate rbFrame .. currentFrame - 1 in silent/headless mode
         loadFastState(this.nes, slot);
@@ -1284,12 +1347,17 @@ export class NesNetplayEngine {
       trimLen--;
     }
     const inputs = trimLen < count ? fullInputs.slice(0, trimLen) : fullInputs;
+    const peerEmulConfirmed = Math.max(
+      this.timelineStartFrame,
+      this.lastConfirmedRemoteFrame - (this.remoteInputDelayFrames || 0)
+    );
     const pkt = {
       type: 'netplay_input',
       sessionId: this.sessionId,
       player: this.localPlayer,
       startFrame: latestScheduledFrame,
-      peerLead: this.currentFrame - Math.max(this.timelineStartFrame, this.lastConfirmedRemoteFrame),
+      inputDelay: this.inputDelayFrames,
+      peerLead: this.currentFrame - peerEmulConfirmed,
       rxClump: this.rxClumpFrames,
       inputs
     };

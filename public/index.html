@@ -974,8 +974,9 @@
       debugToggleBtn.classList.add('active-toggle');
     }
 
-    // Audio Engine (Fixed 48000 Hz to match jsnes deterministic APU rate + Click-Free Underrun Decay & Drift Clamping)
+    // Audio Engine (Fixed 48000 Hz + Dynamic Rate Control Fractional Resampling & Prebuffered Cushion)
     let audioCtx = null;
+    let audioScriptNode = null;
     let audioMuted = false;
     let audioVolume = 0.80;
     try {
@@ -990,11 +991,16 @@
       }
     } catch {}
     const AUDIO_BUFFER_MASK = 8191;
-    const AUDIO_MAX_QUEUED_SAMPLES = 2048; // ~42ms max latency cap to prevent audio drifting behind video
+    const AUDIO_PREBUFFER_SAMPLES = 1800; // ~37ms initial prebuffer so playback never starts near 0
+    const AUDIO_TARGET_SAMPLES = 2200; // ~45ms target DRC cushion absorbs rollbacks & sub-frame time-sync
+    const AUDIO_MAX_QUEUED_SAMPLES = 5200; // ~108ms safety cap (only hit if tab was background-frozen)
     const audioRingL = new Float32Array(8192);
     const audioRingR = new Float32Array(8192);
     let audioWritePtr = 0;
     let audioReadPtr = 0;
+    let audioReadFrac = 0;
+    let audioBuffering = true;
+    let audioFadeInSamples = 0;
     let lastAudioSampleL = 0;
     let lastAudioSampleR = 0;
 
@@ -1010,30 +1016,82 @@
       } catch {
         audioCtx = new AudioContextClass();
       }
-      const proc = audioCtx.createScriptProcessor(512, 0, 2);
-      proc.onaudioprocess = (e) => {
+      audioScriptNode = audioCtx.createScriptProcessor(1024, 0, 2);
+      audioScriptNode.onaudioprocess = (e) => {
         const outL = e.outputBuffer.getChannelData(0);
         const outR = e.outputBuffer.getChannelData(1);
         const vol = audioMuted ? 0 : audioVolume;
-        for (let i = 0; i < outL.length; i++) {
-          if (vol <= 0) {
+        const queuedAtStart = (audioWritePtr - audioReadPtr) & AUDIO_BUFFER_MASK;
+
+        if (vol <= 0) {
+          for (let i = 0; i < outL.length; i++) {
             outL[i] = 0;
             outR[i] = 0;
-            lastAudioSampleL = 0;
-            lastAudioSampleR = 0;
-            if (audioReadPtr !== audioWritePtr) {
-              audioReadPtr = (audioReadPtr + 1) & AUDIO_BUFFER_MASK;
+          }
+          lastAudioSampleL = 0;
+          lastAudioSampleR = 0;
+          if (queuedAtStart > AUDIO_TARGET_SAMPLES) {
+            audioReadPtr = (audioWritePtr - AUDIO_TARGET_SAMPLES) & AUDIO_BUFFER_MASK;
+            audioReadFrac = 0;
+          }
+          return;
+        }
+
+        if (audioBuffering) {
+          if (queuedAtStart >= AUDIO_PREBUFFER_SAMPLES) {
+            audioBuffering = false;
+            audioFadeInSamples = 64;
+          } else {
+            for (let i = 0; i < outL.length; i++) {
+              lastAudioSampleL *= 0.985;
+              lastAudioSampleR *= 0.985;
+              outL[i] = lastAudioSampleL;
+              outR[i] = lastAudioSampleR;
             }
-          } else if (audioReadPtr !== audioWritePtr) {
-            const sL = audioRingL[audioReadPtr] * vol;
-            const sR = audioRingR[audioReadPtr] * vol;
-            audioReadPtr = (audioReadPtr + 1) & AUDIO_BUFFER_MASK;
+            return;
+          }
+        }
+
+        // Dynamic Rate Control (DRC): smoothly adjust fractional playback step rate (0.94..1.05)
+        // around AUDIO_TARGET_SAMPLES so sub-frame clock-rift pacing and rollbacks never underrun or jump.
+        const diff = queuedAtStart - AUDIO_TARGET_SAMPLES;
+        let stepRate = 1.0 + (diff / AUDIO_TARGET_SAMPLES) * 0.045;
+        if (queuedAtStart < 1200) {
+          stepRate = Math.max(0.82, (queuedAtStart / 1200) * 0.96);
+        } else {
+          stepRate = Math.max(0.95, Math.min(1.05, stepRate));
+        }
+
+        for (let i = 0; i < outL.length; i++) {
+          const q = (audioWritePtr - audioReadPtr) & AUDIO_BUFFER_MASK;
+          if (q > 1) {
+            const idx0 = audioReadPtr;
+            const idx1 = (idx0 + 1) & AUDIO_BUFFER_MASK;
+            const frac = audioReadFrac;
+            let sL = (audioRingL[idx0] + (audioRingL[idx1] - audioRingL[idx0]) * frac) * vol;
+            let sR = (audioRingR[idx0] + (audioRingR[idx1] - audioRingR[idx0]) * frac) * vol;
+            if (audioFadeInSamples > 0) {
+              const fade = (64 - audioFadeInSamples) / 64;
+              sL = lastAudioSampleL * (1 - fade) + sL * fade;
+              sR = lastAudioSampleR * (1 - fade) + sR * fade;
+              audioFadeInSamples--;
+            }
             lastAudioSampleL = sL;
             lastAudioSampleR = sR;
             outL[i] = sL;
             outR[i] = sR;
+
+            audioReadFrac += stepRate;
+            const adv = audioReadFrac | 0;
+            if (adv > 0) {
+              const step = adv < q ? adv : q - 1;
+              audioReadPtr = (audioReadPtr + step) & AUDIO_BUFFER_MASK;
+              audioReadFrac -= adv;
+            }
           } else {
-            // Smooth exponential decay on micro-underruns during rollbacks so speakers never pop/click
+            // Buffer ran low (e.g. tab pause); re-arm prebuffer and decay smoothly without clicking
+            audioBuffering = true;
+            audioReadFrac = 0;
             lastAudioSampleL *= 0.985;
             lastAudioSampleR *= 0.985;
             outL[i] = lastAudioSampleL;
@@ -1041,7 +1099,7 @@
           }
         }
       };
-      proc.connect(audioCtx.destination);
+      audioScriptNode.connect(audioCtx.destination);
     }
 
     window.addEventListener('keydown', () => initAudio(), { once: true });
@@ -1216,8 +1274,10 @@
         onAudioSample: (l, r) => {
           const queued = (audioWritePtr - audioReadPtr) & AUDIO_BUFFER_MASK;
           if (queued >= AUDIO_MAX_QUEUED_SAMPLES) {
-            // Clamp audio queue drift so sound effects never lag behind video
-            audioReadPtr = (audioWritePtr - (AUDIO_MAX_QUEUED_SAMPLES >> 1)) & AUDIO_BUFFER_MASK;
+            // Only triggered after extreme tab-freeze; reset to target cushion with 64-sample crossfade
+            audioReadPtr = (audioWritePtr - AUDIO_TARGET_SAMPLES) & AUDIO_BUFFER_MASK;
+            audioReadFrac = 0;
+            audioFadeInSamples = 64;
           }
           const next = (audioWritePtr + 1) & AUDIO_BUFFER_MASK;
           if (next !== audioReadPtr) {
@@ -1427,12 +1487,16 @@
       return parts.join('+');
     }
 
+    let lastMiniPadP1 = -1;
+    let lastMiniPadP2 = -1;
     function updateMiniPads(p1Mask, p2Mask) {
-      if (miniPadP1) {
+      if (miniPadP1 && p1Mask !== lastMiniPadP1) {
+        lastMiniPadP1 = p1Mask;
         miniPadP1.textContent = `P1: ${formatMaskShort(p1Mask)}`;
         miniPadP1.classList.toggle('active', p1Mask !== 0);
       }
-      if (miniPadP2) {
+      if (miniPadP2 && p2Mask !== lastMiniPadP2) {
+        lastMiniPadP2 = p2Mask;
         miniPadP2.textContent = `P2: ${formatMaskShort(p2Mask)}`;
         miniPadP2.classList.toggle('active', p2Mask !== 0);
       }

@@ -409,6 +409,92 @@ async function runRealRomsSuite() {
     );
   }
 
+  // Stage 5: Verify Power Blade 2 Bottom HUD Split Stability Across Online loadROM/resetTimeline & Rollback Audio De-Click
+  {
+    const pbFile = romFiles.find((f) => f.toLowerCase().includes('power blade'));
+    if (pbFile) {
+      const buf = fs.readFileSync(path.join(LOCAL_ROMS_DIR, pbFile));
+      const binStr = buf.toString('binary');
+      const audioSamples = [];
+      const nesPb = new jsnes.NES({
+        onAudioSample: (l) => audioSamples.push(l)
+      });
+      nesPb.loadROM(binStr);
+      const engPb = new NesNetplayEngine(nesPb, {
+        localPlayer: 2,
+        online: true,
+        inputDelayFrames: 1,
+        sessionId: 'pb_hud_session_0'
+      });
+
+      // Simulate 2-PC Online Match Start (startLockstepMatchAtFrameZero / match_start_req)
+      // which calls nes.loadROM() + engine.resetTimeline(0, newSessionId) AFTER engine creation!
+      nesPb.loadROM(binStr);
+      engPb.resetTimeline(0, 'pb_hud_session_1');
+
+      assert.strictEqual(nesPb.ppu._patched8x16, true, 'Expected PPU HBlank split & headless patches to survive nes.loadROM()');
+      assert.strictEqual(nesPb.mmap._fastBankPatched, true, 'Expected Mapper fast bank-switch patches to survive nes.loadROM()');
+      assert.strictEqual(nesPb.rom._vromRefTagged, true, 'Expected VROM tile ref tags to survive nes.loadROM()');
+
+      let hudStableFrames = 0;
+      let hudJitterFrames = 0;
+      let maxPostRollbackBoundaryJump = 0;
+
+      for (let f = 0; f < 920; f++) {
+        if (f >= 5) {
+          const inputs = [];
+          for (let rf = f - 4; rf >= Math.max(0, f - 14); rf--) {
+            let p1 = rf >= 120 && rf < 650 && rf % 30 < 5 ? INPUT_BITS.START : 0;
+            if (rf >= 650) {
+              p1 = INPUT_BITS.RIGHT | (rf % 40 < 20 ? INPUT_BITS.A : 0) | (rf % 15 < 5 ? INPUT_BITS.B : 0);
+            }
+            inputs.push(p1);
+          }
+          engPb.receiveRemoteInputPacket({
+            sessionId: 'pb_hud_session_1',
+            startFrame: f - 4,
+            inputs
+          });
+        }
+        const beforeAudioLen = audioSamples.length;
+        const prevRb = engPb.rollbacksTotal;
+        engPb.stepNetplayFrame(0);
+        const hadRb = engPb.rollbacksTotal > prevRb;
+
+        if (f >= 780 && hadRb && audioSamples.length > beforeAudioLen && beforeAudioLen > 0) {
+          const jump = Math.abs(audioSamples[beforeAudioLen] - audioSamples[beforeAudioLen - 1]);
+          if (jump > maxPostRollbackBoundaryJump) {
+            maxPostRollbackBoundaryJump = jump;
+          }
+        }
+
+        if (f >= 780) {
+          const fb = nesPb.ppu.buffer;
+          const rowSig = (y) => {
+            let s = 0;
+            for (let x = 0; x < 256; x++) s = (s * 31 + (fb[y * 256 + x] & 0xffffff)) >>> 0;
+            return s.toString(16).padStart(8, '0').slice(0, 4);
+          };
+          if (rowSig(184) === 'd0a8' && rowSig(185) === '9aa2') {
+            hudStableFrames++;
+          } else {
+            hudJitterFrames++;
+          }
+        }
+      }
+
+      assert.strictEqual(hudJitterFrames, 0, `Expected 0 HUD scanline jitter frames in Power Blade 2, got ${hudJitterFrames}`);
+      assert.strictEqual(hudStableFrames, 140, `Expected all 140 Stage 1 frames to keep HUD locked at y=184, got ${hudStableFrames}`);
+      assert.ok(
+        maxPostRollbackBoundaryJump < 0.02,
+        `Expected post-rollback audio de-click ramp to keep sample jump < 0.02, got ${maxPostRollbackBoundaryJump.toFixed(4)}`
+      );
+      console.log(
+        `[PASS] Stage 5: Power Blade 2 HUD Split Stability (${hudStableFrames}/140 frames locked at y=184, 0 jitter) & Audio De-Click (maxJump=${maxPostRollbackBoundaryJump.toFixed(4)}) Verified`
+      );
+    }
+  }
+
   console.log('\nALL REAL NES ROM & ADVANCED NETCODE TESTS PASSED!');
 }
 
