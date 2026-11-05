@@ -7,7 +7,8 @@
 ## 1. User & Environment Setup
 
 - **Player 1 (Host / User):** Located in **Singapore** (`PC 1`, Windows 10/11, PowerShell 5.1). Runs the local Node.js server on `http://localhost:8080` and exposes it via an SSH reverse tunnel.
-- **Player 2 (Remote / Brother):** Located in **Russia** (`PC 2`, Windows). Connects to Player 1's tunnel URL in Chrome, while talking on Discord and running **[Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube)** (`winws.exe` + WinDivert DPI bypass).
+- **Player 2 (Remote / Brother):** Located in **Isilkul, Omsk Oblast, Russia** (`PC 2`, Western Siberia near the Kazakhstan border, Windows). Connects to Player 1's tunnel URL in Chrome, while talking on Discord and running **[Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube)** (`winws.exe` + WinDivert DPI bypass).
+  - *Deferred Backlog Note:* Brother's Chrome currently blocks WebRTC UDP (`LocalCand=[]` due to extension/browser `disable_non_proxied_udp` policy). Keep this documented for potential future WebRTC P2P work, though WSS Relay over Pinggy (`~215ms`) is the primary focus right now.
 - **Git Repositories / Worktrees:**
   - **Main User Directory (Where the user double-clicks `.bat` scripts):** `C:\Users\Egor\Documents\Projects\NES_Online` (branch: `master`)
   - **Agent Worktree (if active):** `C:\Users\Egor\.gemini\antigravity\worktrees\NES_Online\power_blade_coop_netcode` (branch: `power_blade_coop_netcode`)
