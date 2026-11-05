@@ -1,5 +1,6 @@
 import assert from 'assert';
 import fs from 'fs';
+import http from 'http';
 import * as jsnesModule from 'jsnes';
 import WebSocket from 'ws';
 import {
@@ -610,6 +611,213 @@ async function runTests() {
     await serverApp.close();
   }
   console.log('[PASS] Test 5: Bi-Directional ROM Switch (Balloon Fight <-> Power Blade 2) & Lockstep sync_ack Verified');
+
+  // ---------------------------------------------------------------------------
+  // Test 6: CHR-RAM Dirty-Tile Epoch Savestates, GGPO Clock-Rift Pacing,
+  //         Zero-Transfer Lockstep Handshake (`match_start_req`/`ack`) & Live Gameplay Telemetry
+  // ---------------------------------------------------------------------------
+  {
+    // 6A: Verify CHR-RAM dirty-tile epoch tracking in ppu.patternWrite + saveFastState / loadFastState
+    const chrRamRom = createDualControllerTestRom(2); // Mapper 2 (UxROM / CHR-RAM)
+    const nesChr = new jsnes.NES({});
+    nesChr.loadROM(chrRamRom.binaryString);
+    const engChr = new NesNetplayEngine(nesChr, { localPlayer: 1, online: true });
+
+    const initialEpoch = nesChr.ppu._nextTileEpoch;
+    nesChr.ppu.patternWrite(0x0010, 0xaa); // Mutates tile #1
+    assert.ok(nesChr.ppu._nextTileEpoch > initialEpoch, 'ppu.patternWrite must increment _nextTileEpoch');
+    const tile1Epoch = nesChr.ppu.ptTile[1]._tileEpoch;
+    assert.strictEqual(tile1Epoch, nesChr.ppu._nextTileEpoch);
+
+    engChr.stepNetplayFrame(INPUT_BITS.A); // Frame 0 -> 1 (saves slot 0 and slot 1)
+    const savedPixVal = nesChr.ppu.ptTile[1].pix[0];
+
+    // Mutate tile #1 again before Frame 1 -> 2
+    nesChr.ppu.patternWrite(0x0010, 0x55);
+    const mutatedPixVal = nesChr.ppu.ptTile[1].pix[0];
+    assert.notStrictEqual(mutatedPixVal, savedPixVal);
+    engChr.stepNetplayFrame(INPUT_BITS.B); // Saves slot 1 with 0x55
+
+    // Rollback to Frame 0 slot (0xaa) and verify tile #1 pixels are restored accurately
+    const slot0 = engChr.saveRing[0];
+    assert.strictEqual(slot0.frame, 0);
+    loadFastState(nesChr, slot0);
+    assert.strictEqual(nesChr.ppu.ptTile[1].pix[0], savedPixVal, 'CHR-RAM dirty-tile epoch rollback to slot 0 must restore 0xaa tile pixels');
+
+    // Roll forward to Frame 1 slot (0x55) and verify tile #1 pixels are restored accurately
+    const slot1 = engChr.saveRing[1];
+    assert.strictEqual(slot1.frame, 1);
+    loadFastState(nesChr, slot1);
+    assert.strictEqual(nesChr.ppu.ptTile[1].pix[0], mutatedPixVal, 'CHR-RAM dirty-tile epoch load of slot 1 must restore 0x55 tile pixels');
+
+    // 6B: Verify GGPO Clock-Rift Pacing converges a 10-frame clock lead down to < 2.5f without hard stalls
+    const nes1 = new jsnes.NES({});
+    const nes2 = new jsnes.NES({});
+    nes1.loadROM(chrRamRom.binaryString);
+    nes2.loadROM(chrRamRom.binaryString);
+    const eng1 = new NesNetplayEngine(nes1, { localPlayer: 1, online: true, inputDelayFrames: 3, enableRiftPacing: true });
+    const eng2 = new NesNetplayEngine(nes2, { localPlayer: 2, online: true, inputDelayFrames: 3, enableRiftPacing: true });
+
+    const q12 = [];
+    const q21 = [];
+    // Give P1 an artificial 8-frame head start before P2 begins ticking at the same 60Hz rate
+    for (let f = 0; f < 8; f++) {
+      const r1 = eng1.stepNetplayFrame(INPUT_BITS.RIGHT);
+      if (r1.packetToSend) q12.push({ at: f * 16.667 + 110, pkt: r1.packetToSend });
+    }
+    for (let tick = 8; tick < 450; tick++) {
+      const now = tick * 16.667;
+      while (q12.length > 0 && q12[0].at <= now) eng2.receiveRemoteInputPacket(q12.shift().pkt);
+      while (q21.length > 0 && q21[0].at <= now) eng1.receiveRemoteInputPacket(q21.shift().pkt);
+
+      const r1 = eng1.stepNetplayFrame(INPUT_BITS.RIGHT);
+      const r2 = eng2.stepNetplayFrame(INPUT_BITS.LEFT);
+      if (r1.packetToSend) q12.push({ at: now + 110, pkt: r1.packetToSend });
+      if (r2.packetToSend) q21.push({ at: now + 110, pkt: r2.packetToSend });
+    }
+    const tel1 = eng1.getTelemetry();
+    assert.ok(tel1.riftWaitFrames >= 5, `Expected P1 to pace via riftWaitFrames >= 5, got ${tel1.riftWaitFrames}`);
+    assert.ok(Math.abs(eng1.currentFrame - eng2.currentFrame) <= 3, `Expected P1/P2 frames to converge within <=3f, got ${eng1.currentFrame} vs ${eng2.currentFrame}`);
+    assert.strictEqual(tel1.desyncCount, 0);
+    assert.strictEqual(eng2.getTelemetry().desyncCount, 0);
+
+    // 6C: Verify Zero-Transfer `rom_status` + `match_start_req`/`match_start_ack` & Gameplay Telemetry Auto-Save
+    const serverApp = createCoopServer({ logAccess: false });
+    const port = await serverApp.listen(0, '127.0.0.1');
+    const wsUrl = `ws://127.0.0.1:${port}/ws`;
+
+    const httpJson = (reqPath, method = 'GET', bodyObj = null) =>
+      new Promise((resolve, reject) => {
+        const bodyStr = bodyObj ? JSON.stringify(bodyObj) : null;
+        const req = http.request(
+          {
+            hostname: '127.0.0.1',
+            port,
+            path: reqPath,
+            method,
+            headers: bodyStr
+              ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr) }
+              : {}
+          },
+          (res) => {
+            let data = '';
+            res.on('data', (chunk) => (data += chunk));
+            res.on('end', () => {
+              try {
+                resolve(JSON.parse(data));
+              } catch (e) {
+                reject(e);
+              }
+            });
+          }
+        );
+        req.on('error', reject);
+        if (bodyStr) req.write(bodyStr);
+        req.end();
+      });
+
+    // Register tunnel region metadata via POST /api/tunnel-info
+    const tunJson = await httpJson('/api/tunnel-info', 'POST', {
+      tunnel: 'pinggy',
+      region: 'eu',
+      publicUrl: 'https://test-eu.a.pinggy.link'
+    });
+    assert.strictEqual(tunJson.tunnelInfo.region, 'eu');
+
+    const wsA = new WebSocket(wsUrl);
+    const wsB = new WebSocket(wsUrl);
+    const sharedCrc = computeRomCrc32(chrRamRom.uint8);
+
+    await new Promise((resolve, reject) => {
+      let matchAckReceived = false;
+      wsA.on('open', () => {
+        wsA.send(JSON.stringify({ type: 'join_room', roomCode: 'BTDD', nick: 'Host-SG', romCrc32: null, romName: null }));
+      });
+      wsA.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'room_joined') {
+          wsB.send(JSON.stringify({ type: 'join_room', roomCode: 'BTDD', nick: 'Bro-Omsk', romCrc32: null, romName: null }));
+        } else if (msg.type === 'peer_joined') {
+          // Both players select Battletoads & Double Dragon locally (zero ROM transfer!)
+          wsA.send(JSON.stringify({ type: 'rom_status', romName: 'Battletoads & Double Dragon.nes', romCrc32: sharedCrc }));
+          wsB.send(JSON.stringify({ type: 'rom_status', romName: 'Battletoads & Double Dragon.nes', romCrc32: sharedCrc }));
+        } else if (msg.type === 'rom_status' && msg.romCrc32 === sharedCrc) {
+          // P1 initiates lightweight Frame #0 lockstep barrier
+          wsA.send(JSON.stringify({
+            type: 'match_start_req',
+            sessionId: 'btdd_lockstep_01',
+            romName: 'Battletoads & Double Dragon.nes',
+            romCrc32: sharedCrc
+          }));
+        } else if (msg.type === 'match_start_ack' && msg.sessionId === 'btdd_lockstep_01') {
+          matchAckReceived = true;
+          // Send live gameplay telemetry from both PCs
+          wsA.send(JSON.stringify({
+            type: 'gameplay_telemetry_ws',
+            telemetry: {
+              role: 'pc1',
+              roomCode: 'BTDD',
+              playerIndex: 1,
+              transport: 'WSS Relay',
+              romName: 'Battletoads & Double Dragon.nes',
+              romCrc32: sharedCrc,
+              partnerRomCrc32: sharedCrc,
+              matchState: 'RUNNING',
+              currentFrame: 360,
+              lastVerifiedFrame: 355,
+              syncStatus: 'SYNC_OK',
+              desyncCount: 0,
+              rttMs: 220,
+              jitterMs: 12,
+              riftFrames: 0.4,
+              inputDelayFrames: 3,
+              fps: 60,
+              lastStepMs: 1.8,
+              rollbacksPerSec: 2,
+              rollbacksTotal: 14,
+              lastRollbackDepth: 2,
+              maxRollbackDepthSeen: 4,
+              frameAdvantage: 0.5,
+              stallFrames: 0,
+              riftWaitFrames: 8,
+              txPerSec: 60,
+              rxPerSec: 60,
+              maxRxGapMs: 38,
+              samples: [],
+              events: ['[12:00:00] Lockstep Frame #0 started']
+            }
+          }));
+          resolve();
+        }
+      });
+
+      wsB.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'match_start_req' && msg.romCrc32 === sharedCrc) {
+          wsB.send(JSON.stringify({
+            type: 'match_start_ack',
+            sessionId: msg.sessionId,
+            romCrc32: sharedCrc
+          }));
+        }
+      });
+
+      wsA.on('error', reject);
+      wsB.on('error', reject);
+    });
+
+    // Give WS message handler a moment to flush gameplay_telemetry_ws before reading
+    await new Promise((r) => setTimeout(r, 30));
+    const getTelJson = await httpJson('/api/gameplay-telemetry', 'GET');
+    assert.strictEqual(getTelJson.session.tunnelInfo.region, 'eu');
+    assert.strictEqual(getTelJson.session.pc1.romName, 'Battletoads & Double Dragon.nes');
+    assert.ok(getTelJson.session.combinedText.includes('Region: eu'), 'Gameplay telemetry report must include tunnel region');
+
+    wsA.close();
+    wsB.close();
+    await serverApp.close();
+  }
+  console.log('[PASS] Test 6: CHR-RAM Dirty-Tile Epochs, GGPO Clock-Rift Pacing, Zero-Transfer Lockstep & Telemetry Verified');
 
   console.log('\nALL UNIVERSAL NES NETPLAY & ROLLBACK QA TESTS PASSED!');
 }

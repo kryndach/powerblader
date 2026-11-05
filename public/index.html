@@ -239,6 +239,84 @@
         rgba(0, 0, 0, 0.28) 50%
       );
       background-size: 100% 4px;
+      display: none;
+    }
+
+    .crt-scanlines.enabled {
+      display: block;
+    }
+
+    .lobby-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(11, 13, 19, 0.92);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      gap: 14px;
+      z-index: 8;
+      text-align: center;
+    }
+
+    .lobby-overlay.hidden {
+      display: none;
+    }
+
+    .lobby-card {
+      width: 100%;
+      max-width: 540px;
+      background: #141722;
+      border: 1px solid #2e3448;
+      border-top: 3px solid var(--nes-red);
+      border-radius: 6px;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.65);
+    }
+
+    .lobby-hdr {
+      font-size: 0.92rem;
+      font-weight: 900;
+      color: #fff;
+      letter-spacing: 0.6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #232838;
+      padding-bottom: 8px;
+    }
+
+    .lobby-slot {
+      background: #0d0f17;
+      border: 1px solid #252a3a;
+      border-radius: 5px;
+      padding: 9px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.78rem;
+      text-align: left;
+    }
+
+    .lobby-slot.ready {
+      border-color: rgba(34, 197, 94, 0.55);
+      background: rgba(34, 197, 94, 0.07);
+    }
+
+    .lobby-slot.waiting {
+      border-color: rgba(234, 179, 8, 0.45);
+    }
+
+    .lobby-footer {
+      font-size: 0.78rem;
+      color: #cbd5e1;
+      line-height: 1.45;
+      padding-top: 4px;
     }
 
     .screen-banner {
@@ -475,7 +553,7 @@
     <!-- Cartridge Loader -->
     <div class="deck-group">
       <select id="localRomSelect" title="Select .nes ROM from local/ folder">
-        <option value="">-- Local ROMs --</option>
+        <option value="">-- Select Game --</option>
       </select>
       <label class="btn-label" for="romFileInput" title="Load any .nes file from your computer">
         Load .NES
@@ -493,8 +571,9 @@
 
     <!-- Console Controls -->
     <div class="deck-group">
-      <button id="resetBtn" title="Reset NES console for both players">Reset</button>
+      <button id="resetBtn" title="Reset NES console for both players at Frame #0">Reset</button>
       <button id="muteBtn" title="Toggle Audio">Audio: ON</button>
+      <button id="crtToggleBtn" title="Toggle retro CRT scanlines overlay (Default: OFF for sharp pixels)">CRT: OFF</button>
       <button id="debugToggleBtn" title="Show/Hide Netplay & P2P Debug Telemetry">Debug</button>
       <a class="btn-label" id="autoBenchLink" href="/autotest" style="text-decoration:none; border-color:var(--green); color:var(--green);" title="Open Zero-Click 2-PC Auto-Benchmark">/autotest</a>
       <a class="btn-label" id="netBenchLink" href="/nettest" style="text-decoration:none; border-color:var(--cyan); color:var(--cyan);" title="Open Manual 2-PC Network Debugger">/nettest</a>
@@ -505,7 +584,7 @@
   <div class="status-strip">
     <div class="status-left">
       <span id="statusLed" class="led"></span>
-      <strong id="statusText">SOLO MODE — Load any 2P .nes game or click Connect for Online Netplay</strong>
+      <strong id="statusText">EMPTY CONSOLE — Select a .NES ROM above or click Connect for Online Co-op</strong>
     </div>
     <div style="display:flex; align-items:center; flex-wrap:wrap; gap:10px; color:var(--muted);">
       <span id="romBadge" style="color:var(--text); font-weight:700;">ROM: None</span>
@@ -522,6 +601,36 @@
       <div class="canvas-wrap large" id="canvasWrap">
         <canvas id="nesCanvas" width="256" height="240"></canvas>
         <div class="crt-scanlines" id="scanlinesOverlay"></div>
+        <div class="lobby-overlay" id="lobbyOverlay">
+          <div class="lobby-card">
+            <div class="lobby-hdr">
+              <span id="lobbyTitleText">NES ONLINE CO-OP DECK</span>
+              <span id="lobbyRoomBadge" class="badge warn">SOLO / OFFLINE</span>
+            </div>
+            <div class="lobby-slot waiting" id="lobbySlotP1">
+              <div>
+                <div style="font-weight:700; color:var(--cyan);" id="lobbyP1Name">Player 1 (Port $4016)</div>
+                <div style="font-size:0.74rem; color:var(--muted); margin-top:2px;" id="lobbyP1Rom">Waiting for .NES file selection...</div>
+              </div>
+              <span class="badge warn" id="lobbyP1Badge">SELECT ROM</span>
+            </div>
+            <div class="lobby-slot waiting" id="lobbySlotP2">
+              <div>
+                <div style="font-weight:700; color:#f472b6;" id="lobbyP2Name">Player 2 (Port $4017)</div>
+                <div style="font-size:0.74rem; color:var(--muted); margin-top:2px;" id="lobbyP2Rom">Not connected (Solo Mode)</div>
+              </div>
+              <span class="badge warn" id="lobbyP2Badge">OFFLINE</span>
+            </div>
+            <div class="lobby-footer" id="lobbyFooterText">
+              Select any <strong>.NES</strong> file using <strong>-- Select Game --</strong> or <strong>Load .NES</strong> above (or drag &amp; drop onto screen).<br/>
+              For 2-PC Online: both players simply select the <strong>same .NES file</strong> on their own PC — game starts automatically at Frame #0!
+            </div>
+            <div id="lobbyActionsRow" style="display:none; justify-content:center; gap:8px; padding-top:4px;">
+              <button id="startMatchNowBtn" class="primary" style="display:none;">Start / Reset Match at Frame #0</button>
+              <button id="sendRomManualBtn" title="Optional: transfer your .NES file to partner if they don't have it locally" style="display:none;">Send My .NES File to Partner</button>
+            </div>
+          </div>
+        </div>
         <div class="screen-banner" id="screenBanner"></div>
       </div>
       <div class="bezel-footer">
@@ -633,6 +742,10 @@
           <span class="k">Frame Advantage / Stalls:</span>
           <span class="v" id="dbgAdvantage">0f / 0 stalls</span>
         </div>
+        <div class="dbg-row">
+          <span class="k">GGPO Clock Rift / Paced:</span>
+          <span class="v" id="dbgRift">0.0f / 0 waits</span>
+        </div>
       </div>
 
       <!-- 4. Live Controller 1 & 2 Inspector -->
@@ -692,7 +805,11 @@
         </div>
       </div>
 
-      <!-- 6. Event Log -->
+      <!-- 6. Event Log + Copy Telemetry -->
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-size:0.72rem; color:var(--muted);">Auto-saved to logs/gameplay_telemetry_latest.txt</span>
+        <button id="copyTelemetryBtn" style="padding:3px 8px; font-size:0.72rem;">Copy Telemetry</button>
+      </div>
       <div class="dbg-log" id="dbgLog"></div>
     </aside>
   </main>
@@ -722,8 +839,25 @@
     const copyLinkBtn = document.getElementById('copyLinkBtn');
     const resetBtn = document.getElementById('resetBtn');
     const muteBtn = document.getElementById('muteBtn');
+    const crtToggleBtn = document.getElementById('crtToggleBtn');
+    const scanlinesOverlay = document.getElementById('scanlinesOverlay');
     const debugToggleBtn = document.getElementById('debugToggleBtn');
     const debugDrawer = document.getElementById('debugDrawer');
+
+    const lobbyOverlay = document.getElementById('lobbyOverlay');
+    const lobbyRoomBadge = document.getElementById('lobbyRoomBadge');
+    const lobbySlotP1 = document.getElementById('lobbySlotP1');
+    const lobbyP1Name = document.getElementById('lobbyP1Name');
+    const lobbyP1Rom = document.getElementById('lobbyP1Rom');
+    const lobbyP1Badge = document.getElementById('lobbyP1Badge');
+    const lobbySlotP2 = document.getElementById('lobbySlotP2');
+    const lobbyP2Name = document.getElementById('lobbyP2Name');
+    const lobbyP2Rom = document.getElementById('lobbyP2Rom');
+    const lobbyP2Badge = document.getElementById('lobbyP2Badge');
+    const lobbyFooterText = document.getElementById('lobbyFooterText');
+    const lobbyActionsRow = document.getElementById('lobbyActionsRow');
+    const startMatchNowBtn = document.getElementById('startMatchNowBtn');
+    const sendRomManualBtn = document.getElementById('sendRomManualBtn');
 
     const statusLed = document.getElementById('statusLed');
     const statusText = document.getElementById('statusText');
@@ -781,6 +915,8 @@
     const dbgRollbacks = document.getElementById('dbgRollbacks');
     const dbgRbDepth = document.getElementById('dbgRbDepth');
     const dbgAdvantage = document.getElementById('dbgAdvantage');
+    const dbgRift = document.getElementById('dbgRift');
+    const copyTelemetryBtn = document.getElementById('copyTelemetryBtn');
 
     const dbgP1Hex = document.getElementById('dbgP1Hex');
     const dbgP2Hex = document.getElementById('dbgP2Hex');
@@ -792,10 +928,16 @@
     const dbgSimLabel = document.getElementById('dbgSimLabel');
     const dbgLog = document.getElementById('dbgLog');
 
+    const telemetrySamples = [];
+    const telemetryEvents = [];
+
     function logDebug(msg) {
       const ts = new Date().toLocaleTimeString();
+      const entry = `[${ts}] ${msg}`;
+      telemetryEvents.push(entry);
+      if (telemetryEvents.length > 35) telemetryEvents.shift();
       const line = document.createElement('div');
-      line.textContent = `[${ts}] ${msg}`;
+      line.textContent = entry;
       dbgLog.prepend(line);
       while (dbgLog.children.length > 60) {
         dbgLog.removeChild(dbgLog.lastChild);
@@ -857,14 +999,14 @@
     window.addEventListener('keydown', () => initAudio(), { once: true });
     window.addEventListener('pointerdown', () => initAudio(), { once: true });
 
-    // Emulator & Netplay State
+    // Emulator & Netplay State (Starts as an empty console — no default ROM in memory)
     let nes = null;
     let engine = null;
     let romBinaryString = null;
     let romUint8 = null;
     let romName = null;
     let romCrc32 = null;
-    let isAutoDefaultRom = true;
+    let isAutoDefaultRom = false;
     const customRomsMap = new Map();
 
     let ws = null;
@@ -874,6 +1016,9 @@
     let localPlayerIndex = 1;
     let peerConnected = false;
     let peerNick = 'Player 2';
+    let partnerRomName = null;
+    let partnerRomCrc32 = null;
+    let matchStarted = false;
     let syncAckTimeout = null;
     let lastAutoResyncTime = 0;
 
@@ -883,6 +1028,9 @@
     let rxCountThisSec = 0;
     let txPerSec = 0;
     let rxPerSec = 0;
+    let lastFpsVal = 0;
+    let lastRxInputAt = 0;
+    let maxRxGapMs = 0;
     let simLagMs = 0;
     let simLossPct = 0;
 
@@ -930,6 +1078,43 @@
       localRomSelect.value = name;
     }
 
+    /**
+     * Zero-Transfer Frame #0 Lockstep Barrier:
+     * When both PCs have selected the same .NES ROM (matching CRC32) or either player clicks Reset,
+     * both emulators fresh-boot the ROM at Frame #0 with a shared sessionId (~120-byte handshake).
+     */
+    function startLockstepMatchAtFrameZero(reason = 'ROM CRC32 Match', force = false) {
+      if (!ws || ws.readyState !== 1 || !peerConnected || !romUint8 || !romBinaryString || !engine) {
+        return;
+      }
+      if (!force && syncAckTimeout) {
+        return;
+      }
+      const newSessionId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      nes.loadROM(romBinaryString);
+      engine.localPlayer = localPlayerIndex;
+      engine.online = true;
+      engine.enableRiftPacing = true;
+      engine.resetTimeline(0, newSessionId);
+      engine.syncPaused = true;
+      matchStarted = false;
+      armSyncAckWatchdog(newSessionId, 12000);
+
+      ws.send(
+        JSON.stringify({
+          type: 'match_start_req',
+          sessionId: newSessionId,
+          romCrc32,
+          romName,
+          inputDelayFrames: engine.inputDelayFrames,
+          reason
+        })
+      );
+      logDebug(`Initiated Frame #0 lockstep start (${reason}) for "${romName}" [CRC=${romCrc32}, session=${newSessionId}]`);
+      showScreenBanner(`STARTING "${romName}" AT FRAME #0...`, 'warn', 0);
+      updateStatusStrip();
+    }
+
     function loadRomFromUint8(u8, name, options = {}) {
       const broadcastToPeer =
         typeof options === 'boolean' ? options : options.broadcastToPeer !== false;
@@ -941,6 +1126,7 @@
       romName = name || 'Game.nes';
       romCrc32 = computeRomCrc32(u8);
       isAutoDefaultRom = isAutoDefault;
+      matchStarted = false;
 
       ensureRomInDropdown(romName, u8);
 
@@ -957,29 +1143,41 @@
       });
 
       nes.loadROM(romBinaryString);
+      const isOnline = Boolean(ws && ws.readyState === 1 && peerConnected);
       engine = new NesNetplayEngine(nes, {
         localPlayer: localPlayerIndex,
-        online: Boolean(ws && ws.readyState === 1 && peerConnected),
+        online: isOnline,
+        enableRiftPacing: true,
         inputDelayFrames: Number(inputDelaySelect.value) || 3,
         maxRollbackFrames: 36,
         saveBufferSize: 96
       });
 
+      if (isOnline) {
+        engine.syncPaused = true;
+      }
+
       romBadge.textContent = `ROM: ${romName.replace(/\.nes$/i, '')} [${romCrc32}]`;
-      logDebug(`Loaded ROM "${romName}" (CRC32=${romCrc32}, Mapper=${nes.rom.mapperType})`);
-      updateStatusStrip();
+      logDebug(`Loaded ROM "${romName}" (CRC32=${romCrc32}, Mapper=${nes.rom.mapperType}, CHR-RAM=${nes.rom.vromCount === 0})`);
 
       if (!isAutoDefault) {
-        showScreenBanner(`LOADED "${romName}"`, 'ok', 2800);
+        showScreenBanner(`LOADED "${romName}" [${romCrc32}]`, 'ok', 2800);
       }
 
       if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'rom_info', romCrc32, romName, isAutoDefaultRom }));
-        if (broadcastToPeer && peerConnected) {
-          // Either Player 1 OR Player 2 can load a .NES file and sync it to their partner!
-          sendRomAndStateToPeer({ resetToZero: true });
+        ws.send(
+          JSON.stringify({
+            type: 'rom_status',
+            romCrc32,
+            romName,
+            isAutoDefaultRom: false
+          })
+        );
+        if (broadcastToPeer && peerConnected && localPlayerIndex === 1 && partnerRomCrc32 === romCrc32) {
+          startLockstepMatchAtFrameZero('Both PCs selected same ROM');
         }
       }
+      updateStatusStrip();
     }
 
     function armSyncAckWatchdog(sessionId, timeoutMs = 45000) {
@@ -989,6 +1187,7 @@
       syncAckTimeout = setTimeout(() => {
         if (engine && engine.syncPaused && engine.sessionId === sessionId) {
           engine.syncPaused = false;
+          matchStarted = true;
           logDebug('Sync ACK timeout elapsed; unpausing emulation.');
           updateStatusStrip();
         }
@@ -1013,11 +1212,14 @@
         offset += part.length;
       }
       loadRomFromUint8(full, xfer.romName, { broadcastToPeer: false, isAutoDefault: xfer.isAutoDefaultRom });
+      partnerRomName = xfer.romName;
+      partnerRomCrc32 = romCrc32;
       if (xfer.syncState && engine) {
         engine.localPlayer = localPlayerIndex;
         engine.online = true;
         engine.importSyncState(xfer.syncState);
         engine.syncPaused = false;
+        matchStarted = true;
         inputDelaySelect.value = String(engine.inputDelayFrames);
         logDebug(`Locked to chunked ROM "${xfer.romName}" at frame #${engine.currentFrame} (CRC=${romCrc32})`);
         if (ws && ws.readyState === 1) {
@@ -1046,19 +1248,18 @@
       }
 
       const syncState = engine.exportSyncState();
-      // Normalize sender's own emulator state & timeline identically to receiver!
       engine.localPlayer = localPlayerIndex;
       engine.online = true;
       engine.importSyncState(syncState);
       engine.syncPaused = true;
       armSyncAckWatchdog(newSessionId, 60000);
 
-      const chunkSize = 16 * 1024; // Proven 16 KB chunk streaming from /autotest Stage 4 & 5
+      const chunkSize = 16 * 1024;
       const totalBytes = romUint8.length;
       const totalChunks = Math.ceil(totalBytes / chunkSize);
 
-      logDebug(`Syncing ROM "${romName}" (${Math.round(totalBytes / 1024)} KB in ${totalChunks}x16KB chunks) + lockstep state...`);
-      showScreenBanner(`SYNCING "${romName}" (${Math.round(totalBytes / 1024)} KB)...`, 'warn', 0);
+      logDebug(`Sending ROM "${romName}" (${Math.round(totalBytes / 1024)} KB in ${totalChunks}x16KB chunks) to partner...`);
+      showScreenBanner(`SENDING "${romName}" (${Math.round(totalBytes / 1024)} KB)...`, 'warn', 0);
       updateStatusStrip();
 
       ws.send(
@@ -1094,6 +1295,10 @@
 
     function sendStateSyncToPeer({ resetToZero = false } = {}) {
       if (!ws || ws.readyState !== 1 || !engine) return;
+      if (resetToZero && partnerRomCrc32 === romCrc32) {
+        startLockstepMatchAtFrameZero('Reset to Frame #0');
+        return;
+      }
       const newSessionId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
       if (resetToZero && nes && romBinaryString) {
         nes.loadROM(romBinaryString);
@@ -1103,7 +1308,6 @@
       }
 
       const syncState = engine.exportSyncState();
-      // Normalize sender's own emulator state & timeline identically to receiver!
       engine.localPlayer = localPlayerIndex;
       engine.online = true;
       engine.importSyncState(syncState);
@@ -1148,6 +1352,135 @@
       }
     }
 
+    function updateLobbyOverlay() {
+      if (!lobbyOverlay) return;
+      const wsOpen = Boolean(ws && ws.readyState === 1);
+      const myNick = (nickInput.value || 'You').trim();
+      const p1IsMe = localPlayerIndex === 1;
+
+      const p1Nick = p1IsMe ? `${myNick} (YOU)` : (peerConnected ? peerNick : 'Waiting for P1...');
+      const p2Nick = !p1IsMe ? `${myNick} (YOU)` : (peerConnected ? peerNick : 'Waiting for P2...');
+
+      const p1RomName = p1IsMe ? romName : partnerRomName;
+      const p1Crc = p1IsMe ? romCrc32 : partnerRomCrc32;
+      const p2RomName = !p1IsMe ? romName : partnerRomName;
+      const p2Crc = !p1IsMe ? romCrc32 : partnerRomCrc32;
+
+      lobbyP1Name.textContent = `Player 1 ($4016) — ${p1Nick}`;
+      lobbyP2Name.textContent = `Player 2 ($4017) — ${p2Nick}`;
+
+      if (p1Crc) {
+        lobbySlotP1.className = 'lobby-slot ready';
+        lobbyP1Rom.textContent = `✔ ${p1RomName} [CRC32: ${p1Crc}]`;
+        lobbyP1Badge.className = 'badge ok';
+        lobbyP1Badge.textContent = 'ROM READY';
+      } else {
+        lobbySlotP1.className = 'lobby-slot waiting';
+        lobbyP1Rom.textContent = '⏳ Waiting for .NES file selection...';
+        lobbyP1Badge.className = 'badge warn';
+        lobbyP1Badge.textContent = 'SELECT ROM';
+      }
+
+      if (!wsOpen) {
+        lobbyRoomBadge.className = 'badge warn';
+        lobbyRoomBadge.textContent = 'SOLO / OFFLINE';
+        lobbySlotP2.className = 'lobby-slot waiting';
+        lobbyP2Rom.textContent = 'Click "Connect" above for 2-PC Online Co-op';
+        lobbyP2Badge.className = 'badge warn';
+        lobbyP2Badge.textContent = 'OFFLINE';
+      } else if (!peerConnected) {
+        lobbyRoomBadge.className = 'badge warn';
+        lobbyRoomBadge.textContent = `ROOM "${roomCode}" — WAITING FOR P2`;
+        lobbySlotP2.className = 'lobby-slot waiting';
+        lobbyP2Rom.textContent = '⏳ Waiting for Player 2 to open room link...';
+        lobbyP2Badge.className = 'badge warn';
+        lobbyP2Badge.textContent = 'WAITING';
+      } else if (p2Crc) {
+        lobbySlotP2.className = 'lobby-slot ready';
+        lobbyP2Rom.textContent = `✔ ${p2RomName} [CRC32: ${p2Crc}]`;
+        lobbyP2Badge.className = 'badge ok';
+        lobbyP2Badge.textContent = 'ROM READY';
+      } else {
+        lobbySlotP2.className = 'lobby-slot waiting';
+        lobbyP2Rom.textContent = `⏳ ${peerNick} is connected — selecting .NES file...`;
+        lobbyP2Badge.className = 'badge warn';
+        lobbyP2Badge.textContent = 'SELECT ROM';
+      }
+
+      // Decide whether to show or hide the overlay
+      if (!wsOpen) {
+        // Solo mode: hide overlay as soon as a ROM is loaded
+        lobbyActionsRow.style.display = 'none';
+        if (romUint8) {
+          lobbyOverlay.classList.add('hidden');
+        } else {
+          lobbyFooterText.innerHTML =
+            'Select any <strong>.NES</strong> file using <strong>-- Select Game --</strong> or <strong>Load .NES</strong> above (or drag &amp; drop onto screen).<br/>' +
+            'For 2-PC Online: click <strong>Connect</strong> and select the same <strong>.NES</strong> file on both PCs!';
+          lobbyOverlay.classList.remove('hidden');
+        }
+        return;
+      }
+
+      if (!peerConnected) {
+        lobbyActionsRow.style.display = 'none';
+        if (romUint8) {
+          // Allow P1 to see/test the ROM while waiting for P2 to join
+          lobbyOverlay.classList.add('hidden');
+        } else {
+          lobbyFooterText.innerHTML =
+            `Connected to Room <strong>${roomCode}</strong>! Click <strong>Copy Link</strong> to invite Player 2, and select your <strong>.NES</strong> file above.`;
+          lobbyOverlay.classList.remove('hidden');
+        }
+        return;
+      }
+
+      // Both players are connected in the room!
+      const bothHaveRoms = Boolean(romCrc32 && partnerRomCrc32);
+      const crcMatched = Boolean(bothHaveRoms && romCrc32 === partnerRomCrc32);
+
+      if (crcMatched && matchStarted && (!engine || !engine.syncPaused)) {
+        lobbyOverlay.classList.add('hidden');
+        return;
+      }
+
+      lobbyOverlay.classList.remove('hidden');
+      lobbyRoomBadge.className = crcMatched ? 'badge ok' : 'badge warn';
+      lobbyRoomBadge.textContent = crcMatched ? `ROOM "${roomCode}" — ROMS MATCHED` : `ROOM "${roomCode}" — 2 PLAYERS CONNECTED`;
+
+      if (!romCrc32 && !partnerRomCrc32) {
+        lobbyFooterText.innerHTML =
+          'Both players connected! Select the <strong>same .NES file</strong> on both PCs — the game will start automatically at Frame #0.';
+        lobbyActionsRow.style.display = 'none';
+      } else if (!romCrc32 && partnerRomCrc32) {
+        lobbyFooterText.innerHTML =
+          `Partner selected <strong>${partnerRomName}</strong> <code>[${partnerRomCrc32}]</code>.<br/>` +
+          `Select the <strong>same .NES file</strong> on your PC above to start immediately at Frame #0!`;
+        lobbyActionsRow.style.display = 'none';
+      } else if (romCrc32 && !partnerRomCrc32) {
+        lobbyFooterText.innerHTML =
+          `You selected <strong>${romName}</strong> <code>[${romCrc32}]</code>.<br/>` +
+          `Waiting for <strong>${peerNick}</strong> to select the same .NES file on their PC...`;
+        lobbyActionsRow.style.display = 'flex';
+        startMatchNowBtn.style.display = 'none';
+        sendRomManualBtn.style.display = 'inline-flex';
+      } else if (!crcMatched) {
+        lobbyFooterText.innerHTML =
+          `<span style="color:#f87171; font-weight:700;">⚠ Different .NES files selected!</span><br/>` +
+          `Please select the exact same .NES file on both PCs (or click "Send My .NES File to Partner" below).`;
+        lobbyActionsRow.style.display = 'flex';
+        startMatchNowBtn.style.display = 'none';
+        sendRomManualBtn.style.display = 'inline-flex';
+      } else {
+        lobbyFooterText.innerHTML =
+          `<span style="color:#4ade80; font-weight:700;">✔ Both PCs have "${romName}" [${romCrc32}]!</span><br/>` +
+          `Synchronizing Frame #0 lockstep start...`;
+        lobbyActionsRow.style.display = 'flex';
+        startMatchNowBtn.style.display = 'inline-flex';
+        sendRomManualBtn.style.display = 'none';
+      }
+    }
+
     function updateStatusStrip() {
       roleBadge.textContent = `YOU: P${localPlayerIndex} (${localPlayerIndex === 1 ? '$4016' : '$4017'})`;
       const shortRom = romName ? romName.replace(/\.nes$/i, '') : 'No ROM';
@@ -1156,20 +1489,26 @@
         statusLed.className = 'led';
         statusText.textContent = romUint8
           ? `SOLO MODE — Playing "${shortRom}" on Port 1`
-          : 'SOLO MODE — Load a .NES game or click Connect';
+          : 'EMPTY CONSOLE — Select a .NES ROM above or click Connect for Online Co-op';
         dbgTransportBadge.className = 'badge warn';
         dbgTransportBadge.textContent = 'OFFLINE';
+        updateLobbyOverlay();
         return;
       }
 
       if (!peerConnected) {
         statusLed.className = 'led warn';
-        statusText.textContent = `ROOM "${roomCode}" — Waiting for Player 2 to join link... (Playing "${shortRom}")`;
+        statusText.textContent = `ROOM "${roomCode}" — Waiting for Player 2 to join... (${shortRom})`;
         dbgTransportBadge.className = 'badge warn';
         dbgTransportBadge.textContent = 'WAITING FOR P2';
+      } else if (!romCrc32 || !partnerRomCrc32 || partnerRomCrc32 !== romCrc32) {
+        statusLed.className = 'led warn';
+        statusText.textContent = `ROOM "${roomCode}" — Select same .NES ROM on both PCs (You: ${shortRom} | ${peerNick}: ${partnerRomName || 'Waiting...'})`;
+        dbgTransportBadge.className = 'badge warn';
+        dbgTransportBadge.textContent = 'SELECT ROM';
       } else if (engine && engine.syncPaused) {
         statusLed.className = 'led warn';
-        statusText.textContent = `ROOM "${roomCode}" — Synchronizing "${shortRom}" with ${peerNick}...`;
+        statusText.textContent = `ROOM "${roomCode}" — Locking Frame #0 for "${shortRom}" with ${peerNick}...`;
         dbgTransportBadge.className = 'badge warn';
         dbgTransportBadge.textContent = 'SYNCING';
       } else {
@@ -1179,28 +1518,30 @@
         dbgTransportBadge.className = 'badge ok';
         dbgTransportBadge.textContent = usingP2P ? 'P2P DIRECT' : 'WSS RELAY';
       }
+      updateLobbyOverlay();
     }
 
-    // Discover local ROMs in local/ directory
+    // Discover local ROMs in local/ directory (populates dropdown ONLY — does NOT auto-load any ROM!)
     async function discoverLocalRoms() {
       try {
         const res = await fetch('/api/local-roms');
         if (res.ok) {
           const data = await res.json();
+          localRomSelect.innerHTML = '<option value="">-- Select Game --</option>';
           if (Array.isArray(data.files) && data.files.length > 0) {
-            localRomSelect.innerHTML = '';
             for (const f of data.files) {
               const opt = document.createElement('option');
               opt.value = f;
               opt.textContent = f;
               localRomSelect.appendChild(opt);
             }
-            await fetchLocalRomByName(data.files[0], { broadcastToPeer: false, isAutoDefault: true });
           }
+          localRomSelect.value = '';
         }
       } catch (e) {
         logDebug(`Local ROM check failed: ${e.message}`);
       }
+      updateStatusStrip();
     }
 
     async function fetchLocalRomByName(fileName, options = { broadcastToPeer: true, isAutoDefault: false }) {
@@ -1425,7 +1766,14 @@
 
     function handleIncomingNetMessage(msg, source) {
       rxCountThisSec++;
-      if (msg.type === 'pong') {
+      if (msg.type === 'peer_ping') {
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'peer_pong', t: msg.t }));
+        }
+        return;
+      }
+
+      if (msg.type === 'peer_pong' || (msg.type === 'pong' && !peerConnected)) {
         const sampleRtt = Math.max(1, Date.now() - msg.t);
         jitterMs = Math.round(jitterMs * 0.7 + Math.abs(sampleRtt - rttMs) * 0.3);
         rttMs = Math.round(rttMs === 0 ? sampleRtt : rttMs * 0.7 + sampleRtt * 0.3);
@@ -1435,6 +1783,14 @@
       }
 
       if (msg.type === 'netplay_input') {
+        const nowPerf = performance.now();
+        if (lastRxInputAt > 0) {
+          const gap = Math.round(nowPerf - lastRxInputAt);
+          if (gap > maxRxGapMs && gap < 10000) {
+            maxRxGapMs = gap;
+          }
+        }
+        lastRxInputAt = nowPerf;
         if (engine && peerConnected) {
           engine.receiveRemoteInputPacket(msg);
         }
@@ -1446,11 +1802,26 @@
         localPlayerIndex = msg.playerIndex;
         const otherPeers = (msg.peers || []).filter((p) => p.playerIndex !== localPlayerIndex);
         peerConnected = otherPeers.length > 0;
+        matchStarted = false;
+
+        if (peerConnected) {
+          const partner = otherPeers[0];
+          peerNick = partner.nick || `Player ${partner.playerIndex}`;
+          partnerRomName = partner.romName || null;
+          partnerRomCrc32 = partner.romCrc32 || null;
+        } else {
+          partnerRomName = null;
+          partnerRomCrc32 = null;
+        }
 
         if (engine) {
           engine.localPlayer = localPlayerIndex;
           engine.online = peerConnected;
+          engine.enableRiftPacing = true;
           engine.resetTimeline(0);
+          if (peerConnected) {
+            engine.syncPaused = true;
+          }
         }
 
         logDebug(`Joined room "${roomCode}" as Player ${localPlayerIndex} ($401${localPlayerIndex === 1 ? '6' : '7'})`);
@@ -1459,55 +1830,68 @@
         if (!peerConnected) {
           showScreenBanner(`ROOM "${roomCode}" READY — Waiting for Player 2`, 'warn', 0);
         } else {
-          const partner = otherPeers[0];
-          peerNick = partner.nick || `Player ${partner.playerIndex}`;
-          if (localPlayerIndex === 2) {
-            // If Player 2 manually loaded a custom ROM (e.g. Balloon Fight) while Player 1 only has the untouched default ROM,
-            // Player 2 pushes its custom ROM to Player 1!
-            if (!isAutoDefaultRom && partner.isAutoDefaultRom !== false && romUint8) {
-              sendRomAndStateToPeer({ resetToZero: true });
-            } else {
-              showScreenBanner(`CONNECTED TO ${peerNick.toUpperCase()} — SYNCING GAME...`, 'warn', 0);
-              ws.send(
-                JSON.stringify({
-                  type: 'rom_request',
-                  haveCrc32: romCrc32
-                })
-              );
-            }
+          showScreenBanner(`CONNECTED TO ${peerNick.toUpperCase()} IN ROOM "${roomCode}"`, 'ok', 3500);
+          if (romCrc32 && ws && ws.readyState === 1) {
+            ws.send(
+              JSON.stringify({
+                type: 'rom_status',
+                romCrc32,
+                romName,
+                isAutoDefaultRom: false
+              })
+            );
+          }
+          if (localPlayerIndex === 1 && romCrc32 && partnerRomCrc32 === romCrc32) {
+            startLockstepMatchAtFrameZero('Joined room with matching ROMs');
           }
         }
+        pushGameplayTelemetryToServer();
         return;
       }
 
       if (msg.type === 'peer_joined') {
         peerConnected = true;
         peerNick = msg.peer?.nick || 'Partner';
-        logDebug(`Partner "${peerNick}" joined as Player ${msg.peer?.playerIndex}`);
+        partnerRomName = msg.peer?.romName || partnerRomName;
+        partnerRomCrc32 = msg.peer?.romCrc32 || partnerRomCrc32;
+        matchStarted = false;
+
+        logDebug(`Partner "${peerNick}" joined as Player ${msg.peer?.playerIndex} (ROM=${partnerRomName || 'None'})`);
         if (engine) {
           engine.localPlayer = localPlayerIndex;
           engine.online = true;
+          engine.enableRiftPacing = true;
+          engine.syncPaused = true;
         }
         updateStatusStrip();
 
+        // Broadcast our current ROM status so partner's overlay updates immediately
+        if (romCrc32 && ws && ws.readyState === 1) {
+          ws.send(
+            JSON.stringify({
+              type: 'rom_status',
+              romCrc32,
+              romName,
+              isAutoDefaultRom: false
+            })
+          );
+        }
+
         if (localPlayerIndex === 1) {
           startWebRtcSession(true);
-          // If Player 2 joined with a manually-selected custom ROM while Player 1 still has the untouched default ROM,
-          // let Player 2 push its custom ROM; otherwise Player 1 syncs its ROM & state to Player 2!
-          const p2HasCustomRom = msg.peer && msg.peer.isAutoDefaultRom === false && isAutoDefaultRom;
-          if (!p2HasCustomRom && romUint8) {
-            if (msg.peer?.romCrc32 === romCrc32) {
-              sendStateSyncToPeer({ resetToZero: false });
-            } else {
-              sendRomAndStateToPeer({ resetToZero: true });
-            }
+          if (romCrc32 && partnerRomCrc32 === romCrc32) {
+            startLockstepMatchAtFrameZero('Partner joined with matching ROM');
           }
         }
+        pushGameplayTelemetryToServer();
         return;
       }
 
       if (msg.type === 'peer_left') {
         peerConnected = false;
+        partnerRomName = null;
+        partnerRomCrc32 = null;
+        matchStarted = false;
         closeWebRtc();
         if (engine) {
           engine.online = false;
@@ -1516,6 +1900,80 @@
         logDebug(`Partner left the room.`);
         showScreenBanner(`PARTNER LEFT ROOM "${roomCode}"`, 'warn', 4000);
         updateStatusStrip();
+        pushGameplayTelemetryToServer();
+        return;
+      }
+
+      if (msg.type === 'rom_status' || msg.type === 'rom_info') {
+        const crcChanged = partnerRomCrc32 !== (msg.romCrc32 || null);
+        partnerRomName = msg.romName || null;
+        partnerRomCrc32 = msg.romCrc32 || null;
+        logDebug(`Partner "${peerNick}" selected ROM "${partnerRomName || 'None'}" [CRC=${partnerRomCrc32 || '--'}]`);
+
+        if (crcChanged || !matchStarted) {
+          matchStarted = false;
+          if (engine && peerConnected) {
+            engine.syncPaused = true;
+          }
+          if (localPlayerIndex === 1 && peerConnected && romCrc32 && partnerRomCrc32 === romCrc32) {
+            startLockstepMatchAtFrameZero('Partner selected matching ROM');
+          }
+        }
+        updateStatusStrip();
+        pushGameplayTelemetryToServer();
+        return;
+      }
+
+      if (msg.type === 'match_start_req') {
+        if (romUint8 && romBinaryString && (!msg.romCrc32 || msg.romCrc32 === romCrc32)) {
+          partnerRomName = msg.romName || partnerRomName || romName;
+          partnerRomCrc32 = msg.romCrc32 || romCrc32;
+          nes.loadROM(romBinaryString);
+          engine.localPlayer = localPlayerIndex;
+          engine.online = true;
+          engine.enableRiftPacing = true;
+          if (typeof msg.inputDelayFrames === 'number') {
+            engine.inputDelayFrames = msg.inputDelayFrames;
+            inputDelaySelect.value = String(msg.inputDelayFrames);
+          }
+          engine.resetTimeline(0, msg.sessionId);
+          engine.syncPaused = false;
+          matchStarted = true;
+          lastRxInputAt = 0;
+          maxRxGapMs = 0;
+
+          if (ws && ws.readyState === 1) {
+            ws.send(
+              JSON.stringify({
+                type: 'match_start_ack',
+                sessionId: msg.sessionId,
+                romCrc32
+              })
+            );
+          }
+          logDebug(`Frame #0 lockstep match started for "${romName}" [CRC=${romCrc32}, session=${msg.sessionId}]`);
+          showScreenBanner(`ONLINE LOCKSTEP STARTED — "${romName}" (FRAME #0)`, 'ok', 3500);
+          updateStatusStrip();
+          pushGameplayTelemetryToServer();
+        }
+        return;
+      }
+
+      if (msg.type === 'match_start_ack') {
+        if (engine && (!msg.sessionId || msg.sessionId === engine.sessionId)) {
+          if (syncAckTimeout) {
+            clearTimeout(syncAckTimeout);
+            syncAckTimeout = null;
+          }
+          engine.syncPaused = false;
+          matchStarted = true;
+          lastRxInputAt = 0;
+          maxRxGapMs = 0;
+          logDebug(`Partner ACKed Frame #0 lockstep start for "${romName}" [session=${engine.sessionId}]`);
+          showScreenBanner(`ONLINE LOCKSTEP STARTED — "${romName}" (FRAME #0)`, 'ok', 3500);
+          updateStatusStrip();
+          pushGameplayTelemetryToServer();
+        }
         return;
       }
 
@@ -1571,11 +2029,14 @@
         logDebug(`Receiving ROM "${msg.romName}" [${msg.romCrc32}] from partner...`);
         const u8 = base64ToUint8(msg.romBase64);
         loadRomFromUint8(u8, msg.romName, { broadcastToPeer: false, isAutoDefault: Boolean(msg.isAutoDefaultRom) });
+        partnerRomName = msg.romName;
+        partnerRomCrc32 = romCrc32;
         if (msg.syncState && engine) {
           engine.localPlayer = localPlayerIndex;
           engine.online = true;
           engine.importSyncState(msg.syncState);
           engine.syncPaused = false;
+          matchStarted = true;
           inputDelaySelect.value = String(engine.inputDelayFrames);
           logDebug(`Locked to partner ROM "${msg.romName}" at frame #${engine.currentFrame} (session=${engine.sessionId})`);
           if (ws && ws.readyState === 1) {
@@ -1596,10 +2057,13 @@
 
       if (msg.type === 'state_sync') {
         if (engine && (!msg.romCrc32 || msg.romCrc32 === romCrc32)) {
+          partnerRomName = msg.romName || partnerRomName || romName;
+          partnerRomCrc32 = msg.romCrc32 || romCrc32;
           engine.localPlayer = localPlayerIndex;
           engine.online = true;
           engine.importSyncState(msg.syncState);
           engine.syncPaused = false;
+          matchStarted = true;
           inputDelaySelect.value = String(engine.inputDelayFrames);
           logDebug(`Locked to partner savestate at frame #${engine.currentFrame} (session=${engine.sessionId})`);
           if (ws && ws.readyState === 1) {
@@ -1627,6 +2091,7 @@
             syncAckTimeout = null;
           }
           engine.syncPaused = false;
+          matchStarted = true;
           logDebug(`Partner acknowledged lockstep sync at frame #${engine.currentFrame} (session=${engine.sessionId})`);
           showScreenBanner(`ONLINE SYNCED — P1 + P2 PLAYING "${romName}"`, 'ok', 3500);
           updateStatusStrip();
@@ -1643,8 +2108,7 @@
 
       if (msg.type === 'console_reset') {
         if (nes && engine) {
-          sendStateSyncToPeer({ resetToZero: true });
-          logDebug('Console reset requested by partner.');
+          startLockstepMatchAtFrameZero('Partner Reset');
         }
         return;
       }
@@ -1697,6 +2161,9 @@
       ws.onclose = () => {
         dbgWssState.textContent = 'Disconnected';
         peerConnected = false;
+        partnerRomName = null;
+        partnerRomCrc32 = null;
+        matchStarted = false;
         closeWebRtc();
         if (engine) {
           engine.online = false;
@@ -1721,7 +2188,11 @@
     resetBtn.addEventListener('click', () => {
       if (!nes || !engine) return;
       if (ws && ws.readyState === 1 && peerConnected) {
-        sendStateSyncToPeer({ resetToZero: true });
+        if (partnerRomCrc32 === romCrc32) {
+          startLockstepMatchAtFrameZero('Reset Button Clicked', true);
+        } else {
+          sendStateSyncToPeer({ resetToZero: true });
+        }
       } else {
         nes.loadROM(romBinaryString);
         engine.resetTimeline(0);
@@ -1730,10 +2201,28 @@
       }
     });
 
+    startMatchNowBtn.addEventListener('click', () => {
+      if (ws && ws.readyState === 1 && peerConnected && romCrc32 && partnerRomCrc32 === romCrc32) {
+        startLockstepMatchAtFrameZero('Start Match Button Clicked', true);
+      }
+    });
+
+    sendRomManualBtn.addEventListener('click', () => {
+      if (ws && ws.readyState === 1 && peerConnected && romUint8 && engine) {
+        sendRomAndStateToPeer({ resetToZero: true });
+      }
+    });
+
     muteBtn.addEventListener('click', () => {
       initAudio();
       audioMuted = !audioMuted;
       muteBtn.textContent = audioMuted ? 'Audio: OFF' : 'Audio: ON';
+    });
+
+    crtToggleBtn.addEventListener('click', () => {
+      const enabled = scanlinesOverlay.classList.toggle('enabled');
+      crtToggleBtn.textContent = enabled ? 'CRT: ON' : 'CRT: OFF';
+      crtToggleBtn.classList.toggle('active-toggle', enabled);
     });
 
     debugToggleBtn.addEventListener('click', () => {
@@ -1744,6 +2233,23 @@
     forceResyncBtn.addEventListener('click', () => {
       if (!ws || ws.readyState !== 1 || !peerConnected) return;
       sendStateSyncToPeer({ resetToZero: false });
+    });
+
+    copyTelemetryBtn.addEventListener('click', async () => {
+      try {
+        pushGameplayTelemetryToServer();
+        const res = await fetch('/api/gameplay-telemetry');
+        if (res.ok) {
+          const data = await res.json();
+          const txt = data.combinedText || JSON.stringify(data, null, 2);
+          await navigator.clipboard.writeText(txt);
+          const orig = copyTelemetryBtn.textContent;
+          copyTelemetryBtn.textContent = 'Copied!';
+          setTimeout(() => (copyTelemetryBtn.textContent = orig), 1500);
+        }
+      } catch (e) {
+        logDebug(`Copy telemetry failed: ${e.message}`);
+      }
     });
 
     inputDelaySelect.addEventListener('change', () => {
@@ -1830,6 +2336,62 @@
       }
     }
 
+    function buildGameplayTelemetryPayload() {
+      const t = engine ? engine.getTelemetry() : {};
+      const usingP2P = rtcChannel && rtcChannel.readyState === 'open' && transportModeSelect.value !== 'wss';
+      const matchState = !ws || ws.readyState !== 1
+        ? 'OFFLINE_SOLO'
+        : !peerConnected
+        ? 'WAITING_FOR_PARTNER'
+        : !romCrc32 || !partnerRomCrc32
+        ? 'SELECTING_ROM'
+        : romCrc32 !== partnerRomCrc32
+        ? 'ROM_MISMATCH'
+        : engine && engine.syncPaused
+        ? 'LOCKSTEP_BARRIER'
+        : 'PLAYING_LOCKSTEP';
+
+      return {
+        playerIndex: localPlayerIndex,
+        roomCode: roomCode || 'SOLO',
+        transport: usingP2P ? 'WebRTC P2P' : (ws && ws.readyState === 1 ? 'WSS Relay' : 'Offline'),
+        romName: romName || 'None',
+        romCrc32: romCrc32 || '--',
+        partnerRomCrc32: partnerRomCrc32 || '--',
+        matchState,
+        currentFrame: t.currentFrame ?? 0,
+        lastVerifiedFrame: t.lastVerifiedFrame ?? -1,
+        syncStatus: t.syncStatus || 'IDLE',
+        desyncCount: t.desyncCount ?? 0,
+        rttMs,
+        jitterMs,
+        riftFrames: t.riftFrames ?? 0,
+        riftWaitFrames: t.riftWaitFrames ?? 0,
+        inputDelayFrames: t.inputDelayFrames ?? Number(inputDelaySelect.value),
+        fps: lastFpsVal,
+        lastStepMs: t.lastStepMs ?? 0,
+        rollbacksPerSec: t.rollbacksPerSec ?? 0,
+        rollbacksTotal: t.rollbacksTotal ?? 0,
+        lastRollbackDepth: t.lastRollbackDepth ?? 0,
+        maxRollbackDepthSeen: t.maxRollbackDepthSeen ?? 0,
+        frameAdvantage: t.frameAdvantage ?? 0,
+        stallFrames: t.stallFrames ?? 0,
+        txPerSec,
+        rxPerSec,
+        maxRxGapMs,
+        samples: telemetrySamples.slice(-25),
+        events: telemetryEvents.slice(-25)
+      };
+    }
+
+    function pushGameplayTelemetryToServer() {
+      if (!ws || ws.readyState !== 1) return;
+      try {
+        const telemetry = buildGameplayTelemetryPayload();
+        ws.send(JSON.stringify({ type: 'gameplay_telemetry_ws', telemetry }));
+      } catch {}
+    }
+
     function updateDebugTelemetry(p1Mask, p2Mask) {
       updateMiniPads(p1Mask, p2Mask);
       if (!engine) return;
@@ -1867,6 +2429,9 @@
       dbgRollbacks.textContent = `${t.rollbacksPerSec}/s (${t.rollbacksTotal})`;
       dbgRbDepth.textContent = `${t.lastRollbackDepth}f / ${t.maxRollbackDepthSeen}f`;
       dbgAdvantage.textContent = `${t.frameAdvantage}f / ${t.stallFrames} stalls`;
+      if (dbgRift) {
+        dbgRift.textContent = `${t.riftFrames >= 0 ? '+' : ''}${t.riftFrames}f / ${t.riftWaitFrames} waits`;
+      }
       updateControllerInspector(p1Mask, p2Mask);
     }
 
@@ -1876,13 +2441,15 @@
     let accumulatorMs = 0;
     let framesThisSec = 0;
     let lastFpsUpdate = performance.now();
+    let lastTelemetryTick = performance.now();
     let lastSentButtonsMask = 0;
     let wssInputBatchCounter = 0;
 
     function runTick(now) {
       const dt = Math.min(100, Math.max(0, now - lastTickTime));
       lastTickTime = now;
-      accumulatorMs += dt;
+      // Clamp accumulator to at most 2 frames per RAF tick to prevent rollback slow-motion spirals
+      accumulatorMs = Math.min(accumulatorMs + dt, FRAME_DURATION_MS * 2);
 
       while (accumulatorMs >= FRAME_DURATION_MS) {
         accumulatorMs -= FRAME_DURATION_MS;
@@ -1911,6 +2478,7 @@
       }
 
       if (now - lastFpsUpdate >= 1000) {
+        lastFpsVal = framesThisSec;
         fpsLabel.textContent = `${framesThisSec} FPS`;
         txPerSec = txCountThisSec;
         rxPerSec = rxCountThisSec;
@@ -1920,9 +2488,39 @@
         framesThisSec = 0;
         lastFpsUpdate = now;
 
-        // Send periodic ping
+        // Send periodic peer ping (for true 2-PC RTT) or server ping (when waiting for partner)
         if (ws && ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'ping', t: Date.now() }));
+          if (peerConnected) {
+            ws.send(JSON.stringify({ type: 'peer_ping', t: Date.now() }));
+          } else {
+            ws.send(JSON.stringify({ type: 'ping', t: Date.now() }));
+          }
+        }
+      }
+
+      // Auto-record 2-second gameplay telemetry samples to logs/gameplay_telemetry_latest.txt
+      if (now - lastTelemetryTick >= 2000) {
+        lastTelemetryTick = now;
+        if (ws && ws.readyState === 1) {
+          const t = engine ? engine.getTelemetry() : {};
+          telemetrySamples.push({
+            ts: new Date().toISOString().slice(11, 19),
+            frame: t.currentFrame ?? 0,
+            fps: lastFpsVal,
+            rtt: rttMs,
+            rift: t.riftFrames ?? 0,
+            adv: t.frameAdvantage ?? 0,
+            rbSec: t.rollbacksPerSec ?? 0,
+            maxRb: t.maxRollbackDepthSeen ?? 0,
+            stalls: t.stallFrames ?? 0,
+            stepMs: t.lastStepMs ?? 0,
+            tx: txPerSec,
+            rx: rxPerSec,
+            maxGap: maxRxGapMs,
+            sync: t.syncStatus || (engine && engine.syncPaused ? 'PAUSED' : 'IDLE')
+          });
+          if (telemetrySamples.length > 30) telemetrySamples.shift();
+          pushGameplayTelemetryToServer();
         }
       }
     }

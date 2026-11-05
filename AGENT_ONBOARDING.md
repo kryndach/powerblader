@@ -59,19 +59,20 @@ We built two dedicated diagnostic suites (`/nettest` and `/autotest`) and ran li
 - **[`start_online.ps1`](file:///C:/Users/Egor/Documents/Projects/NES_Online/start_online.ps1):** Master PowerShell launcher.
   - Kills any stale process on port `8080`.
   - Starts `node server/relay_server.mjs`.
-  - Generates an passwordless Ed25519 SSH key (`logs/pinggy_ed25519`) so `pinggy.io` never prompts for a password.
-  - Launches either `pinggy.io` (`-Tunnel pinggy`) or `localhost.run` (`-Tunnel localhost.run`) with `-T -o IPQoS=lowdelay`.
+  - Generates a passwordless Ed25519 SSH key (`logs/pinggy_ed25519`) so `pinggy.io` never prompts for a password.
+  - Launches either `pinggy.io` (`-Tunnel pinggy -Region auto|ap|eu`, mapping to `a.pinggy.io`, `ap.a.pinggy.io`, `eu.a.pinggy.io`) or `localhost.run` (`-Tunnel localhost.run`) with `-T -o IPQoS=lowdelay` and registers tunnel/region metadata via `POST /api/tunnel-info`.
   - Parses the public HTTPS tunnel URL, **copies the brother's link to the Windows Clipboard**, and **opens the local browser automatically**.
-- **[`PLAY_NES_PINGGY.bat`](file:///C:/Users/Egor/Documents/Projects/NES_Online/PLAY_NES_PINGGY.bat):** One-click launcher for the **NES Netplay Game Console** (`/?room=NOVA`) via `pinggy.io`.
+- **[`PLAY_NES_PINGGY.bat`](file:///C:/Users/Egor/Documents/Projects/NES_Online/PLAY_NES_PINGGY.bat) / [`PLAY_NES_PINGGY_AP.bat`](file:///C:/Users/Egor/Documents/Projects/NES_Online/PLAY_NES_PINGGY_AP.bat) / [`PLAY_NES_PINGGY_EU.bat`](file:///C:/Users/Egor/Documents/Projects/NES_Online/PLAY_NES_PINGGY_EU.bat):** One-click launchers for the **NES Netplay Game Console** (`/?room=NOVA`) via `pinggy.io` (`auto`, `ap` Singapore edge, or `eu` Frankfurt edge).
 - **[`RUN_NETTEST_PINGGY.bat`](file:///C:/Users/Egor/Documents/Projects/NES_Online/RUN_NETTEST_PINGGY.bat):** One-click launcher for the **Interactive 2-PC Block Sandbox & Manual Workbench** (`/nettest?room=NOVA`) via `pinggy.io`.
-- **[`RUN_AUTOTEST_PINGGY.bat`](file:///C:/Users/Egor/Documents/Projects/NES_Online/RUN_AUTOTEST_PINGGY.bat):** One-click launcher for the **Zero-Click 6-Stage Automated Benchmark** (`/autotest`) via `pinggy.io`.
+- **[`RUN_AUTOTEST_PINGGY.bat`](file:///C:/Users/Egor/Documents/Projects/NES_Online/RUN_AUTOTEST_PINGGY.bat) / [`RUN_AUTOTEST_PINGGY_AP.bat`](file:///C:/Users/Egor/Documents/Projects/NES_Online/RUN_AUTOTEST_PINGGY_AP.bat) / [`RUN_AUTOTEST_PINGGY_EU.bat`](file:///C:/Users/Egor/Documents/Projects/NES_Online/RUN_AUTOTEST_PINGGY_EU.bat):** One-click launchers for the **Zero-Click 6-Stage Automated Benchmark** (`/autotest`) via `pinggy.io` (`auto`, `ap`, or `eu`).
 - **[`RUN_NES_GAME.bat`](file:///C:/Users/Egor/Documents/Projects/NES_Online/RUN_NES_GAME.bat) / [`RUN_NETTEST.bat`](file:///C:/Users/Egor/Documents/Projects/NES_Online/RUN_NETTEST.bat) / [`RUN_AUTOTEST.bat`](file:///C:/Users/Egor/Documents/Projects/NES_Online/RUN_AUTOTEST.bat):** Fallback launchers using `localhost.run`.
 
 ### Frontend Pages (`public/`)
 1. **[`public/index.html`](file:///C:/Users/Egor/Documents/Projects/NES_Online/public/index.html) (`/`) — Universal NES Netplay Console:**
-   - Runs any `.nes` ROM from `local/` (dropdown) or drag-and-drop / file picker.
-   - Either Player 1 (`$4016`) or Player 2 (`$4017`) can load a `.nes` file at any time; it automatically streams the ROM in **`16 KB` chunks** (`rom_chunk_start`, `rom_chunk_data`, `rom_chunk_end`) with a live download `%` banner and locks both emulators to the exact same frame (`sync_ack`) before unpausing.
-   - Includes a toggleable **Debug Drawer** showing live deterministic RAM CRC32 sync, transport status (`P2P` vs `WSS Relay`), rollback depth, live controller inspector, and lag/loss simulator.
+   - **Empty Boot & Zero-Transfer Lockstep ROM Sync:** Starts with an empty console (no default ROM auto-loaded into memory) and displays a live 2-Player ROM Ready & Sync Status Overlay (`#lobbyOverlay`). Both players select the same `.nes` ROM locally (exchanging only a lightweight `rom_status` `{ romName, romCrc32 }` packet), and as soon as their CRC32s match (or when either clicks `Reset`), `match_start_req` / `match_start_ack` fresh-boots both emulators at Frame `#0` simultaneously in lockstep without transferring 256 KB ROM payloads.
+   - **Clean Pixels by Default:** CRT scanlines (`#scanlinesOverlay`) are OFF by default (`CRT: OFF / ON` button in the top bar).
+   - **Live 2-PC Gameplay Telemetry Auto-Logger:** Automatically collects 2-second time-series telemetry samples and sync/stall/desync events from both PC 1 and PC 2 during online play and saves them to **`logs/gameplay_telemetry_latest.txt`** and **`logs/gameplay_telemetry_latest.json`**.
+   - Includes a toggleable **Debug Drawer** showing live deterministic RAM CRC32 sync, transport status (`P2P` vs `WSS Relay`), rollback depth, clock rift, live controller inspector, and a `Copy Telemetry` button.
 2. **[`public/net_debug.html`](file:///C:/Users/Egor/Documents/Projects/NES_Online/public/net_debug.html) (`/nettest`) — Interactive 2-PC Block Sandbox & Manual Workbench:**
    - Features the **Live 2-PC Cursor & Input Sandbox** (red `P1` and cyan `P2` blocks controlled via `WASD` / `Arrow Keys` / mouse drag at normalized 60Hz delta-time, capped to 30Hz over WSS).
    - Manual buttons for testing `16 KB`, `64 KB`, `256 KB`, and `512 KB` transfers, 60Hz packet streams, WebRTC STUN/TURN matrix, and pure HTTPS polling fallback (`/api/http-tunnel`).
@@ -81,8 +82,8 @@ We built two dedicated diagnostic suites (`/nettest` and `/autotest`) and ran li
 
 ### Core Netplay & Emulator Engine (`src/`)
 - **[`src/netplay_engine.mjs`](file:///C:/Users/Egor/Documents/Projects/NES_Online/src/netplay_engine.mjs):**
-  - **GGPO-Style Rollback + Input Delay Engine (`NesNetplayEngine`):** Synchronizes 1-byte controller bitmasks for Port 1 (`$4016`) and Port 2 (`$4017`). Configured for high-ping links (`inputDelayFrames = 3`, `maxRollbackFrames = 36`, `saveBufferSize = 96`).
-  - **Zero-GC Fast Binary Savestates (`saveFastState` / `loadFastState`):** Saves and restores full CPU, PPU, VRAM, OAM, CHR-RAM, APU, and Mapper state in **`~0.15 ms`** per frame using pre-allocated typed arrays.
+  - **GGPO-Style Rollback + Input Delay + Clock-Rift Balancing Engine (`NesNetplayEngine`):** Synchronizes 1-byte controller bitmasks for Port 1 (`$4016`) and Port 2 (`$4017`). Configured for high-ping links (`inputDelayFrames = 3`, `maxRollbackFrames = 36`, `saveBufferSize = 96`, `enableRiftPacing = true`). Uses GGPO Clock-Rift calculation (`riftFrames = (myLead - peerLead) * 0.5`) to keep both PCs centered around 0 frame rift without hitting hard `maxRollbackFrames` stalls.
+  - **Zero-GC Fast Binary Savestates & Dirty-Tile Epoch CHR-RAM (`saveFastState` / `loadFastState`):** Saves and restores full CPU, PPU, VRAM, OAM, CHR-RAM, APU, and Mapper state in **`~0.1 ms`** per frame using pre-allocated typed arrays and per-tile monotonic epoch tracking (`_tileEpoch` / `chrRamTileEpochs`) so Mapper 7/2 CHR-RAM games like *Battletoads & Double Dragon* only copy modified tiles.
   - **Compact Network State Export (`exportSyncState` / `importSyncState`):** Strips transient 1.5 MB PPU pixel render buffers and maps CHR-ROM tiles by `_vromRef`, shrinking lockstep state snapshots from `~1.8 MB` down to **`~18–25 KB`**.
   - **Upgraded `jsnes` PPU Fixes (`patchJsnes8x16Sprites`):**
     1. Fixes upstream `jsnes` 8x16 sprite odd-bank bug (`topTileNum + 256` instead of `topTileNum - 1 + 256`).
@@ -91,10 +92,10 @@ We built two dedicated diagnostic suites (`/nettest` and `/autotest`) and ran li
 
 ### Backend Server & Automated QA (`server/` & `tools/`)
 - **[`server/relay_server.mjs`](file:///C:/Users/Egor/Documents/Projects/NES_Online/server/relay_server.mjs):**
-  - Serves `/`, `/nettest`, `/autotest`, `/vendor/jsnes.js`, `/api/local-roms`, `/api/local-rom`, `/api/http-tunnel` (HTTPS polling fallback), and `/api/autotest-report` (auto-saves benchmark reports to `logs/autotest_latest.txt`).
+  - Serves `/`, `/nettest`, `/autotest`, `/vendor/jsnes.js`, `/api/local-roms`, `/api/local-rom`, `/api/tunnel-info`, `/api/http-tunnel` (HTTPS polling fallback), `/api/autotest-report` (`logs/autotest_latest.txt`), and `/api/gameplay-telemetry` (`logs/gameplay_telemetry_latest.txt`).
   - Disables Nagle's algorithm (`socket.setNoDelay(true)`) on all HTTP and WebSocket connections for minimum latency.
 - **[`tools/test_net_diagnostics.mjs`](file:///C:/Users/Egor/Documents/Projects/NES_Online/tools/test_net_diagnostics.mjs):** Automated test suite verifying `/nettest`, `/autotest`, chunked transfers, 60Hz streams, and `/api/http-tunnel`.
-- **[`tools/test_coop_qa.mjs`](file:///C:/Users/Egor/Documents/Projects/NES_Online/tools/test_coop_qa.mjs):** Automated 2-client netplay QA suite verifying Mappers 0/1/2/4 fast savestates, 3,600-frame (60s) chaos rollback stress test with `0` desyncs, late-join ROM transfer, and bidirectional ROM switching.
+- **[`tools/test_coop_qa.mjs`](file:///C:/Users/Egor/Documents/Projects/NES_Online/tools/test_coop_qa.mjs):** Automated 2-client netplay QA suite verifying Mappers 0/1/2/4 fast savestates, CHR-RAM dirty-tile epoch rollbacks, GGPO clock-rift balancing, 3,600-frame (60s) chaos rollback stress test with `0` desyncs, zero-transfer lockstep `match_start_req`/`ack`, and live gameplay telemetry logging.
 
 ---
 

@@ -21,13 +21,94 @@ export function createCoopServer(options = {}) {
   // rooms: Map<roomCode, Map<clientId, PeerSession>>
   const rooms = new Map();
   const accessLog = [];
+  const tunnelInfo = {
+    tunnel: process.env.TUNNEL_PROVIDER || 'unknown',
+    region: process.env.TUNNEL_REGION || 'auto',
+    publicUrl: null,
+    updatedAt: null
+  };
   const autotestSession = {
     startedAt: new Date().toISOString(),
     updatedAt: null,
+    tunnelInfo,
     pc1: null,
     pc2: null,
     combinedText: ''
   };
+  const gameplayTelemetrySession = {
+    startedAt: new Date().toISOString(),
+    updatedAt: null,
+    tunnelInfo,
+    pc1: null,
+    pc2: null,
+    combinedText: ''
+  };
+
+  function saveGameplayTelemetryToDisk() {
+    try {
+      const logsDir = path.join(ROOT_DIR, 'logs');
+      if (!fs.existsSync(logsDir)) {
+        fs.mkdirSync(logsDir, { recursive: true });
+      }
+      gameplayTelemetrySession.updatedAt = new Date().toISOString();
+
+      const lines = [];
+      lines.push('====================================================================');
+      lines.push('   2-PC LIVE NES GAMEPLAY & NETCODE TELEMETRY REPORT');
+      lines.push(`   Updated: ${gameplayTelemetrySession.updatedAt}`);
+      lines.push(`   Tunnel: ${tunnelInfo.tunnel} (Region: ${tunnelInfo.region}) | Public URL: ${tunnelInfo.publicUrl || '--'}`);
+      lines.push('====================================================================');
+
+      for (const [label, pc] of [
+        ['PC 1 (HOST / SINGAPORE)', gameplayTelemetrySession.pc1],
+        ['PC 2 (REMOTE / ISILKUL, OMSK)', gameplayTelemetrySession.pc2]
+      ]) {
+        lines.push(`\n--- ${label} ---`);
+        if (!pc) {
+          lines.push('  (No gameplay telemetry received from this PC yet)');
+          continue;
+        }
+        lines.push(`  Room: ${pc.roomCode || '--'} | Role: P${pc.playerIndex || '--'} | Transport: ${pc.transport || '--'}`);
+        lines.push(`  ROM: ${pc.romName || 'None'} [CRC32: ${pc.romCrc32 || '--'}] | Partner ROM CRC32: ${pc.partnerRomCrc32 || '--'}`);
+        lines.push(`  Match State: ${pc.matchState || '--'} | Frame: ${pc.currentFrame ?? 0} | Verified Frame: ${pc.lastVerifiedFrame ?? '--'} | Sync: ${pc.syncStatus || '--'} (Desyncs: ${pc.desyncCount ?? 0})`);
+        lines.push(`  Ping RTT: ${pc.rttMs ?? '--'} ms (Jitter: +/-${pc.jitterMs ?? 0} ms) | Clock Rift: ${pc.riftFrames ?? 0}f | Input Delay: ${pc.inputDelayFrames ?? '--'}f`);
+        lines.push(`  FPS: ${pc.fps ?? '--'} | Step Time: ${pc.lastStepMs ?? '--'} ms/f | Rollbacks: ${pc.rollbacksPerSec ?? 0}/s (Total: ${pc.rollbacksTotal ?? 0}, Last/Max Depth: ${pc.lastRollbackDepth ?? 0}f/${pc.maxRollbackDepthSeen ?? 0}f)`);
+        lines.push(`  Frame Advantage: ${pc.frameAdvantage ?? 0}f | Rift Stalls: ${pc.stallFrames ?? 0} | Rift Pacing Waits: ${pc.riftWaitFrames ?? 0} | Packet Rate: Tx ${pc.txPerSec ?? 0}/s, Rx ${pc.rxPerSec ?? 0}/s (Max Rx Gap: ${pc.maxRxGapMs ?? 0}ms)`);
+
+        if (Array.isArray(pc.samples) && pc.samples.length > 0) {
+          lines.push('  Recent 2s Telemetry Samples (Chronological):');
+          for (const s of pc.samples.slice(-25)) {
+            lines.push(
+              `    [${s.ts}] f=${s.frame} | FPS=${s.fps} | RTT=${s.rtt}ms | Rift=${s.rift}f | Adv=${s.adv}f | RB=${s.rbSec}/s (max=${s.maxRb}f) | Stalls=${s.stalls} | Step=${s.stepMs}ms | Tx/Rx=${s.tx}/${s.rx} (MaxGap=${s.maxGap}ms) | ${s.sync}`
+            );
+          }
+        }
+        if (Array.isArray(pc.events) && pc.events.length > 0) {
+          lines.push('  Recent Gameplay & Sync Events:');
+          for (const ev of pc.events.slice(-25)) {
+            lines.push(`    ${ev}`);
+          }
+        }
+      }
+
+      lines.push('\n====================================================================\n');
+      gameplayTelemetrySession.combinedText = lines.join('\n');
+      fs.writeFileSync(
+        path.join(logsDir, 'gameplay_telemetry_latest.json'),
+        JSON.stringify(gameplayTelemetrySession, null, 2),
+        'utf8'
+      );
+      fs.writeFileSync(
+        path.join(logsDir, 'gameplay_telemetry_latest.txt'),
+        gameplayTelemetrySession.combinedText,
+        'utf8'
+      );
+    } catch (e) {
+      if (options.logAccess !== false) {
+        console.error('Failed saving gameplay telemetry:', e.message);
+      }
+    }
+  }
 
   function saveAutotestReportToDisk() {
     try {
@@ -41,6 +122,7 @@ export function createCoopServer(options = {}) {
       lines.push('====================================================================');
       lines.push('   2-PC AUTOMATED NETWORK, P2P & PROTOCOL BENCHMARK REPORT');
       lines.push(`   Updated: ${autotestSession.updatedAt}`);
+      lines.push(`   Tunnel: ${tunnelInfo.tunnel} (Region: ${tunnelInfo.region}) | Public URL: ${tunnelInfo.publicUrl || '--'}`);
       lines.push('====================================================================');
 
       for (const [label, pc] of [['PC 1 (HOST / SINGAPORE)', autotestSession.pc1], ['PC 2 (REMOTE / BROTHER)', autotestSession.pc2]]) {
@@ -288,9 +370,21 @@ export function createCoopServer(options = {}) {
       return;
     }
 
-    if (msg.type === 'rom_info' || msg.type === 'rom_sync') {
-      peer.romCrc32 = msg.romCrc32 || peer.romCrc32;
-      peer.romName = msg.romName || peer.romName;
+    if (msg.type === 'gameplay_telemetry_ws' && (msg.telemetry || msg.payload)) {
+      const telObj = msg.telemetry || msg.payload;
+      const pIdx = telObj.playerIndex || peer.playerIndex || 1;
+      if (pIdx === 2) {
+        gameplayTelemetrySession.pc2 = telObj;
+      } else {
+        gameplayTelemetrySession.pc1 = telObj;
+      }
+      saveGameplayTelemetryToDisk();
+      return;
+    }
+
+    if (msg.type === 'rom_info' || msg.type === 'rom_sync' || msg.type === 'rom_status') {
+      peer.romCrc32 = msg.romCrc32 !== undefined ? msg.romCrc32 : peer.romCrc32;
+      peer.romName = msg.romName !== undefined ? msg.romName : peer.romName;
       if (typeof msg.isAutoDefaultRom === 'boolean') {
         peer.isAutoDefaultRom = msg.isAutoDefaultRom;
       }
@@ -303,6 +397,7 @@ export function createCoopServer(options = {}) {
       'resync_request',
       'console_reset',
       'rom_info',
+      'rom_status',
       'rom_request',
       'rom_sync',
       'webrtc_signal',
@@ -316,8 +411,11 @@ export function createCoopServer(options = {}) {
 
     if (
       forwardTypes.has(msg.type) ||
+      msg.type.startsWith('rom_') ||
+      msg.type.startsWith('match_') ||
       msg.type.startsWith('diag_') ||
-      msg.type.startsWith('autotest_')
+      msg.type.startsWith('autotest_') ||
+      msg.type.startsWith('telemetry_')
     ) {
       broadcastToRoom(peer.roomCode, peer.clientId, {
         ...msg,
@@ -365,8 +463,76 @@ export function createCoopServer(options = {}) {
 
     if (pathname === '/api/health') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ ok: true, activeRooms: rooms.size, accessLog }));
+      res.end(JSON.stringify({ ok: true, activeRooms: rooms.size, tunnelInfo, accessLog }));
       return;
+    }
+
+    if (pathname === '/api/tunnel-info') {
+      if (req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, tunnelInfo }));
+        return;
+      }
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk) => {
+          body += chunk;
+          if (body.length > 64 * 1024) req.destroy();
+        });
+        req.on('end', () => {
+          try {
+            const parsed = JSON.parse(body || '{}');
+            if (parsed.tunnel) tunnelInfo.tunnel = String(parsed.tunnel);
+            if (parsed.region) tunnelInfo.region = String(parsed.region);
+            if (parsed.publicUrl !== undefined) tunnelInfo.publicUrl = parsed.publicUrl;
+            tunnelInfo.updatedAt = new Date().toISOString();
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ ok: true, tunnelInfo }));
+          } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ ok: false, error: e.message }));
+          }
+        });
+        return;
+      }
+    }
+
+    if (pathname === '/api/gameplay-telemetry') {
+      if (req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, session: gameplayTelemetrySession }));
+        return;
+      }
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk) => {
+          body += chunk;
+          if (body.length > 4 * 1024 * 1024) req.destroy();
+        });
+        req.on('end', () => {
+          try {
+            const telemetry = JSON.parse(body || '{}');
+            if (telemetry.playerIndex === 2) {
+              gameplayTelemetrySession.pc2 = telemetry;
+            } else {
+              gameplayTelemetrySession.pc1 = telemetry;
+            }
+            saveGameplayTelemetryToDisk();
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end(
+              JSON.stringify({
+                ok: true,
+                savedTo: 'logs/gameplay_telemetry_latest.txt',
+                combinedText: gameplayTelemetrySession.combinedText
+              })
+            );
+          } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ ok: false, error: e.message }));
+          }
+        });
+        return;
+      }
     }
 
     if (pathname === '/api/autotest-report') {

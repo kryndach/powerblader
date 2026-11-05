@@ -191,6 +191,20 @@ export function patchJsnes8x16Sprites(nes) {
     return origScrollWrite(value);
   };
 
+  // Fix 1b: Track per-tile dirty epochs on CHR-RAM pattern table writes ($0000-$1FFF)
+  // so fast binary savestates only copy modified 8x8 tiles (e.g. Battletoads & Double Dragon Mapper 7).
+  ppu._nextTileEpoch = 1;
+  const origPatternWrite = ppu.patternWrite.bind(ppu);
+  ppu.patternWrite = function (address, value) {
+    const tileIndex = address >> 4;
+    const t = this.ptTile && this.ptTile[tileIndex];
+    if (t) {
+      this._nextTileEpoch = (this._nextTileEpoch || 1) + 1;
+      t._tileEpoch = this._nextTileEpoch;
+    }
+    return origPatternWrite(address, value);
+  };
+
   // Fix 2: 8x16 sprite rendering (fix odd-bank topTileNum + 256 without double-flipping vertFlip rows)
   ppu.renderSpritesPartially = function (startscan, scancount, bgPri) {
     if (this.f_spVisibility !== 1) return;
@@ -321,6 +335,7 @@ function createFastSnapshotSlot() {
     scantileRefs: new Array(32),
     attrib: new Int32Array(32),
     hasChrRam: false,
+    chrRamTileEpochs: new Uint32Array(512),
     chrRamPix: new Uint8Array(512 * 64),
     chrRamOpaque: new Uint8Array(512 * 8),
     sprPalette: new Uint32Array(16),
@@ -362,8 +377,12 @@ export function saveFastState(nes, slot, frameNum = 0) {
     const t = ppu.ptTile[i];
     slot.ptTileRefs[i] = t;
     if (hasChrRam && t) {
-      slot.chrRamPix.set(t.pix, i * 64);
-      slot.chrRamOpaque.set(t.opaque, i * 8);
+      const epoch = t._tileEpoch || 1;
+      if (slot.chrRamTileEpochs[i] !== epoch) {
+        slot.chrRamTileEpochs[i] = epoch;
+        slot.chrRamPix.set(t.pix, i * 64);
+        slot.chrRamOpaque.set(t.opaque, i * 8);
+      }
     }
   }
 
@@ -414,8 +433,13 @@ export function loadFastState(nes, slot) {
   for (let i = 0; i < 512; i++) {
     ppu.ptTile[i] = slot.ptTileRefs[i];
     if (slot.hasChrRam && ppu.ptTile[i]) {
-      ppu.ptTile[i].pix.set(slot.chrRamPix.subarray(i * 64, (i + 1) * 64));
-      ppu.ptTile[i].opaque.set(slot.chrRamOpaque.subarray(i * 8, (i + 1) * 8));
+      const t = ppu.ptTile[i];
+      const savedEpoch = slot.chrRamTileEpochs[i];
+      if ((t._tileEpoch || 1) !== savedEpoch) {
+        t._tileEpoch = savedEpoch;
+        t.pix.set(slot.chrRamPix.subarray(i * 64, (i + 1) * 64));
+        t.opaque.set(slot.chrRamOpaque.subarray(i * 8, (i + 1) * 8));
+      }
     }
   }
 
@@ -500,6 +524,7 @@ export class NesNetplayEngine {
     this.online = Boolean(options.online);
     this.inputDelayFrames = options.inputDelayFrames ?? 2;
     this.maxRollbackFrames = options.maxRollbackFrames ?? 20;
+    this.enableRiftPacing = Boolean(options.enableRiftPacing);
     this.historySize = 256;
     this.saveBufferSize = options.saveBufferSize ?? 64;
     this.sessionId = options.sessionId || 'default';
@@ -585,10 +610,14 @@ export class NesNetplayEngine {
     this.lastRollbackDepth = 0;
     this.maxRollbackDepthSeen = 0;
     this.stallFrames = 0;
+    this.riftFrames = 0;
+    this.riftWaitFrames = 0;
+    this._riftCooldown = 0;
     this.lastStepMs = 0;
 
     for (let i = 0; i < this.saveBufferSize; i++) {
       this.saveRing[i].frame = -1;
+      this.saveRing[i].chrRamTileEpochs.fill(0);
     }
     if (this.nes && this.nes.mmap) {
       saveFastState(this.nes, this.saveRing[startFrame % this.saveBufferSize], startFrame);
@@ -690,6 +719,14 @@ export class NesNetplayEngine {
           this.lastConfirmedRemoteFrame = f;
         }
       }
+    }
+
+    // Update GGPO Clock-Rift estimate: riftFrames = (myLead - peerLead) * 0.5
+    if (typeof packet.peerLead === 'number' && Number.isFinite(packet.peerLead)) {
+      const myLead =
+        this.currentFrame - Math.max(this.timelineStartFrame, this.lastConfirmedRemoteFrame);
+      const sampleRift = (myLead - packet.peerLead) * 0.5;
+      this.riftFrames = Number((this.riftFrames * 0.7 + sampleRift * 0.3).toFixed(2));
     }
 
     // Check deterministic hash if included
@@ -862,6 +899,31 @@ export class NesNetplayEngine {
       };
     }
 
+    // 2b. GGPO Clock-Rift / Frame-Advantage Pacing:
+    // If our clock has drifted > 1.75 frames ahead of peer's clock, gently hold 1 frame
+    // every 4-10 frames so both PCs stay balanced around riftFrames ≈ 0 without hitting hard stalls.
+    if (this.enableRiftPacing && this.riftFrames > 1.75) {
+      const cooldownTarget = this.riftFrames > 5 ? 4 : 10;
+      if (this._riftCooldown >= cooldownTarget) {
+        this._riftCooldown = 0;
+        this.riftWaitFrames++;
+        this._verifyConfirmedHashes();
+        const packetToSend = this._buildInputPacket(this.lastLocalScheduledFrame);
+        this.lastStepMs = performance.now() - t0;
+        return {
+          stepped: false,
+          stalled: false,
+          riftPaced: true,
+          packetToSend,
+          p1Mask: this.getPlayerInput(1, Math.max(this.timelineStartFrame, this.currentFrame - 1)),
+          p2Mask: this.getPlayerInput(2, Math.max(this.timelineStartFrame, this.currentFrame - 1))
+        };
+      }
+      this._riftCooldown++;
+    } else {
+      this._riftCooldown = 0;
+    }
+
     // 3. Schedule local input at (currentFrame + inputDelayFrames) without overwriting already-sent frames
     const targetInputFrame = Math.max(
       this.lastLocalScheduledFrame + 1,
@@ -921,6 +983,7 @@ export class NesNetplayEngine {
       sessionId: this.sessionId,
       player: this.localPlayer,
       startFrame: latestScheduledFrame,
+      peerLead: this.currentFrame - Math.max(this.timelineStartFrame, this.lastConfirmedRemoteFrame),
       inputs
     };
     // Attach most recent confirmed hash checkpoint (where both P1 and P2 inputs are confirmed)
@@ -1056,6 +1119,8 @@ export class NesNetplayEngine {
       currentFrame: this.currentFrame,
       lastConfirmedRemoteFrame: this.lastConfirmedRemoteFrame,
       frameAdvantage: this.currentFrame - Math.max(0, this.lastConfirmedRemoteFrame),
+      riftFrames: this.riftFrames,
+      riftWaitFrames: this.riftWaitFrames,
       inputDelayFrames: this.inputDelayFrames,
       maxRollbackFrames: this.maxRollbackFrames,
       rollbacksTotal: this.rollbacksTotal,
