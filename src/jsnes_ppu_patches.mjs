@@ -63,12 +63,26 @@ export function patchJsnes8x16Sprites(nes) {
     };
   }
 
-  if (!nes.ppu || nes.ppu._patched8x16) return;
+  if (!nes.ppu) return;
   const ppu = nes.ppu;
+  if (ppu.vramMirrorTable) {
+    for (let a = 0x3f20; a < 0x4000; a++) {
+      ppu.vramMirrorTable[a] = 0x3f00 | (a & 0x1f);
+    }
+  }
+  if (ppu._patched8x16) return;
   ppu._patched8x16 = true;
   ppu._hasTightWaitLoop = false;
   ppu._overclockScanlines = 0;
   ppu._inOverclock = false;
+
+  const origMirroredWrite = ppu.mirroredWrite.bind(ppu);
+  ppu.mirroredWrite = function (address, value) {
+    if ((address & 0x3fff) >= 0x3f00) {
+      return origMirroredWrite(0x3f00 | (address & 0x1f), value);
+    }
+    return origMirroredWrite(address, value);
+  };
 
   const origEndScanline = ppu.endScanline.bind(ppu);
   ppu.endScanline = function () {
@@ -148,6 +162,9 @@ export function patchJsnes8x16Sprites(nes) {
     const cached = this._mirrorCache.get(mirroring);
     if (!cached) {
       origSetMirroring(mirroring);
+      for (let a = 0x3f20; a < 0x4000; a++) {
+        this.vramMirrorTable[a] = 0x3f00 | (a & 0x1f);
+      }
       this._mirrorCache.set(mirroring, {
         vramSlice: this.vramMirrorTable.slice(0x2000, 0x3000),
         ntable1: this.ntable1.slice(0, 4)

@@ -103,6 +103,7 @@ async function runRealRomsSuite() {
     const hashNormal = formatHex32(computeDeterministicHash(nesNormal));
     const hashHeadless = formatHex32(computeDeterministicHash(nesHeadless));
     assert.strictEqual(hashHeadless, hashNormal);
+    assert.ok(nesNormal.ppu.vramMem.subarray(0x3f00, 0x3f20).some((v) => v));
     const avgNormalMs = normalMs / 360;
     const avgHeadlessMs = headlessMs / 360;
     assert.ok(avgNormalMs < 5.0);
