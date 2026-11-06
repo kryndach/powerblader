@@ -145,6 +145,22 @@ button.active-toggle {
   color: var(--cyan);
 }
 
+#localRomSelect { width: 170px; text-overflow: ellipsis; }
+#topInputDelaySelect { width: 148px; }
+#connectBtn { min-width: 82px; justify-content: center; }
+
+.save-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #0d0e12;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+#saveSlotSelect { width: 118px; border: none; padding: 4px; }
+
 .vol-box {
   display: inline-flex;
   align-items: center;
@@ -173,35 +189,74 @@ button.active-toggle {
   color: var(--muted);
   min-width: 30px;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .status-strip {
   width: 100%;
   max-width: 1080px;
+  height: 36px;
   background: #13151c;
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 7px 14px;
+  padding: 0 14px;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   font-size: 0.8rem;
+  overflow: hidden;
 }
 
 .status-left {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+#statusText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-right {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
+  flex-wrap: nowrap;
+  flex: 0 0 auto;
+  gap: 8px;
   color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+#romBadge {
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+}
+
+#roleBadge {
+  width: 118px;
+  text-align: center;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+#pingBadge {
+  width: 86px;
+  text-align: right;
+  display: inline-block;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .led {
@@ -210,22 +265,11 @@ button.active-toggle {
   border-radius: 50%;
   background: var(--muted);
   display: inline-block;
+  flex-shrink: 0;
 }
-
-.led.ok {
-  background: var(--ok);
-  box-shadow: 0 0 8px var(--ok);
-}
-
-.led.warn {
-  background: var(--warn);
-  box-shadow: 0 0 8px var(--warn);
-}
-
-.led.err {
-  background: var(--err);
-  box-shadow: 0 0 8px var(--err);
-}
+.led.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.led.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.led.err { background: var(--err); box-shadow: 0 0 8px var(--err); }
 
 .workspace {
   width: 100%;

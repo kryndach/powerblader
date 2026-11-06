@@ -49,7 +49,22 @@
     advancing PPU scroll counters in `O(1)` (`~2x` faster rollbacks).
 - **Fast `Uint8Array.set` Bank Switching & Mirroring Cache:**
   - Replaces `jsnes` byte-by-byte bank-switch loops and 56,192-iteration
-    `setMirroring` loops with native `Uint8Array.set` and a 4-entry cache.
+    `setMirroring` loops with native `Uint8Array.set`, PRG/VROM bank caching
+    (`_bankAt8000`, `_bankAtC000`, `_vromAt0000`, `_vromAt1000`), and a 4-entry
+    mirroring cache.
+- **Smart Post-Render Anti-Lag Overclock & 16-Sprite-Per-Scanline Renderer:**
+  - In `src/jsnes_mapper_and_sprite_patches.mjs`, detects whether the 6502 CPU
+    has reached its NMI-wait spin loop (`isCpuInTightWaitLoop`) at post-render
+    scanline `261`. On heavy frames (e.g., *Chip 'n Dale Rescue Rangers 2* with
+    many active objects/boxes/enemies), grants up to `240` extra post-render
+    scanlines (`2x` CPU clock boost) with APU audio synthesis paused so the
+    6502 CPU finishes its object loop before VBlank NMI without altering audio
+    pitch or visible scanline timing. Also renders up to `16` sprites per
+    scanline (`_noSpriteLimit`) to prevent sprite drop/flicker.
+- **Save Slots (1-5) & Fast Save/Load (`F5`/`F8`) with Online Sync:**
+  - `public/js/save_slots.mjs` persists 5 save slots per ROM CRC32 in memory
+    and `localStorage`, and automatically broadcasts `state_sync` when loading
+    a slot during 2-PC online co-op.
 
 ## 3. Fast Binary Savestates & DRC Audio Resampling
 

@@ -81,5 +81,8 @@ export const PPU_SCALAR_PROPS = [
   'frameEnded',
   'dummyCycleToggle',
   'validTileData',
-  'scanlineAlreadyRendered'
+  'scanlineAlreadyRendered',
+  '_hasTightWaitLoop',
+  '_overclockScanlines',
+  '_inOverclock'
 ];

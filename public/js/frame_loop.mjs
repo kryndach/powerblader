@@ -35,7 +35,9 @@ function pollGamepadMask() {
   return m;
 }
 
-export function startConsoleFrameLoop(state, ui, transport, telemetry) {
+export function startConsoleFrameLoop(
+  state, ui, transport, telemetry, saveSlots
+) {
   let localButtonsMask = 0;
 
   window.addEventListener('keydown', (e) => {
@@ -44,6 +46,28 @@ export function startConsoleFrameLoop(state, ui, transport, telemetry) {
       document.activeElement === ui.roomInput
     ) {
       return;
+    }
+    if (saveSlots && !e.repeat) {
+      if (e.code === 'F5') {
+        e.preventDefault();
+        saveSlots.saveToCurrentSlot();
+        return;
+      }
+      if (e.code === 'F8') {
+        e.preventDefault();
+        saveSlots.loadFromCurrentSlot();
+        return;
+      }
+      if (
+        e.code >= 'Digit1' &&
+        e.code <= 'Digit5' &&
+        !e.ctrlKey &&
+        !e.metaKey
+      ) {
+        e.preventDefault();
+        saveSlots.selectSlot(Number(e.code.slice(-1)), true);
+        return;
+      }
     }
     const bit = KEY_MAP[e.code];
     if (bit !== undefined) {

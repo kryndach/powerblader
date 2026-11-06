@@ -195,6 +195,7 @@ export function createRomSyncManager(state, ui, audio) {
         startLockstepMatchAtFrameZero('Both PCs selected same ROM');
       }
     }
+    if (typeof state.onRomLoaded === 'function') state.onRomLoaded();
     ui.updateStatusStrip();
   }
 
@@ -335,6 +336,7 @@ export function createRomSyncManager(state, ui, audio) {
 
   return {
     resolveDesiredInputDelay,
+    armSyncAckWatchdog,
     loadRomFromUint8,
     startLockstepMatchAtFrameZero,
     sendRomAndStateToPeer,

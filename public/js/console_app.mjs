@@ -5,6 +5,7 @@ import { createRomSyncManager } from './rom_sync.mjs';
 import { createNetTransport } from './webrtc_p2p.mjs';
 import { createTelemetryReporter } from './telemetry_reporter.mjs';
 import { createProtocolHandlers } from './net_protocol_handlers.mjs';
+import { createSaveSlotsManager } from './save_slots.mjs';
 import { startConsoleFrameLoop } from './frame_loop.mjs';
 
 const state = {
@@ -71,6 +72,8 @@ const transport = createNetTransport(state, ui, (msg, src) => {
   if (protocol) protocol.handleIncomingNetMessage(msg, src);
 });
 const romSync = createRomSyncManager(state, ui, audio);
+const saveSlots = createSaveSlotsManager(state, ui, romSync);
+state.onRomLoaded = () => saveSlots.updateSlotSelectLabels();
 const telemetry = createTelemetryReporter(state, ui, romSync);
 protocol = createProtocolHandlers(state, ui, romSync, transport, telemetry);
 
@@ -317,7 +320,23 @@ window.addEventListener('drop', async (e) => {
   }
 });
 
-startConsoleFrameLoop(state, ui, transport, telemetry);
+if (ui.saveSlotSelect) {
+  ui.saveSlotSelect.addEventListener('change', () => {
+    saveSlots.selectSlot(Number(ui.saveSlotSelect.value), true);
+  });
+}
+if (ui.quickSaveBtn) {
+  ui.quickSaveBtn.addEventListener('click', () => {
+    saveSlots.saveToCurrentSlot();
+  });
+}
+if (ui.quickLoadBtn) {
+  ui.quickLoadBtn.addEventListener('click', () => {
+    saveSlots.loadFromCurrentSlot();
+  });
+}
+
+startConsoleFrameLoop(state, ui, transport, telemetry, saveSlots);
 await romSync.discoverLocalRoms();
 if (params.get('room')) {
   connectToRoom();

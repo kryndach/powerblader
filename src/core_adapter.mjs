@@ -94,6 +94,8 @@ export class NesCoreAdapter {
     if (this.nes && this.nes.mmap) {
       this.nes.mmap._bankAt8000 = -1;
       this.nes.mmap._bankAtC000 = -1;
+      this.nes.mmap._vromAt0000 = -1;
+      this.nes.mmap._vromAt1000 = -1;
       saveFastState(this.nes, initSlot, startFrame);
     }
   }

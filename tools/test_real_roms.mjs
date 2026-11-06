@@ -265,6 +265,58 @@ async function runRealRomsSuite() {
   runStage4AsymmetricDelay(romFiles, LOCAL_ROMS_DIR);
   runStage5PowerBladeHudAndAudio(romFiles, LOCAL_ROMS_DIR);
 
+  // Stage 6: Chip 'n Dale 2 Anti-Lag Overclock & Save-Slot Sync Verification
+  const cndFile = romFiles.find((f) => f.toLowerCase().includes('chip'));
+  if (cndFile) {
+    const bin = fs.readFileSync(
+      path.join(LOCAL_ROMS_DIR, cndFile),
+      'binary'
+    );
+    const nes1 = new jsnes.NES({});
+    const nes2 = new jsnes.NES({});
+    nes1.loadROM(bin);
+    nes2.loadROM(bin);
+    const eng1 = new NesNetplayEngine(nes1, { localPlayer: 1, online: true });
+    const eng2 = new NesNetplayEngine(nes2, { localPlayer: 2, online: true });
+
+    let savedSlot1 = null;
+    for (let f = 0; f < 650; f++) {
+      const m1 = (f % 40 === 10 ? INPUT_BITS.START : 0) | INPUT_BITS.RIGHT;
+      const m2 = (f % 40 === 20 ? INPUT_BITS.START : 0) | INPUT_BITS.A;
+      const r1 = eng1.stepNetplayFrame(m1);
+      const r2 = eng2.stepNetplayFrame(m2);
+      if (r1.packetToSend) eng2.receiveRemoteInputPacket(r1.packetToSend);
+      if (r2.packetToSend) eng1.receiveRemoteInputPacket(r2.packetToSend);
+      if (f === 320) savedSlot1 = eng1.exportSyncState();
+    }
+
+    assert.strictEqual(nes1.ppu._hasTightWaitLoop, true);
+    assert.strictEqual(nes1.ppu._noSpriteLimit, true);
+    assert.ok(savedSlot1 && savedSlot1.frame === 321);
+
+    // Fast Load Slot 1 on both PCs and verify deterministic lockstep resume
+    const resumeState = { ...savedSlot1, sessionId: 'slot1_loaded' };
+    eng1.importSyncState(resumeState, { preserveLocalInputDelay: true });
+    eng2.importSyncState(resumeState, { preserveLocalInputDelay: true });
+    assert.strictEqual(
+      computeDeterministicHash(nes1),
+      computeDeterministicHash(nes2)
+    );
+    for (let f = 0; f < 60; f++) {
+      const r1 = eng1.stepNetplayFrame(INPUT_BITS.RIGHT | INPUT_BITS.B);
+      const r2 = eng2.stepNetplayFrame(INPUT_BITS.LEFT | INPUT_BITS.A);
+      if (r1.packetToSend) eng2.receiveRemoteInputPacket(r1.packetToSend);
+      if (r2.packetToSend) eng1.receiveRemoteInputPacket(r2.packetToSend);
+    }
+    const h1 = formatHex32(computeDeterministicHash(nes1));
+    const h2 = formatHex32(computeDeterministicHash(nes2));
+    assert.strictEqual(h1, h2);
+    console.log(
+      `[PASS] Stage 6 (${cndFile}): Anti-Lag Post-Render Overclock, ` +
+        `16-Sprite Limit & Save-Slot Fast Load Sync Verified (Hash=${h1})`
+    );
+  }
+
   console.log('\nALL REAL NES ROM & ADVANCED NETCODE TESTS PASSED!');
 }
 

@@ -43,6 +43,17 @@
     <!-- Console Controls -->
     <div class="deck-group">
       <button id="resetBtn" title="Reset NES console at Frame #0">Reset</button>
+      <div class="save-box" title="Fast Save &amp; Load Slots (F5 / F8)">
+        <select id="saveSlotSelect" title="Select Save Slot (Keys 1-5)">
+          <option value="1">Slot 1 [Empty]</option>
+          <option value="2">Slot 2 [Empty]</option>
+          <option value="3">Slot 3 [Empty]</option>
+          <option value="4">Slot 4 [Empty]</option>
+          <option value="5">Slot 5 [Empty]</option>
+        </select>
+        <button id="quickSaveBtn" title="Fast Save to Slot (F5)">Save</button>
+        <button id="quickLoadBtn" title="Fast Load from Slot (F8)">Load</button>
+      </div>
       <select id="topInputDelaySelect"
         title="Select Local Input Lag vs Smoothness (Independent per PC)">
         <option value="0">Lag: 0f (0ms Instant)</option>
@@ -145,10 +156,11 @@
       <div class="bezel-footer">
         <div>
           Move: <span class="kbd">WASD</span>/<span class="kbd">Arrows</span>
-          &nbsp; Jump (A): <span class="kbd">Z</span>/<span class="kbd">J</span>
-          &nbsp; Fire (B): <span class="kbd">X</span>/<span class="kbd">K</span>
-          &nbsp; Select: <span class="kbd">Shift</span>
-          &nbsp; Start: <span class="kbd">Enter</span>
+          &nbsp; A/B: <span class="kbd">Z</span>/<span class="kbd">X</span>
+          &nbsp; Sel/Sta: <span class="kbd">Shift</span>/<span
+            class="kbd">Enter</span>
+          &nbsp; Save/Load: <span class="kbd">F5</span>/<span
+            class="kbd">F8</span> (<span class="kbd">1-5</span>)
         </div>
         <div><span id="fpsLabel">60.0 FPS</span></div>
       </div>

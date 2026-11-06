@@ -1,172 +1,11 @@
-// jsnes PPU Accuracy, HBlank Scroll Split, 8x16 Sprite & Headless Speed Patches
+// jsnes PPU Accuracy, HBlank Scroll Split, Headless Speed & Anti-Lag Overclock
+import {
+  patchFastMapperBankSwitching,
+  patch8x16SpriteRenderer,
+  isCpuInTightWaitLoop
+} from './jsnes_mapper_and_sprite_patches.mjs';
 
-function patchFastMapperBankSwitching(mmap) {
-  if (!mmap || mmap._fastBankPatched) return;
-  mmap._fastBankPatched = true;
-  mmap._bankAt8000 = -1;
-  mmap._bankAtC000 = -1;
-
-  mmap.loadRomBank = function (bank, address) {
-    const romCount = this.nes.rom ? this.nes.rom.romCount : 0;
-    if (!romCount) return;
-    bank %= romCount;
-    if (address === 0x8000) {
-      if (this._bankAt8000 === bank) return;
-      this._bankAt8000 = bank;
-    } else if (address === 0xc000) {
-      if (this._bankAtC000 === bank) return;
-      this._bankAtC000 = bank;
-    }
-    this.nes.cpu.mem.set(this.nes.rom.rom[bank], address);
-  };
-
-  mmap.load32kRomBank = function (bank, address) {
-    const romCount = this.nes.rom ? this.nes.rom.romCount : 0;
-    if (!romCount) return;
-    const b0 = (bank * 2) % romCount;
-    const b1 = (bank * 2 + 1) % romCount;
-    if (
-      address === 0x8000 &&
-      this._bankAt8000 === b0 &&
-      this._bankAtC000 === b1
-    ) {
-      return;
-    }
-    if (address === 0x8000) {
-      this._bankAt8000 = b0;
-      this._bankAtC000 = b1;
-    }
-    this.nes.cpu.mem.set(this.nes.rom.rom[b0], address);
-    this.nes.cpu.mem.set(this.nes.rom.rom[b1], address + 16384);
-  };
-
-  mmap.load8kRomBank = function (bank8k, address) {
-    const romCount = this.nes.rom ? this.nes.rom.romCount : 0;
-    if (!romCount) return;
-    this._bankAt8000 = -1;
-    this._bankAtC000 = -1;
-    const bank16k = (bank8k >> 1) % romCount;
-    const offset = (bank8k & 1) << 13;
-    const slice = this.nes.rom.rom[bank16k].subarray(offset, offset + 8192);
-    this.nes.cpu.mem.set(slice, address);
-  };
-
-  mmap.loadVromBank = function (bank, address) {
-    const vromCount = this.nes.rom ? this.nes.rom.vromCount : 0;
-    if (vromCount === 0) return;
-    this.nes.ppu.triggerRendering();
-    const b = bank % vromCount;
-    this.nes.ppu.vramMem.set(this.nes.rom.vrom[b], address);
-    const vromTile = this.nes.rom.vromTile[b];
-    const baseIndex = address >> 4;
-    const ptTile = this.nes.ppu.ptTile;
-    for (let i = 0; i < 256; i++) ptTile[baseIndex + i] = vromTile[i];
-  };
-
-  mmap.load1kVromBank = function (bank1k, address) {
-    const vromCount = this.nes.rom ? this.nes.rom.vromCount : 0;
-    if (vromCount === 0) return;
-    this.nes.ppu.triggerRendering();
-    const bank4k = Math.floor(bank1k / 4) % vromCount;
-    const off = (bank1k % 4) * 1024;
-    const slice = this.nes.rom.vrom[bank4k].subarray(off, off + 1024);
-    this.nes.ppu.vramMem.set(slice, address);
-    const vromTile = this.nes.rom.vromTile[bank4k];
-    const baseIndex = address >> 4;
-    const tileOff = (bank1k % 4) << 6;
-    const ptTile = this.nes.ppu.ptTile;
-    for (let i = 0; i < 64; i++) ptTile[baseIndex + i] = vromTile[tileOff + i];
-  };
-
-  mmap.load2kVromBank = function (bank2k, address) {
-    const vromCount = this.nes.rom ? this.nes.rom.vromCount : 0;
-    if (vromCount === 0) return;
-    this.nes.ppu.triggerRendering();
-    const bank4k = Math.floor(bank2k / 2) % vromCount;
-    const off = (bank2k % 2) * 2048;
-    const slice = this.nes.rom.vrom[bank4k].subarray(off, off + 2048);
-    this.nes.ppu.vramMem.set(slice, address);
-    const vromTile = this.nes.rom.vromTile[bank4k];
-    const baseIndex = address >> 4;
-    const tileOff = (bank2k % 2) << 7;
-    const ptTile = this.nes.ppu.ptTile;
-    for (let i = 0; i < 128; i++) ptTile[baseIndex + i] = vromTile[tileOff + i];
-  };
-}
-
-function patch8x16SpriteRenderer(ppu) {
-  ppu.renderSpritesPartially = function (startscan, scancount, bgPri) {
-    if (this.f_spVisibility !== 1) return;
-    const mmap = this.nes.mmap;
-    const ptTile = this.ptTile;
-    const buffer = this.buffer;
-    const sprPalette = this.sprPalette;
-    const pixrendered = this.pixrendered;
-
-    for (let scan = startscan; scan < startscan + scancount; scan++) {
-      if (scan < 0 || scan >= 240) continue;
-      const count = this.scanlineSpriteCount[scan];
-      if (count === 0) continue;
-      const oamBase = scan * 32;
-
-      for (let i = 0; i < count; i++) {
-        const sprY = this.scanlineSecondaryOAM[oamBase + i * 4 + 0];
-        const sprTile = this.scanlineSecondaryOAM[oamBase + i * 4 + 1];
-        const sprAttr = this.scanlineSecondaryOAM[oamBase + i * 4 + 2];
-        const sprX = this.scanlineSecondaryOAM[oamBase + i * 4 + 3];
-
-        const vertFlip = (sprAttr >> 7) & 1;
-        const horiFlip = (sprAttr >> 6) & 1;
-        const priority = (sprAttr >> 5) & 1;
-        const palAdd = (sprAttr & 3) << 2;
-        if (priority !== bgPri) continue;
-
-        if (this.f_spriteSize === 0) {
-          const tileIdx =
-            this.f_spPatternTable === 0 ? sprTile : sprTile + 256;
-          const sprBaseAddr = this.f_spPatternTable === 0 ? 0x0000 : 0x1000;
-          const dy = sprY + 1;
-          const fineY = scan - dy;
-          if (fineY < 0 || fineY >= 8) continue;
-
-          const t = mmap.getSpritePatternTile
-            ? mmap.getSpritePatternTile(tileIdx)
-            : ptTile[tileIdx];
-          if (t) {
-            t.render(
-              buffer, 0, fineY, 8, fineY + 1, sprX, dy,
-              palAdd, sprPalette, horiFlip, vertFlip, i, pixrendered
-            );
-          }
-          mmap.latchAccess(sprBaseAddr + sprTile * 16 + 8);
-        } else {
-          const sprBaseAddr = (sprTile & 1) !== 0 ? 0x1000 : 0x0000;
-          const topTileNum = sprTile & 0xfe;
-          const top = (sprTile & 1) !== 0 ? topTileNum + 256 : topTileNum;
-          const dy = sprY + 1;
-          const fineY = scan - dy;
-          if (fineY < 0 || fineY >= 16) continue;
-
-          const isTopHalf = fineY < 8;
-          const tileOff = isTopHalf ? (vertFlip ? 1 : 0) : vertFlip ? 0 : 1;
-          const tileFineY = isTopHalf ? fineY : fineY - 8;
-          const t = mmap.getSpritePatternTile
-            ? mmap.getSpritePatternTile(top + tileOff)
-            : ptTile[top + tileOff];
-          if (t) {
-            t.render(
-              buffer, 0, tileFineY, 8, tileFineY + 1, sprX,
-              dy + (isTopHalf ? 0 : 8), palAdd, sprPalette,
-              horiFlip, vertFlip, i, pixrendered
-            );
-          }
-          mmap.latchAccess(sprBaseAddr + topTileNum * 16 + 8);
-          mmap.latchAccess(sprBaseAddr + (topTileNum + 1) * 16 + 8);
-        }
-      }
-    }
-  };
-}
+const MAX_POST_RENDER_OVERCLOCK_SCANLINES = 240;
 
 export function patchJsnes8x16Sprites(nes) {
   if (!nes) return;
@@ -208,9 +47,54 @@ export function patchJsnes8x16Sprites(nes) {
   }
 
   patchFastMapperBankSwitching(nes.mmap);
+
+  if (nes.papu && !nes.papu._patchedOverclockGuard) {
+    nes.papu._patchedOverclockGuard = true;
+    const papu = nes.papu;
+    const origClockFrame = papu.clockFrameCounter.bind(papu);
+    papu.clockFrameCounter = function (nCycles, alreadyAdvanced) {
+      if (this.nes.ppu && this.nes.ppu._inOverclock) return;
+      return origClockFrame(nCycles, alreadyAdvanced);
+    };
+    const origAdvanceFrame = papu.advanceFrameCounter.bind(papu);
+    papu.advanceFrameCounter = function (nCycles) {
+      if (this.nes.ppu && this.nes.ppu._inOverclock) return;
+      return origAdvanceFrame(nCycles);
+    };
+  }
+
   if (!nes.ppu || nes.ppu._patched8x16) return;
   const ppu = nes.ppu;
   ppu._patched8x16 = true;
+  ppu._hasTightWaitLoop = false;
+  ppu._overclockScanlines = 0;
+  ppu._inOverclock = false;
+
+  const origEndScanline = ppu.endScanline.bind(ppu);
+  ppu.endScanline = function () {
+    if (
+      this.scanline === 261 &&
+      this.f_nmiOnVblank === 1 &&
+      (this.f_bgVisibility === 1 || this.f_spVisibility === 1)
+    ) {
+      const waiting = isCpuInTightWaitLoop(this.nes.cpu);
+      if (waiting) {
+        this._hasTightWaitLoop = true;
+      } else if (
+        this._hasTightWaitLoop &&
+        this._overclockScanlines < MAX_POST_RENDER_OVERCLOCK_SCANLINES
+      ) {
+        this._overclockScanlines++;
+        this._inOverclock = true;
+        this.regsToAddress();
+        this.cntsToAddress();
+        return;
+      }
+    }
+    this._overclockScanlines = 0;
+    this._inOverclock = false;
+    return origEndScanline();
+  };
 
   function flushCurrentScanlineIfHblank() {
     if (

@@ -198,7 +198,7 @@ export class RollbackNetplayEngine {
     this.core.loadState(slot);
     this.suppressCallbacks = true;
     for (let f = rbFrame; f < this.currentFrame; f++) {
-      if (f > rbFrame) {
+      if (f > rbFrame && f >= this.lastConfirmedRemoteFrame) {
         this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
       }
       const m1 = this.getPlayerInput(1, f);

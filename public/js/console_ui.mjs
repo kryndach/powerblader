@@ -17,7 +17,8 @@ function formatMaskShort(mask) {
 
 const UI_IDS = [
   'localRomSelect', 'romFileInput', 'nickInput', 'roomInput', 'connectBtn',
-  'copyLinkBtn', 'resetBtn', 'topInputDelaySelect', 'muteBtn', 'volumeSlider',
+  'copyLinkBtn', 'resetBtn', 'saveSlotSelect', 'quickSaveBtn', 'quickLoadBtn',
+  'topInputDelaySelect', 'muteBtn', 'volumeSlider',
   'volumeValLabel', 'crtToggleBtn', 'scanlinesOverlay', 'debugToggleBtn',
   'debugDrawer', 'autoBenchLink', 'netBenchLink', 'lobbyOverlay',
   'lobbyRoomBadge', 'lobbySlotP1', 'lobbyP1Name', 'lobbyP1Rom', 'lobbyP1Badge',

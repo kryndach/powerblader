@@ -111,6 +111,8 @@ export function loadFastState(nes, slot) {
   if (nes.mmap) {
     nes.mmap._bankAt8000 = -1;
     nes.mmap._bankAtC000 = -1;
+    nes.mmap._vromAt0000 = -1;
+    nes.mmap._vromAt1000 = -1;
   }
 
   cpu.mem.set(slot.cpuMem);

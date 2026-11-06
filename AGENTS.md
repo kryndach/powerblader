@@ -61,15 +61,17 @@ rules before committing:
     masks, asymmetric input delay (`0f..5f`), clock-rift pacing, and smoothing.
   - `src/core_adapter.mjs` — Multi-console adapter (`NesCoreAdapter` +
     `GenericCoreAdapter`) & `CONSOLE_PROFILES` (`nes`, `sega_md`, `n3ds`).
-  - `src/jsnes_ppu_patches.mjs` & `src/ppu_register_tables.mjs` —
-    `patchJsnes8x16Sprites` (HBlank `$2006`/`$2005`/`$2000` scanline flush for
-    steady HUDs, 8x16 sprites, headless PPU).
+  - `src/jsnes_ppu_patches.mjs`, `src/jsnes_mapper_and_sprite_patches.mjs` &
+    `src/ppu_register_tables.mjs` — `patchJsnes8x16Sprites` (HBlank `$2006` /
+    `$2005` / `$2000` scanline flush, 8x16 sprites, 16-sprite scanline limit,
+    and deterministic post-render anti-lag CPU overclock).
   - `src/fast_savestate.mjs` — Zero-GC binary snapshots (`saveFastState` /
     `loadFastState`), dirty-epoch CHR-RAM, and compact `exportSyncState`.
   - `src/crc32.mjs` — Precomputed CRC32, hex formatting, and RAM/VRAM hashing.
 - **`public/` (Browser Frontend):**
   - `public/index.html`, `public/css/`, `public/js/` — Main NES Netplay Console,
-    48kHz DRC fractional audio resampler, Dual-WSS + WebRTC transport, Lobby.
+    5-slot fast save/load (`save_slots.mjs`), 48kHz DRC fractional resampler,
+    Dual-WSS + WebRTC transport, Lobby.
   - `public/autotest.html` & `public/net_debug.html` — Zero-click 6-stage
     2-PC benchmark (`/autotest`) and interactive network workbench (`/nettest`).
 - **`server/` (FIFO WebSocket & HTTP Relay Server):**
