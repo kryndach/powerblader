@@ -1,10 +1,10 @@
 param(
   [ValidateSet("localhost.run", "pinggy")]
-  [string]$Tunnel = "localhost.run",
+  [string]$Tunnel = "pinggy",
   [ValidateSet("auto", "ap", "eu")]
-  [string]$Region = "auto",
+  [string]$Region = "ap",
   [ValidateSet("autotest", "nettest", "game")]
-  [string]$Mode = "autotest",
+  [string]$Mode = "game",
   [int]$Port = 8080
 )
 
@@ -12,18 +12,22 @@ $ErrorActionPreference = "Continue"
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $RootDir
 
+$sep = "================================================================"
 Write-Host ""
-Write-Host "====================================================================" -ForegroundColor Cyan
-Write-Host "   NES ONLINE & 2-PC AUTO-BENCHMARK ONE-CLICK LAUNCHER" -ForegroundColor Cyan
-Write-Host "====================================================================" -ForegroundColor Cyan
+Write-Host $sep -ForegroundColor Cyan
+Write-Host "   NES ONLINE & 2-PC AUTO-BENCHMARK ONE-CLICK LAUNCHER" `
+  -ForegroundColor Cyan
+Write-Host $sep -ForegroundColor Cyan
 
 # 1. Stop any existing process bound to $Port
-$existingConns = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+$existingConns = Get-NetTCPConnection -LocalPort $Port -State Listen `
+  -ErrorAction SilentlyContinue
 if ($existingConns) {
   foreach ($conn in $existingConns) {
     $pidToKill = $conn.OwningProcess
     if ($pidToKill -and $pidToKill -gt 4) {
-      Write-Host "[1/4] Stopping previous server on port $Port (PID $pidToKill)..." -ForegroundColor Yellow
+      Write-Host "[1/4] Stopping old server on port $Port ($pidToKill)..." `
+        -ForegroundColor Yellow
       Stop-Process -Id $pidToKill -Force -ErrorAction SilentlyContinue
     }
   }
@@ -31,11 +35,13 @@ if ($existingConns) {
 }
 
 # 2. Start Node.js Relay Server
-Write-Host "[2/4] Starting local Node.js Relay & Auto-Test Server on port $Port..." -ForegroundColor Green
-$nodeOut = Join-Path $RootDir "logs\server_stdout.log"
-$nodeErr = Join-Path $RootDir "logs\server_stderr.log"
-if (!(Test-Path (Join-Path $RootDir "logs"))) {
-  New-Item -ItemType Directory -Path (Join-Path $RootDir "logs") | Out-Null
+Write-Host "[2/4] Starting local Node.js Server on port $Port..." `
+  -ForegroundColor Green
+$logsDir = Join-Path $RootDir "logs"
+$nodeOut = Join-Path $logsDir "server_stdout.log"
+$nodeErr = Join-Path $logsDir "server_stderr.log"
+if (!(Test-Path $logsDir)) {
+  New-Item -ItemType Directory -Path $logsDir | Out-Null
 }
 
 $nodeProc = Start-Process -FilePath "node" `
@@ -46,12 +52,12 @@ $nodeProc = Start-Process -FilePath "node" `
   -NoNewWindow `
   -PassThru
 
-# Wait for /api/health
 $serverReady = $false
+$healthUrl = "http://localhost:$Port/api/health"
 for ($i = 0; $i -lt 25; $i++) {
   Start-Sleep -Milliseconds 250
   try {
-    $resp = Invoke-RestMethod -Uri "http://localhost:$Port/api/health" -TimeoutSec 1 -ErrorAction Stop
+    $resp = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 1 -ErrorAction Stop
     if ($resp.ok) {
       $serverReady = $true
       break
@@ -60,32 +66,43 @@ for ($i = 0; $i -lt 25; $i++) {
 }
 
 if (-not $serverReady) {
-  Write-Host "[ERROR] Node.js server failed to start on port $Port. Check logs/server_stderr.log." -ForegroundColor Red
-  if ($nodeProc -and !$nodeProc.HasExited) { Stop-Process -Id $nodeProc.Id -Force -ErrorAction SilentlyContinue }
+  Write-Host "[ERROR] Server failed on port $Port (logs/server_stderr.log)." `
+    -ForegroundColor Red
+  if ($nodeProc -and !$nodeProc.HasExited) {
+    Stop-Process -Id $nodeProc.Id -Force -ErrorAction SilentlyContinue
+  }
   exit 1
 }
-Write-Host "      Server is ONLINE at http://localhost:$Port" -ForegroundColor Green
+Write-Host "      Server is ONLINE at http://localhost:$Port" `
+  -ForegroundColor Green
 
 # 3. Start SSH Tunnel and capture public URL automatically
-$sshOut = Join-Path $RootDir "logs\tunnel_stdout.log"
-$sshErr = Join-Path $RootDir "logs\tunnel_stderr.log"
+$sshOut = Join-Path $logsDir "tunnel_stdout.log"
+$sshErr = Join-Path $logsDir "tunnel_stderr.log"
 Remove-Item $sshOut -Force -ErrorAction SilentlyContinue
 Remove-Item $sshErr -Force -ErrorAction SilentlyContinue
 
 if ($Tunnel -eq "pinggy") {
-  $tunnelKey = Join-Path $RootDir "logs\pinggy_ed25519"
+  $tunnelKey = Join-Path $logsDir "pinggy_ed25519"
   if (!(Test-Path $tunnelKey)) {
-    Write-Host "      Generating local SSH key for passwordless Pinggy tunnel..." -ForegroundColor DarkGray
+    Write-Host "      Generating local SSH key for Pinggy tunnel..." `
+      -ForegroundColor DarkGray
     cmd.exe /c "ssh-keygen -t ed25519 -f `"$tunnelKey`" -q -N `"`"" | Out-Null
   }
   $pinggyHost = "a.pinggy.io"
   if ($Region -eq "ap") { $pinggyHost = "ap.a.pinggy.io" }
   if ($Region -eq "eu") { $pinggyHost = "eu.a.pinggy.io" }
-  Write-Host "[3/4] Starting low-latency SSH tunnel via Pinggy ($pinggyHost, Region=$Region)..." -ForegroundColor Green
-  $sshArgs = "-T -p 443 -i `"$tunnelKey`" -o StrictHostKeyChecking=no -o BatchMode=yes -o ServerAliveInterval=15 -o IPQoS=lowdelay -R0:127.0.0.1:$Port $pinggyHost"
+  Write-Host "[3/4] Starting Pinggy SSH tunnel ($pinggyHost, $Region)..." `
+    -ForegroundColor Green
+  $sshOpts = "-T -p 443 -i `"$tunnelKey`" -o StrictHostKeyChecking=no " +
+    "-o BatchMode=yes -o ServerAliveInterval=15 -o IPQoS=lowdelay"
+  $sshArgs = "$sshOpts -R0:127.0.0.1:$Port $pinggyHost"
 } else {
-  Write-Host "[3/4] Starting SSH tunnel via localhost.run (with -T -o IPQoS=lowdelay)..." -ForegroundColor Green
-  $sshArgs = "-T -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o IPQoS=lowdelay -R 80:127.0.0.1:$Port nokey@localhost.run"
+  Write-Host "[3/4] Starting SSH tunnel via localhost.run..." `
+    -ForegroundColor Green
+  $sshOpts = "-T -o StrictHostKeyChecking=no -o ServerAliveInterval=15 " +
+    "-o IPQoS=lowdelay"
+  $sshArgs = "$sshOpts -R 80:127.0.0.1:$Port nokey@localhost.run"
 }
 
 $sshProc = Start-Process -FilePath "ssh.exe" `
@@ -97,13 +114,18 @@ $sshProc = Start-Process -FilePath "ssh.exe" `
   -PassThru
 
 $publicBaseUrl = $null
+$urlRegex = "(https://[a-zA-Z0-9\-\.]+\." +
+  "(lhr\.life|pinggy-free\.link|free\.pinggy\.net|pinggy\.link|pinggy\.online))"
 for ($i = 0; $i -lt 60; $i++) {
   Start-Sleep -Milliseconds 350
   $combined = ""
-  if (Test-Path $sshOut) { $combined += (Get-Content $sshOut -Raw -ErrorAction SilentlyContinue) + "`n" }
-  if (Test-Path $sshErr) { $combined += (Get-Content $sshErr -Raw -ErrorAction SilentlyContinue) + "`n" }
-
-  if ($combined -match "(https://[a-zA-Z0-9\-\.]+\.(lhr\.life|pinggy-free\.link|free\.pinggy\.net|pinggy\.link|pinggy\.online))") {
+  if (Test-Path $sshOut) {
+    $combined += (Get-Content $sshOut -Raw -ErrorAction SilentlyContinue) + "`n"
+  }
+  if (Test-Path $sshErr) {
+    $combined += (Get-Content $sshErr -Raw -ErrorAction SilentlyContinue) + "`n"
+  }
+  if ($combined -match $urlRegex) {
     $publicBaseUrl = $Matches[1]
     break
   }
@@ -114,6 +136,7 @@ if ($Mode -eq "nettest") { $pathSuffix = "/nettest?room=NOVA" }
 if ($Mode -eq "game") { $pathSuffix = "/?room=NOVA" }
 
 $localUrl = "http://localhost:$Port$pathSuffix"
+$infoUrl = "http://localhost:$Port/api/tunnel-info"
 
 try {
   $tunnelInfoBody = @{
@@ -121,7 +144,9 @@ try {
     region = $Region
     publicUrl = $publicBaseUrl
   } | ConvertTo-Json -Compress
-  Invoke-RestMethod -Uri "http://localhost:$Port/api/tunnel-info" -Method Post -Body $tunnelInfoBody -ContentType "application/json" -TimeoutSec 2 -ErrorAction SilentlyContinue | Out-Null
+  Invoke-RestMethod -Uri $infoUrl -Method Post -Body $tunnelInfoBody `
+    -ContentType "application/json" -TimeoutSec 2 `
+    -ErrorAction SilentlyContinue | Out-Null
 } catch {}
 
 if ($publicBaseUrl) {
@@ -129,47 +154,62 @@ if ($publicBaseUrl) {
   try { Set-Clipboard -Value $broUrl } catch {}
 
   Write-Host ""
-  Write-Host "====================================================================" -ForegroundColor Green
-  Write-Host "   READY! NO ROOM CODE NEEDED -- JUST OPEN THESE LINKS:" -ForegroundColor Green
-  Write-Host "====================================================================" -ForegroundColor Green
+  Write-Host $sep -ForegroundColor Green
+  Write-Host "   READY! NO ROOM CODE NEEDED -- JUST OPEN THESE LINKS:" `
+    -ForegroundColor Green
+  Write-Host $sep -ForegroundColor Green
   Write-Host ""
-  Write-Host "  1. SEND THIS LINK TO BROTHER (Already copied to your Clipboard!):" -ForegroundColor Yellow
+  Write-Host "  1. SEND THIS LINK TO BROTHER (Copied to Clipboard!):" `
+    -ForegroundColor Yellow
   Write-Host "     $broUrl" -ForegroundColor White
   Write-Host ""
-  Write-Host "  2. YOUR LOCAL LINK (Opening in your browser now...):" -ForegroundColor Cyan
+  Write-Host "  2. YOUR LOCAL LINK (Opening in your browser now...):" `
+    -ForegroundColor Cyan
   Write-Host "     $localUrl" -ForegroundColor White
   Write-Host ""
-  Write-Host "  Other Direct Links (Zero Room Setup):" -ForegroundColor DarkGray
+  Write-Host "  Other Direct Links:" -ForegroundColor DarkGray
   Write-Host "     Auto-Tester:  $publicBaseUrl/autotest" -ForegroundColor Gray
-  Write-Host "     Workbench:    $publicBaseUrl/nettest?room=NOVA" -ForegroundColor Gray
-  Write-Host "     NES Console:  $publicBaseUrl/?room=NOVA" -ForegroundColor Gray
-  Write-Host "====================================================================" -ForegroundColor Green
+  Write-Host "     Workbench:    $publicBaseUrl/nettest?room=NOVA" `
+    -ForegroundColor Gray
+  Write-Host "     NES Console:  $publicBaseUrl/?room=NOVA" `
+    -ForegroundColor Gray
+  Write-Host $sep -ForegroundColor Green
 } else {
-  Write-Host "[WARN] Could not auto-parse tunnel URL yet. Check logs/tunnel_stdout.log." -ForegroundColor Yellow
+  Write-Host "[WARN] Could not parse tunnel URL yet. Check logs." `
+    -ForegroundColor Yellow
   Write-Host "Local URL: $localUrl" -ForegroundColor Cyan
 }
 
 # 4. Open local browser automatically
-Write-Host "[4/4] Opening $localUrl in your default browser..." -ForegroundColor Green
+Write-Host "[4/4] Opening $localUrl in your default browser..." `
+  -ForegroundColor Green
 Start-Process $localUrl
 
-$reportFile = Join-Path $RootDir "logs\autotest_latest.txt"
-$lastReportWrite = if (Test-Path $reportFile) { (Get-Item $reportFile).LastWriteTime } else { [datetime]::MinValue }
+$reportFile = Join-Path $logsDir "autotest_latest.txt"
+$lastReportWrite = if (Test-Path $reportFile) {
+  (Get-Item $reportFile).LastWriteTime
+} else {
+  [datetime]::MinValue
+}
 
 Write-Host ""
-Write-Host "Watching for 2-PC Auto-Test results (saves automatically to logs/autotest_latest.txt)..." -ForegroundColor Cyan
-Write-Host "Press Ctrl+C at any time to stop both the Server and SSH Tunnel." -ForegroundColor DarkGray
+Write-Host "Watching for 2-PC Auto-Test results (logs/autotest_latest.txt)..." `
+  -ForegroundColor Cyan
+Write-Host "Press Ctrl+C at any time to stop the Server and SSH Tunnel." `
+  -ForegroundColor DarkGray
 Write-Host ""
 
 try {
   while ($true) {
     Start-Sleep -Seconds 1
     if ($nodeProc.HasExited) {
-      Write-Host "[ERROR] Node.js server exited unexpectedly." -ForegroundColor Red
+      Write-Host "[ERROR] Node.js server exited unexpectedly." `
+        -ForegroundColor Red
       break
     }
     if ($sshProc.HasExited) {
-      Write-Host "[WARN] SSH tunnel closed -- restarting SSH tunnel..." -ForegroundColor Yellow
+      Write-Host "[WARN] SSH tunnel closed -- restarting..." `
+        -ForegroundColor Yellow
       $sshProc = Start-Process -FilePath "ssh.exe" `
         -ArgumentList $sshArgs `
         -WorkingDirectory $RootDir `
@@ -184,16 +224,23 @@ try {
         $lastReportWrite = $curWrite
         $content = Get-Content $reportFile -Raw -ErrorAction SilentlyContinue
         if ($content -match "Stage Status:\s+COMPLETE") {
-          Write-Host "====================================================================" -ForegroundColor Green
-          Write-Host " [SAVED] 2-PC Auto-Benchmark COMPLETE! Saved to logs/autotest_latest.txt" -ForegroundColor Green
-          Write-Host " You can now tell the AI 'autotest is done' (or paste the report)!" -ForegroundColor Yellow
-          Write-Host "====================================================================" -ForegroundColor Green
+          Write-Host $sep -ForegroundColor Green
+          Write-Host " [SAVED] 2-PC Auto-Benchmark COMPLETE!" `
+            -ForegroundColor Green
+          Write-Host " Saved to logs/autotest_latest.txt" `
+            -ForegroundColor Yellow
+          Write-Host $sep -ForegroundColor Green
         }
       }
     }
   }
 } finally {
-  Write-Host "`nShutting down Node.js Server and SSH Tunnel..." -ForegroundColor Yellow
-  if ($sshProc -and !$sshProc.HasExited) { Stop-Process -Id $sshProc.Id -Force -ErrorAction SilentlyContinue }
-  if ($nodeProc -and !$nodeProc.HasExited) { Stop-Process -Id $nodeProc.Id -Force -ErrorAction SilentlyContinue }
+  Write-Host "`nShutting down Node.js Server and SSH Tunnel..." `
+    -ForegroundColor Yellow
+  if ($sshProc -and !$sshProc.HasExited) {
+    Stop-Process -Id $sshProc.Id -Force -ErrorAction SilentlyContinue
+  }
+  if ($nodeProc -and !$nodeProc.HasExited) {
+    Stop-Process -Id $nodeProc.Id -Force -ErrorAction SilentlyContinue
+  }
 }

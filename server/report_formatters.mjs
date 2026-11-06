@@ -1,0 +1,260 @@
+// Server Telemetry, AutoTest Report Formatters & Access Log Tracker
+import fs from 'fs';
+import path from 'path';
+
+const DIVIDER = '='.repeat(68);
+
+export function createSessionTrackers(rootDir, options = {}) {
+  const accessLog = [];
+  const tunnelInfo = {
+    tunnel: process.env.TUNNEL_PROVIDER || 'unknown',
+    region: process.env.TUNNEL_REGION || 'auto',
+    publicUrl: null,
+    updatedAt: null
+  };
+  const autotestSession = {
+    startedAt: new Date().toISOString(),
+    updatedAt: null,
+    tunnelInfo,
+    pc1: null,
+    pc2: null,
+    combinedText: ''
+  };
+  const gameplayTelemetrySession = {
+    startedAt: new Date().toISOString(),
+    updatedAt: null,
+    tunnelInfo,
+    pc1: null,
+    pc2: null,
+    combinedText: ''
+  };
+
+  function ensureLogsDir() {
+    const logsDir = path.join(rootDir, 'logs');
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true });
+    }
+    return logsDir;
+  }
+
+  function recordAccess(req, note) {
+    const xff =
+      req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
+    const host = req.headers['host'] || 'localhost';
+    const ua = (req.headers['user-agent'] || '').slice(0, 65);
+    const entry = {
+      ts: new Date().toISOString().slice(11, 23),
+      note,
+      host,
+      ip: String(xff).split(',')[0].trim(),
+      ua
+    };
+    accessLog.push(entry);
+    if (accessLog.length > 30) accessLog.shift();
+    if (options.logAccess !== false) {
+      console.log(`[${entry.ts}] ${note} | host=${host} | ip=${entry.ip}`);
+    }
+  }
+
+  function saveGameplayTelemetryToDisk() {
+    try {
+      const logsDir = ensureLogsDir();
+      gameplayTelemetrySession.updatedAt = new Date().toISOString();
+      const tUrl = tunnelInfo.publicUrl || '--';
+      const tHdr =
+        `   Tunnel: ${tunnelInfo.tunnel} (Region: ${tunnelInfo.region})` +
+        ` | Public URL: ${tUrl}`;
+      const lines = [
+        DIVIDER,
+        '   2-PC LIVE NES GAMEPLAY & NETCODE TELEMETRY REPORT',
+        `   Updated: ${gameplayTelemetrySession.updatedAt}`,
+        tHdr,
+        DIVIDER
+      ];
+
+      for (const [label, pc] of [
+        ['PC 1 (HOST / SINGAPORE)', gameplayTelemetrySession.pc1],
+        ['PC 2 (REMOTE / ISILKUL, OMSK)', gameplayTelemetrySession.pc2]
+      ]) {
+        lines.push(`\n--- ${label} ---`);
+        if (!pc) {
+          lines.push('  (No gameplay telemetry received from this PC yet)');
+          continue;
+        }
+        lines.push(
+          `  Room: ${pc.roomCode || '--'} | Role: P${pc.playerIndex || '--'}` +
+            ` | Transport: ${pc.transport || '--'}`
+        );
+        lines.push(
+          `  ROM: ${pc.romName || 'None'} [CRC32: ${pc.romCrc32 || '--'}]` +
+            ` | Partner ROM CRC32: ${pc.partnerRomCrc32 || '--'}`
+        );
+        lines.push(
+          `  Match State: ${pc.matchState || '--'}` +
+            ` | Frame: ${pc.currentFrame ?? 0}` +
+            ` | Verified Frame: ${pc.lastVerifiedFrame ?? '--'}` +
+            ` | Sync: ${pc.syncStatus || '--'}` +
+            ` (Desyncs: ${pc.desyncCount ?? 0})`
+        );
+        lines.push(
+          `  Ping RTT: ${pc.rttMs ?? '--'} ms` +
+            ` (Jitter: +/-${pc.jitterMs ?? 0} ms)` +
+            ` | Clock Rift: ${pc.riftFrames ?? 0}f` +
+            ` | Input Delay: ${pc.inputDelayFrames ?? '--'}f`
+        );
+        lines.push(
+          `  FPS: ${pc.fps ?? '--'}` +
+            ` | Step Time: ${pc.lastStepMs ?? '--'} ms/f` +
+            ` | Rollbacks: ${pc.rollbacksPerSec ?? 0}/s` +
+            ` (Total: ${pc.rollbacksTotal ?? 0},` +
+            ` Last/Max Depth: ${pc.lastRollbackDepth ?? 0}f/` +
+            `${pc.maxRollbackDepthSeen ?? 0}f)`
+        );
+        lines.push(
+          `  Frame Advantage: ${pc.frameAdvantage ?? 0}f` +
+            ` | Rift Stalls: ${pc.stallFrames ?? 0}` +
+            ` | Rift Pacing Waits: ${pc.riftWaitFrames ?? 0}` +
+            ` | Packet Rate: Tx ${pc.txPerSec ?? 0}/s,` +
+            ` Rx ${pc.rxPerSec ?? 0}/s` +
+            ` (Max Rx Gap: ${pc.maxRxGapMs ?? 0}ms)`
+        );
+
+        if (Array.isArray(pc.samples) && pc.samples.length > 0) {
+          lines.push('  Recent 2s Telemetry Samples (Chronological):');
+          for (const s of pc.samples.slice(-25)) {
+            lines.push(
+              `    [${s.ts}] f=${s.frame} | FPS=${s.fps} | RTT=${s.rtt}ms` +
+                ` | Rift=${s.rift}f | Adv=${s.adv}f` +
+                ` | RB=${s.rbSec}/s (max=${s.maxRb}f)` +
+                ` | Stalls=${s.stalls} | Step=${s.stepMs}ms` +
+                ` | Tx/Rx=${s.tx}/${s.rx} (MaxGap=${s.maxGap}ms) | ${s.sync}`
+            );
+          }
+        }
+        if (Array.isArray(pc.events) && pc.events.length > 0) {
+          lines.push('  Recent Gameplay & Sync Events:');
+          for (const ev of pc.events.slice(-25)) {
+            lines.push(`    ${ev}`);
+          }
+        }
+      }
+
+      lines.push(`\n${DIVIDER}\n`);
+      gameplayTelemetrySession.combinedText = lines.join('\n');
+      fs.writeFileSync(
+        path.join(logsDir, 'gameplay_telemetry_latest.json'),
+        JSON.stringify(gameplayTelemetrySession, null, 2),
+        'utf8'
+      );
+      fs.writeFileSync(
+        path.join(logsDir, 'gameplay_telemetry_latest.txt'),
+        gameplayTelemetrySession.combinedText,
+        'utf8'
+      );
+    } catch (e) {
+      if (options.logAccess !== false) {
+        console.error('Failed saving gameplay telemetry:', e.message);
+      }
+    }
+  }
+
+  function saveAutotestReportToDisk() {
+    try {
+      const logsDir = ensureLogsDir();
+      autotestSession.updatedAt = new Date().toISOString();
+      const tUrl = tunnelInfo.publicUrl || '--';
+      const tHdr =
+        `   Tunnel: ${tunnelInfo.tunnel} (Region: ${tunnelInfo.region})` +
+        ` | Public URL: ${tUrl}`;
+      const lines = [
+        DIVIDER,
+        '   2-PC AUTOMATED NETWORK, P2P & PROTOCOL BENCHMARK REPORT',
+        `   Updated: ${autotestSession.updatedAt}`,
+        tHdr,
+        DIVIDER
+      ];
+
+      for (const [label, pc] of [
+        ['PC 1 (HOST / SINGAPORE)', autotestSession.pc1],
+        ['PC 2 (REMOTE / BROTHER)', autotestSession.pc2]
+      ]) {
+        lines.push(`\n--- ${label} ---`);
+        if (!pc) {
+          lines.push('  (No report received from this PC yet)');
+          continue;
+        }
+        lines.push(`  URL: ${pc.url || '--'} | UA: ${pc.userAgent || '--'}`);
+        lines.push(
+          `  Stage Status: ${pc.overallStatus || '--'}` +
+            ` | Active Transport: ${pc.activeTransport || '--'}`
+        );
+        lines.push(
+          `  Server RTT: ${pc.serverRttMs ?? '--'} ms` +
+            ` | WSS Peer RTT: ${pc.wssRttMs ?? '--'} ms` +
+            ` (Jitter: +/-${pc.wssJitterMs ?? 0}ms)`
+        );
+        lines.push(
+          `  WebRTC Fast UDP RTT: ${pc.rtcFastRttMs ?? 'BLOCKED'} ms` +
+            ` | WebRTC Reliable RTT: ${pc.rtcRelRttMs ?? 'BLOCKED'} ms`
+        );
+        if (Array.isArray(pc.stages) && pc.stages.length > 0) {
+          lines.push('  Benchmark Stages:');
+          for (const s of pc.stages) {
+            lines.push(`    - [${s.status}] ${s.name}: ${s.summary}`);
+          }
+        }
+        if (Array.isArray(pc.webrtcProfiles) && pc.webrtcProfiles.length > 0) {
+          lines.push('  WebRTC P2P & STUN/TURN Profile Matrix:');
+          for (const p of pc.webrtcProfiles) {
+            const loc = (p.localTypes || []).join(',');
+            const rem = (p.remoteTypes || []).join(',');
+            const tag = p.open ? 'OPEN' : 'BLOCKED';
+            lines.push(
+              `    - [${tag}] ${p.name}: ICE=${p.iceState},` +
+                ` LocalCand=[${loc}], RemoteCand=[${rem}],` +
+                ` Pair=${p.selectedPair || 'none'}, RTT=${p.rttMs ?? '--'}ms`
+            );
+          }
+        }
+        if (Array.isArray(pc.logs) && pc.logs.length > 0) {
+          lines.push('  Recent Event Log (Chronological):');
+          for (const l of pc.logs.slice(-35)) {
+            lines.push(`    ${l}`);
+          }
+        }
+      }
+
+      lines.push('\n--- RECENT SERVER ACCESS LOG ---');
+      for (const a of accessLog.slice(-15)) {
+        lines.push(`  [${a.ts}] ${a.note} | host=${a.host} | ip=${a.ip}`);
+      }
+      lines.push(`${DIVIDER}\n`);
+
+      autotestSession.combinedText = lines.join('\n');
+      fs.writeFileSync(
+        path.join(logsDir, 'autotest_latest.json'),
+        JSON.stringify(autotestSession, null, 2),
+        'utf8'
+      );
+      fs.writeFileSync(
+        path.join(logsDir, 'autotest_latest.txt'),
+        autotestSession.combinedText,
+        'utf8'
+      );
+    } catch (e) {
+      if (options.logAccess !== false) {
+        console.error('Failed saving autotest report:', e.message);
+      }
+    }
+  }
+
+  return {
+    accessLog,
+    tunnelInfo,
+    autotestSession,
+    gameplayTelemetrySession,
+    recordAccess,
+    saveGameplayTelemetryToDisk,
+    saveAutotestReportToDisk
+  };
+}

@@ -1,0 +1,324 @@
+// Main NES Netplay Console Application Entry Point
+import { createConsoleUI } from './console_ui.mjs';
+import { createAudioDrcEngine } from './audio_drc.mjs';
+import { createRomSyncManager } from './rom_sync.mjs';
+import { createNetTransport } from './webrtc_p2p.mjs';
+import { createTelemetryReporter } from './telemetry_reporter.mjs';
+import { createProtocolHandlers } from './net_protocol_handlers.mjs';
+import { startConsoleFrameLoop } from './frame_loop.mjs';
+
+const state = {
+  nes: null,
+  engine: null,
+  romBinaryString: null,
+  romUint8: null,
+  romName: null,
+  romCrc32: null,
+  isAutoDefaultRom: false,
+  customRomsMap: new Map(),
+  ws: null,
+  wsAux: null,
+  localClientId: null,
+  lastRxInputDedupKey: '',
+  rtcPeer: null,
+  rtcChannel: null,
+  roomCode: null,
+  localPlayerIndex: 1,
+  peerConnected: false,
+  peerNick: 'Player 2',
+  partnerRomName: null,
+  partnerRomCrc32: null,
+  matchStarted: false,
+  syncAckTimeout: null,
+  incomingRomTransfer: null,
+  lastAutoResyncTime: 0,
+  rttMs: 0,
+  jitterMs: 0,
+  autoDelayCandidate: 3,
+  autoDelayStreak: 0,
+  lastAutoDelayChangeAt: 0,
+  txCountThisSec: 0,
+  rxCountThisSec: 0,
+  txPerSec: 0,
+  rxPerSec: 0,
+  lastFpsVal: 0,
+  lastRxInputAt: 0,
+  maxRxGapMs: 0,
+  simLagMs: 0,
+  simLossPct: 0,
+  canvasDirty: false,
+  telemetrySamples: [],
+  telemetryEvents: []
+};
+
+const ui = createConsoleUI(state);
+const audio = createAudioDrcEngine({
+  muteBtn: ui.muteBtn,
+  volumeSlider: ui.volumeSlider,
+  volumeValLabel: ui.volumeValLabel
+});
+
+try {
+  const savedDelay = localStorage.getItem('nes_input_delay');
+  if (savedDelay !== null) {
+    if (ui.topInputDelaySelect) ui.topInputDelaySelect.value = savedDelay;
+    if (ui.inputDelaySelect) ui.inputDelaySelect.value = savedDelay;
+  }
+} catch {}
+
+let protocol = null;
+const transport = createNetTransport(state, ui, (msg, src) => {
+  if (protocol) protocol.handleIncomingNetMessage(msg, src);
+});
+const romSync = createRomSyncManager(state, ui, audio);
+const telemetry = createTelemetryReporter(state, ui, romSync);
+protocol = createProtocolHandlers(state, ui, romSync, transport, telemetry);
+
+const params = new URLSearchParams(window.location.search);
+if (params.get('room')) {
+  ui.roomInput.value = params.get('room').toUpperCase().slice(0, 10);
+}
+if (params.get('nick')) {
+  ui.nickInput.value = params.get('nick').slice(0, 14);
+}
+if (params.get('debug') === '1') {
+  ui.debugDrawer.classList.add('open');
+  ui.debugToggleBtn.classList.add('active-toggle');
+}
+
+function connectToRoom() {
+  audio.initAudio();
+  if (state.ws) {
+    try {
+      state.ws.close();
+    } catch {}
+    state.ws = null;
+  }
+  if (state.wsAux) {
+    try {
+      state.wsAux.close();
+    } catch {}
+    state.wsAux = null;
+  }
+  transport.closeWebRtc();
+
+  const code = (ui.roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
+  ui.roomInput.value = code;
+  const nick = (ui.nickInput.value || 'Player').trim().slice(0, 14);
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${proto}//${window.location.host}/ws`;
+
+  ui.dbgWssState.textContent = 'Connecting...';
+  const ws = new WebSocket(wsUrl);
+  state.ws = ws;
+
+  ws.onopen = () => {
+    ui.dbgWssState.textContent = 'Connected';
+    ui.connectBtn.textContent = 'Reconnect';
+    ws.send(
+      JSON.stringify({
+        type: 'join_room',
+        roomCode: code,
+        nick,
+        romCrc32: state.romCrc32,
+        romName: state.romName,
+        isAutoDefaultRom: state.isAutoDefaultRom
+      })
+    );
+  };
+
+  ws.onmessage = (ev) => {
+    try {
+      protocol.handleIncomingNetMessage(JSON.parse(ev.data), 'wss');
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    ui.dbgWssState.textContent = 'Disconnected';
+    state.peerConnected = false;
+    state.partnerRomName = null;
+    state.partnerRomCrc32 = null;
+    state.matchStarted = false;
+    if (state.wsAux) {
+      try {
+        state.wsAux.close();
+      } catch {}
+      state.wsAux = null;
+    }
+    transport.closeWebRtc();
+    if (state.engine) {
+      state.engine.online = false;
+      state.engine.syncPaused = false;
+    }
+    ui.updateStatusStrip();
+  };
+}
+
+ui.connectBtn.addEventListener('click', connectToRoom);
+
+ui.copyLinkBtn.addEventListener('click', () => {
+  const code = (ui.roomInput.value || 'NOVA').trim().toUpperCase();
+  const url = `${window.location.origin}/?room=${encodeURIComponent(code)}`;
+  navigator.clipboard.writeText(url).then(() => {
+    const orig = ui.copyLinkBtn.textContent;
+    ui.copyLinkBtn.textContent = 'Copied!';
+    setTimeout(() => (ui.copyLinkBtn.textContent = orig), 1500);
+  });
+});
+
+ui.resetBtn.addEventListener('click', () => {
+  if (!state.nes || !state.engine) return;
+  if (state.ws && state.ws.readyState === 1 && state.peerConnected) {
+    if (state.partnerRomCrc32 === state.romCrc32) {
+      romSync.startLockstepMatchAtFrameZero('Reset Button Clicked', true);
+    } else {
+      romSync.sendStateSyncToPeer({ resetToZero: true });
+    }
+  } else {
+    state.nes.loadROM(state.romBinaryString);
+    state.engine.resetTimeline(0);
+    ui.logDebug('Console reset to frame #0.');
+    ui.showScreenBanner(`CONSOLE RESET - "${state.romName}"`, 'ok', 2000);
+  }
+});
+
+ui.startMatchNowBtn.addEventListener('click', () => {
+  if (
+    state.ws &&
+    state.ws.readyState === 1 &&
+    state.peerConnected &&
+    state.romCrc32 &&
+    state.partnerRomCrc32 === state.romCrc32
+  ) {
+    romSync.startLockstepMatchAtFrameZero('Start Match Button Clicked', true);
+  }
+});
+
+ui.sendRomManualBtn.addEventListener('click', () => {
+  if (
+    state.ws &&
+    state.ws.readyState === 1 &&
+    state.peerConnected &&
+    state.romUint8 &&
+    state.engine
+  ) {
+    romSync.sendRomAndStateToPeer({ resetToZero: true });
+  }
+});
+
+function applyInputDelaySelection(newValue) {
+  if (ui.topInputDelaySelect && ui.topInputDelaySelect.value !== newValue) {
+    ui.topInputDelaySelect.value = newValue;
+  }
+  if (ui.inputDelaySelect && ui.inputDelaySelect.value !== newValue) {
+    ui.inputDelaySelect.value = newValue;
+  }
+  try {
+    localStorage.setItem('nes_input_delay', newValue);
+  } catch {}
+  const nextDelay = romSync.resolveDesiredInputDelay();
+  if (state.engine) state.engine.setInputDelay(nextDelay);
+  const ms = Math.round(nextDelay * (1000 / 60.0988));
+  const suffix = newValue === 'auto' ? ' [AUTO]' : '';
+  ui.logDebug(`Local Input Delay set to ${nextDelay}f (${ms}ms)${suffix}`);
+  ui.showScreenBanner(
+    `LOCAL INPUT LAG: ${nextDelay}f (${ms}ms)${suffix}`,
+    'ok',
+    2200
+  );
+  telemetry.pushGameplayTelemetryToServer();
+}
+
+if (ui.topInputDelaySelect) {
+  ui.topInputDelaySelect.addEventListener('change', () => {
+    applyInputDelaySelection(ui.topInputDelaySelect.value);
+  });
+}
+ui.inputDelaySelect.addEventListener('change', () => {
+  applyInputDelaySelection(ui.inputDelaySelect.value);
+});
+
+ui.crtToggleBtn.addEventListener('click', () => {
+  const enabled = ui.scanlinesOverlay.classList.toggle('enabled');
+  ui.crtToggleBtn.textContent = enabled ? 'CRT: ON' : 'CRT: OFF';
+  ui.crtToggleBtn.classList.toggle('active-toggle', enabled);
+});
+
+ui.debugToggleBtn.addEventListener('click', () => {
+  ui.debugDrawer.classList.toggle('open');
+  ui.debugToggleBtn.classList.toggle('active-toggle');
+});
+
+ui.forceResyncBtn.addEventListener('click', () => {
+  if (!state.ws || state.ws.readyState !== 1 || !state.peerConnected) return;
+  romSync.sendStateSyncToPeer({ resetToZero: false });
+});
+
+ui.copyTelemetryBtn.addEventListener('click', async () => {
+  try {
+    telemetry.pushGameplayTelemetryToServer();
+    const res = await fetch('/api/gameplay-telemetry');
+    if (res.ok) {
+      const data = await res.json();
+      const txt =
+        data.session?.combinedText ||
+        data.combinedText ||
+        JSON.stringify(data, null, 2);
+      await navigator.clipboard.writeText(txt);
+      const orig = ui.copyTelemetryBtn.textContent;
+      ui.copyTelemetryBtn.textContent = 'Copied!';
+      setTimeout(() => (ui.copyTelemetryBtn.textContent = orig), 1500);
+    }
+  } catch (e) {
+    ui.logDebug(`Copy telemetry failed: ${e.message}`);
+  }
+});
+
+ui.simLagSlider.addEventListener('input', () => {
+  state.simLagMs = Number(ui.simLagSlider.value);
+  ui.dbgSimLabel.textContent = `${state.simLagMs}ms / ${state.simLossPct}%`;
+});
+
+ui.simLossSlider.addEventListener('input', () => {
+  state.simLossPct = Number(ui.simLossSlider.value);
+  ui.dbgSimLabel.textContent = `${state.simLagMs}ms / ${state.simLossPct}%`;
+});
+
+ui.localRomSelect.addEventListener('change', () => {
+  if (ui.localRomSelect.value) {
+    romSync.fetchLocalRomByName(ui.localRomSelect.value, {
+      broadcastToPeer: true,
+      isAutoDefault: false
+    });
+  }
+});
+
+ui.romFileInput.addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const buf = await file.arrayBuffer();
+  e.target.value = '';
+  romSync.loadRomFromUint8(new Uint8Array(buf), file.name, {
+    broadcastToPeer: true,
+    isAutoDefault: false
+  });
+});
+
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  const file = e.dataTransfer?.files?.[0];
+  if (file && file.name.toLowerCase().endsWith('.nes')) {
+    const buf = await file.arrayBuffer();
+    romSync.loadRomFromUint8(new Uint8Array(buf), file.name, {
+      broadcastToPeer: true,
+      isAutoDefault: false
+    });
+  }
+});
+
+startConsoleFrameLoop(state, ui, transport, telemetry);
+await romSync.discoverLocalRoms();
+if (params.get('room')) {
+  connectToRoom();
+}
