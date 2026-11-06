@@ -81,13 +81,23 @@ export function createConsoleUI(state) {
     }
   };
 
+  ui.setConsoleResolution = function (w = 256, h = 240) {
+    if (canvas.width === w && canvas.height === h) return;
+    canvas.width = w;
+    canvas.height = h;
+    ui.imgData = ctx.createImageData(w, h);
+    ui.imgBuf32 = new Uint32Array(ui.imgData.data.buffer);
+  };
+
   ui.renderFrameToCanvas = function (fb) {
-    for (let i = 0; i < 61440; i++) {
-      imgBuf32[i] = 0xff000000 | fb[i];
+    const buf = ui.imgBuf32;
+    const len = Math.min(buf.length, fb.length);
+    for (let i = 0; i < len; i++) {
+      buf[i] = 0xff000000 | fb[i];
     }
     state.canvasDirty = true;
     if (document.hidden) {
-      ctx.putImageData(imgData, 0, 0);
+      ctx.putImageData(ui.imgData, 0, 0);
       state.canvasDirty = false;
     }
   };

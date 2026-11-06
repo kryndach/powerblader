@@ -1,28 +1,35 @@
-// Universal Deterministic NES Netplay Engine (GGPO Rollback + Input Delay)
+// Universal Deterministic Rollback Netplay Engine (NES, Sega, Multi-Console)
 import {
   INPUT_BITS, crc32Bytes, computeRomCrc32,
   formatHex32, computeDeterministicHash
 } from './crc32.mjs';
 import { patchJsnes8x16Sprites } from './jsnes_ppu_patches.mjs';
 import {
-  createFastSnapshotSlot, saveFastState, loadFastState,
-  applyControllerMask, serializeCompactNesState, restoreCompactNesState
+  saveFastState, loadFastState, applyControllerMask
 } from './fast_savestate.mjs';
+import {
+  SEGA_MD_INPUT_BITS, N3DS_INPUT_BITS, CONSOLE_PROFILES,
+  SUPPORTED_ROM_EXTENSIONS, detectSystemFromRomName, isSupportedRomFile,
+  NesCoreAdapter, GenericCoreAdapter, ensureCoreAdapter
+} from './core_adapter.mjs';
 import {
   resetEngineTimeline, wrapNesNetplayCallbacks, processRemoteInputPacket,
   buildNetplayInputPacket, buildNetplayTelemetry
 } from './netplay_packets.mjs';
 
 export {
-  INPUT_BITS, crc32Bytes, computeRomCrc32, formatHex32,
-  computeDeterministicHash, patchJsnes8x16Sprites,
-  saveFastState, loadFastState, applyControllerMask
+  INPUT_BITS, SEGA_MD_INPUT_BITS, N3DS_INPUT_BITS, CONSOLE_PROFILES,
+  SUPPORTED_ROM_EXTENSIONS, detectSystemFromRomName, isSupportedRomFile,
+  NesCoreAdapter, GenericCoreAdapter, ensureCoreAdapter,
+  crc32Bytes, computeRomCrc32, formatHex32, computeDeterministicHash,
+  patchJsnes8x16Sprites, saveFastState, loadFastState, applyControllerMask
 };
 
-export class NesNetplayEngine {
-  constructor(nes, options = {}) {
-    this.nes = nes;
-    patchJsnes8x16Sprites(this.nes);
+export class RollbackNetplayEngine {
+  constructor(coreOrNes, options = {}) {
+    this.core = ensureCoreAdapter(coreOrNes);
+    this.nes = this.core.rawCore;
+    this.systemId = this.core.systemId;
     this.localPlayer = options.localPlayer || 1;
     this.online = Boolean(options.online);
     this.inputDelayFrames = options.inputDelayFrames ?? 2;
@@ -33,14 +40,15 @@ export class NesNetplayEngine {
     this.saveBufferSize = options.saveBufferSize ?? 64;
     this.sessionId = options.sessionId || 'default';
     this.syncPaused = false;
-    this._preRollbackBuffer = new Uint32Array(256 * 240);
-    this._smoothedDisplayBuffer = new Uint32Array(256 * 240);
+    this._pixelCount = this.core.pixelCount || 256 * 240;
+    this._preRollbackBuffer = new Uint32Array(this._pixelCount);
+    this._smoothedDisplayBuffer = new Uint32Array(this._pixelCount);
     this.lastRollbackBlendAlpha = 0;
     this.suppressCallbacks = false;
     wrapNesNetplayCallbacks(this, this.nes);
     this.saveRing = new Array(this.saveBufferSize);
     for (let i = 0; i < this.saveBufferSize; i++) {
-      this.saveRing[i] = createFastSnapshotSlot();
+      this.saveRing[i] = this.core.createSnapshotSlot();
     }
     this.resetTimeline(0);
   }
@@ -48,33 +56,26 @@ export class NesNetplayEngine {
   resetTimeline(startFrame = 0, newSessionId = null) {
     resetEngineTimeline(this, startFrame, newSessionId);
   }
-
   static computeRecommendedInputDelay(rttMs, jitterMs = 0, rxClumpFrames = 0) {
     if (!Number.isFinite(rttMs) || rttMs <= 0) return 2;
     const clumpMs = Math.min(25, Math.max(0, (rxClumpFrames || 0) - 1) * 5);
     const effRtt = rttMs + Math.min(35, Math.max(0, jitterMs) * 0.5) + clumpMs;
     if (effRtt <= 85) return 2;
     if (effRtt <= 165) return 3;
-    if (effRtt <= 295) return 4;
-    return 5;
+    return effRtt <= 295 ? 4 : 5;
   }
-
   setInputDelay(frames) {
     const nextDelay = Math.max(0, Math.min(8, Math.floor(frames)));
     if (nextDelay === this.inputDelayFrames) return;
     const targetNew = this.currentFrame + nextDelay - 1;
     const lastSched = Math.max(
-      this.timelineStartFrame,
-      this.lastLocalScheduledFrame
+      this.timelineStartFrame, this.lastLocalScheduledFrame
     );
     const prevMask = this.getLocalInputAt(lastSched);
     while (this.lastLocalScheduledFrame < targetNew) {
       this.lastLocalScheduledFrame++;
       this._setPlayerInput(
-        this.localPlayer,
-        this.lastLocalScheduledFrame,
-        prevMask,
-        true
+        this.localPlayer, this.lastLocalScheduledFrame, prevMask, true
       );
     }
     this.inputDelayFrames = nextDelay;
@@ -82,11 +83,12 @@ export class NesNetplayEngine {
 
   _setPlayerInput(playerNum, frame, mask, confirmed) {
     const idx = frame % this.historySize;
+    const val = mask >>> 0;
     if (playerNum === 1) {
-      this.p1Inputs[idx] = mask & 0xff;
+      this.p1Inputs[idx] = val;
       if (confirmed) this.p1Confirmed[idx] = frame;
     } else {
-      this.p2Inputs[idx] = mask & 0xff;
+      this.p2Inputs[idx] = val;
       if (confirmed) this.p2Confirmed[idx] = frame;
     }
   }
@@ -184,20 +186,20 @@ export class NesNetplayEngine {
     this.rollbacksThisSec++;
     this.lastRollbackDepth = depth;
     if (depth > this.maxRollbackDepthSeen) this.maxRollbackDepthSeen = depth;
-    if (this.enableVisualSmoothing && depth >= 4 && this.nes.ppu?.buffer) {
-      this._preRollbackBuffer.set(this.nes.ppu.buffer);
+    const curFb = this.core.getFrameBuffer();
+    if (this.enableVisualSmoothing && depth >= 4 && curFb) {
+      this._preRollbackBuffer.set(curFb);
       this.lastRollbackBlendAlpha = depth >= 6 ? 0.25 : 0.18;
     }
     this._rollbackDeclickL = this._lastEmittedAudioL || 0;
     this._rollbackDeclickR = this._lastEmittedAudioR || 0;
     this._rollbackDeclickSamples = 48;
 
-    loadFastState(this.nes, slot);
+    this.core.loadState(slot);
     this.suppressCallbacks = true;
-    this.nes.ppu._headlessFrame = true;
     for (let f = rbFrame; f < this.currentFrame; f++) {
       if (f > rbFrame) {
-        saveFastState(this.nes, this.saveRing[f % this.saveBufferSize], f);
+        this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
       }
       const m1 = this.getPlayerInput(1, f);
       const m2 = this.getPlayerInput(2, f);
@@ -205,14 +207,11 @@ export class NesNetplayEngine {
       this.p1Simulated[idx] = m1;
       this.p2Simulated[idx] = m2;
       this.simulatedFrameTag[idx] = f;
-      applyControllerMask(this.nes, 1, m1);
-      applyControllerMask(this.nes, 2, m2);
-      this.nes.frame();
+      this.core.stepFrame(m1, m2, true);
       if ((f + 1) % 30 === 0) {
-        this.localHashes.set(f + 1, computeDeterministicHash(this.nes));
+        this.localHashes.set(f + 1, this.core.computeHash());
       }
     }
-    this.nes.ppu._headlessFrame = false;
     this.suppressCallbacks = false;
   }
 
@@ -235,23 +234,23 @@ export class NesNetplayEngine {
     if (!this.online) {
       const f = this.currentFrame;
       const idx = f % this.historySize;
-      this._setPlayerInput(1, f, localButtonsMask, true);
-      this._setPlayerInput(2, f, p2LocalButtonsMask, true);
-      this.p1Simulated[idx] = localButtonsMask & 0xff;
-      this.p2Simulated[idx] = p2LocalButtonsMask & 0xff;
+      const m1 = localButtonsMask >>> 0;
+      const m2 = p2LocalButtonsMask >>> 0;
+      this._setPlayerInput(1, f, m1, true);
+      this._setPlayerInput(2, f, m2, true);
+      this.p1Simulated[idx] = m1;
+      this.p2Simulated[idx] = m2;
       this.simulatedFrameTag[idx] = f;
       this.lastConfirmedRemoteFrame = f;
       this.lastLocalScheduledFrame = f;
-      saveFastState(this.nes, this.saveRing[f % this.saveBufferSize], f);
-      applyControllerMask(this.nes, 1, localButtonsMask);
-      applyControllerMask(this.nes, 2, p2LocalButtonsMask);
+      this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
       this.suppressCallbacks = false;
-      this.nes.frame();
+      this.core.stepFrame(m1, m2, false);
       this.currentFrame++;
       this.lastStepMs = performance.now() - t0;
       return {
         stepped: true, stalled: false, packetToSend: null,
-        p1Mask: localButtonsMask, p2Mask: p2LocalButtonsMask
+        p1Mask: m1, p2Mask: m2
       };
     }
 
@@ -300,22 +299,19 @@ export class NesNetplayEngine {
 
     const f = this.currentFrame;
     const idx = f % this.historySize;
-    saveFastState(this.nes, this.saveRing[f % this.saveBufferSize], f);
+    this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
 
     const p1Mask = this.getPlayerInput(1, f);
     const p2Mask = this.getPlayerInput(2, f);
     this.p1Simulated[idx] = p1Mask;
     this.p2Simulated[idx] = p2Mask;
     this.simulatedFrameTag[idx] = f;
-    applyControllerMask(this.nes, 1, p1Mask);
-    applyControllerMask(this.nes, 2, p2Mask);
     this.suppressCallbacks = false;
-    this.nes.frame();
+    this.core.stepFrame(p1Mask, p2Mask, false);
     this.currentFrame++;
 
     if (this.currentFrame % 30 === 0) {
-      const h = computeDeterministicHash(this.nes);
-      this.localHashes.set(this.currentFrame, h);
+      this.localHashes.set(this.currentFrame, this.core.computeHash());
       this._cleanupOldHashes();
     }
     this._verifyConfirmedHashes();
@@ -327,13 +323,13 @@ export class NesNetplayEngine {
   }
 
   exportSyncState() {
-    return serializeCompactNesState(
-      this.nes, this.sessionId, this.currentFrame, this.inputDelayFrames
+    return this.core.exportSyncState(
+      this.sessionId, this.currentFrame, this.inputDelayFrames
     );
   }
 
   importSyncState(syncObj, options = {}) {
-    if (!restoreCompactNesState(this.nes, syncObj)) return false;
+    if (!this.core.importSyncState(syncObj)) return false;
     if (!options?.preserveLocalInputDelay &&
         typeof syncObj.inputDelayFrames === 'number') {
       this.inputDelayFrames = syncObj.inputDelayFrames;
@@ -347,3 +343,5 @@ export class NesNetplayEngine {
     return buildNetplayTelemetry(this);
   }
 }
+
+export { RollbackNetplayEngine as NesNetplayEngine };

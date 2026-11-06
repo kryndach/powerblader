@@ -1,23 +1,20 @@
 // Netplay Packet Serialization, Callback Wrapping & Timeline Helpers
 import { formatHex32 } from './crc32.mjs';
-import { patchJsnes8x16Sprites } from './jsnes_ppu_patches.mjs';
-import { saveFastState } from './fast_savestate.mjs';
 
 export function resetEngineTimeline(
   engine,
   startFrame = 0,
   newSessionId = null
 ) {
-  patchJsnes8x16Sprites(engine.nes);
   if (newSessionId) engine.sessionId = newSessionId;
   engine.timelineStartFrame = startFrame;
   engine.currentFrame = startFrame;
-  engine.p1Inputs = new Uint8Array(engine.historySize);
-  engine.p2Inputs = new Uint8Array(engine.historySize);
+  engine.p1Inputs = new Uint32Array(engine.historySize);
+  engine.p2Inputs = new Uint32Array(engine.historySize);
   engine.p1Confirmed = new Int32Array(engine.historySize).fill(-1);
   engine.p2Confirmed = new Int32Array(engine.historySize).fill(-1);
-  engine.p1Simulated = new Uint8Array(engine.historySize);
-  engine.p2Simulated = new Uint8Array(engine.historySize);
+  engine.p1Simulated = new Uint32Array(engine.historySize);
+  engine.p2Simulated = new Uint32Array(engine.historySize);
   engine.simulatedFrameTag = new Int32Array(engine.historySize).fill(-1);
 
   engine.lastConfirmedRemoteFrame = startFrame - 1;
@@ -65,22 +62,18 @@ export function resetEngineTimeline(
   engine._rollbackDeclickSamples = 0;
 
   for (let i = 0; i < engine.saveBufferSize; i++) {
-    engine.saveRing[i].frame = -1;
-    engine.saveRing[i].chrRamTileEpochs.fill(0);
+    engine.core.resetSnapshotSlot(engine.saveRing[i]);
   }
-  if (engine.nes && engine.nes.mmap) {
-    engine.nes.mmap._bankAt8000 = -1;
-    engine.nes.mmap._bankAtC000 = -1;
-    const initSlot = engine.saveRing[startFrame % engine.saveBufferSize];
-    saveFastState(engine.nes, initSlot, startFrame);
-  }
+  const initSlot = engine.saveRing[startFrame % engine.saveBufferSize];
+  engine.core.onTimelineReset(initSlot, startFrame);
 }
 
-export function wrapNesNetplayCallbacks(engine, nes) {
-  if (!nes || !nes.opts || nes._netplayWrapped) return;
-  nes._netplayWrapped = true;
-  const origFrame = (nes.ui && nes.ui.writeFrame) || nes.opts.onFrame;
-  const origAudio = nes.opts.onAudioSample;
+export function wrapNesNetplayCallbacks(engine, rawCore) {
+  const target = rawCore || engine.core;
+  if (!target || !target.opts || target._netplayWrapped) return;
+  target._netplayWrapped = true;
+  const origFrame = (target.ui && target.ui.writeFrame) || target.opts.onFrame;
+  const origAudio = target.opts.onAudioSample;
 
   const wrappedFrame = (fb) => {
     if (engine.suppressCallbacks || !origFrame) return;
@@ -93,7 +86,8 @@ export function wrapNesNetplayCallbacks(engine, nes) {
       const wNew = 256 - wOld;
       const prev = engine._preRollbackBuffer;
       const out = engine._smoothedDisplayBuffer;
-      for (let i = 0; i < 61440; i++) {
+      const count = engine._pixelCount || out.length;
+      for (let i = 0; i < count; i++) {
         const cNew = fb[i] >>> 0;
         const cOld = prev[i] >>> 0;
         if (cNew === cOld) {
@@ -118,10 +112,10 @@ export function wrapNesNetplayCallbacks(engine, nes) {
     }
     origFrame(fb);
   };
-  nes.opts.onFrame = wrappedFrame;
-  if (nes.ui) nes.ui.writeFrame = wrappedFrame;
+  target.opts.onFrame = wrappedFrame;
+  if (target.ui) target.ui.writeFrame = wrappedFrame;
 
-  nes.opts.onAudioSample = (l, r) => {
+  target.opts.onAudioSample = (l, r) => {
     if (engine.suppressCallbacks || !origAudio) return;
     let outL = l;
     let outR = r;
@@ -170,12 +164,12 @@ export function processRemoteInputPacket(
   const rawLen = packet.inputs.length;
   if (rawLen === 0) return;
   const totalLen = Math.max(rawLen, packet.tailCount || 0);
-  const tailVal = packet.inputs[rawLen - 1] & 0xff;
+  const tailVal = packet.inputs[rawLen - 1] >>> 0;
   let newlyConfirmedCount = 0;
   for (let i = totalLen - 1; i >= 0; i--) {
     const f = packet.startFrame - i;
     if (f < minValidFrame) continue;
-    const mask = i < rawLen ? packet.inputs[i] & 0xff : tailVal;
+    const mask = i < rawLen ? packet.inputs[i] >>> 0 : tailVal;
     const idx = f % engine.historySize;
     if (confirmedArr[idx] !== f) {
       newlyConfirmedCount++;
@@ -313,6 +307,7 @@ export function buildNetplayInputPacket(engine, latestScheduledFrame) {
 
 export function buildNetplayTelemetry(engine) {
   return {
+    systemId: engine.core?.systemId || 'nes',
     currentFrame: engine.currentFrame,
     lastConfirmedRemoteFrame: engine.lastConfirmedRemoteFrame,
     frameAdvantage:

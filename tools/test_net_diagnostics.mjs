@@ -137,9 +137,11 @@ async function runNetDiagnosticsTests() {
     ws1.on('message', (raw) => {
       const msg = JSON.parse(raw.toString());
       if (msg.type === 'room_joined') {
-        ws2.send(JSON.stringify({
+        const j = JSON.stringify({
           type: 'join_room', roomCode: 'DIAG', nick: 'PC2-RU'
-        }));
+        });
+        if (ws2.readyState === 1) ws2.send(j);
+        else ws2.once('open', () => ws2.send(j));
       } else if (msg.type === 'peer_joined') {
         ws1.send(JSON.stringify({ type: 'ping', t: Date.now() }));
         ws1.send(JSON.stringify({

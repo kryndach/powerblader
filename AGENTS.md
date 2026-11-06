@@ -55,10 +55,12 @@ rules before committing:
 - **`PLAY_NES_PINGGY_AP.bat` & `start_online.ps1`:**
   One-click Windows launcher (`pinggy.io` Asia-Pacific edge, auto clipboard +
   browser open). UI includes a top-bar switch between Game (`/`) & `/autotest`.
-- **`src/` (Universal Deterministic Netplay Engine):**
-  - `src/netplay_engine.mjs` & `src/netplay_packets.mjs` — `NesNetplayEngine`
-    GGPO rollback, asymmetric input delay (`0f..5f`), clock-rift pacing, and
-    1-frame visual smoothing.
+- **`src/` (Universal Deterministic Multi-Console Netplay Engine):**
+  - `src/netplay_engine.mjs` & `src/netplay_packets.mjs` —
+    `RollbackNetplayEngine` (`NesNetplayEngine`) GGPO rollback, 32-bit input
+    masks, asymmetric input delay (`0f..5f`), clock-rift pacing, and smoothing.
+  - `src/core_adapter.mjs` — Multi-console adapter (`NesCoreAdapter` +
+    `GenericCoreAdapter`) & `CONSOLE_PROFILES` (`nes`, `sega_md`, `n3ds`).
   - `src/jsnes_ppu_patches.mjs` & `src/ppu_register_tables.mjs` —
     `patchJsnes8x16Sprites` (HBlank `$2006`/`$2005`/`$2000` scanline flush for
     steady HUDs, 8x16 sprites, headless PPU).

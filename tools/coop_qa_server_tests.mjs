@@ -19,6 +19,12 @@ import { createDualControllerTestRom } from './test_rom_builder_tables.mjs';
 
 const jsnes = jsnesModule.NES ? jsnesModule : jsnesModule.default;
 
+function sendJsonWhenOpen(ws, obj) {
+  const str = JSON.stringify(obj);
+  if (ws.readyState === 1) ws.send(str);
+  else ws.once('open', () => ws.send(str));
+}
+
 export async function runTest4LateJoinAndDesync() {
   const serverApp = createCoopServer({ logAccess: false });
   const port = await serverApp.listen(0, '127.0.0.1');
@@ -62,15 +68,13 @@ export async function runTest4LateJoinAndDesync() {
     wsSG.on('message', (data) => {
       const msg = JSON.parse(data.toString());
       if (msg.type === 'room_joined') {
-        wsRU.send(
-          JSON.stringify({
-            type: 'join_room',
-            roomCode: 'RETRO',
-            nick: 'Brother-RU',
-            romCrc32: null,
-            romName: null
-          })
-        );
+        sendJsonWhenOpen(wsRU, {
+          type: 'join_room',
+          roomCode: 'RETRO',
+          nick: 'Brother-RU',
+          romCrc32: null,
+          romName: null
+        });
       } else if (msg.type === 'peer_joined') {
         const syncState = engHost.exportSyncState();
         const syncJsonSize = JSON.stringify(syncState).length;
@@ -214,16 +218,14 @@ export async function runTest5BiDirectionalRomSwitch() {
       const msg = JSON.parse(raw.toString());
       if (msg.type === 'room_joined' && !p1Ready) {
         p1Ready = true;
-        ws2.send(
-          JSON.stringify({
-            type: 'join_room',
-            roomCode: 'NOVA',
-            nick: 'Egor-SG',
-            romCrc32: p2Crc,
-            romName: p2RomName,
-            isAutoDefaultRom: false
-          })
-        );
+        sendJsonWhenOpen(ws2, {
+          type: 'join_room',
+          roomCode: 'NOVA',
+          nick: 'Egor-SG',
+          romCrc32: p2Crc,
+          romName: p2RomName,
+          isAutoDefaultRom: false
+        });
       } else if (msg.type === 'rom_sync') {
         const u8 = new Uint8Array(Buffer.from(msg.romBase64, 'base64'));
         let bin = '';

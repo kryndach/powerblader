@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import { createSessionTrackers } from './report_formatters.mjs';
 import { createRoomManager } from './room_manager.mjs';
+import { isSupportedRomFile } from '../src/core_adapter.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -236,10 +237,7 @@ export function createCoopServer(options = {}) {
     if (pathname === '/api/local-roms') {
       const localDir = path.join(ROOT_DIR, 'local');
       const files = fs.existsSync(localDir)
-        ? fs
-            .readdirSync(localDir)
-            .filter((f) => f.toLowerCase().endsWith('.nes'))
-            .sort()
+        ? fs.readdirSync(localDir).filter(isSupportedRomFile).sort()
         : [];
       sendJson(res, 200, { files });
       return;
@@ -249,9 +247,7 @@ export function createCoopServer(options = {}) {
       const localDir = path.join(ROOT_DIR, 'local');
       let romFile = null;
       if (fs.existsSync(localDir)) {
-        const files = fs
-          .readdirSync(localDir)
-          .filter((f) => f.toLowerCase().endsWith('.nes'));
+        const files = fs.readdirSync(localDir).filter(isSupportedRomFile);
         const reqFile = urlObj.searchParams.get('file');
         if (reqFile && files.includes(reqFile)) {
           romFile = path.join(localDir, reqFile);
