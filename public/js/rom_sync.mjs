@@ -328,6 +328,7 @@ export function createRomSyncManager(state, ui, audio) {
       });
     } catch (e) {
       ui.logDebug(`Failed to load ${fileName}: ${e.message}`);
+      ui.showScreenBanner(`LOAD FAILED: ${e.message}`, 'err', 5000);
     }
   }
 
