@@ -184,26 +184,43 @@ export function extractRomFromBuffer(buf, fileName = 'archive.zip') {
   throw new Error(`Unable to extract ROM from "${base}"`);
 }
 
+export function listLocalRomFiles(localDir) {
+  if (!fs.existsSync(localDir)) return [];
+  const out = [];
+  for (const ent of fs.readdirSync(localDir, { withFileTypes: true })) {
+    if (ent.isFile() && isSupportedRomOrArchiveFile(ent.name)) {
+      out.push(ent.name);
+    } else if (ent.isDirectory()) {
+      const subDir = path.join(localDir, ent.name);
+      for (const sub of fs.readdirSync(subDir, { withFileTypes: true })) {
+        if (sub.isFile() && isSupportedRomOrArchiveFile(sub.name)) {
+          out.push(`${ent.name}/${sub.name}`);
+        }
+      }
+    }
+  }
+  return out.sort();
+}
+
 export function handleLocalRomsApi(res, rootDir, sendJson) {
   const localDir = path.join(rootDir, 'local');
-  const files = fs.existsSync(localDir)
-    ? fs.readdirSync(localDir).filter(isSupportedRomOrArchiveFile).sort()
-    : [];
+  const files = listLocalRomFiles(localDir);
   sendJson(res, 200, { files });
 }
 
 export function handleLocalRomDownloadApi(urlObj, res, rootDir, sendJson) {
   const localDir = path.join(rootDir, 'local');
-  let romFile = null;
-  if (fs.existsSync(localDir)) {
-    const files = fs.readdirSync(localDir).filter(isSupportedRomOrArchiveFile);
-    const reqFile = urlObj.searchParams.get('file');
-    if (reqFile && files.includes(reqFile)) {
-      romFile = path.join(localDir, reqFile);
-    } else if (files.length > 0) {
-      romFile = path.join(localDir, files[0]);
-    }
+  const files = listLocalRomFiles(localDir);
+  const reqFile = (urlObj.searchParams.get('file') || '').replace(/\\/g, '/');
+  let matched = null;
+  if (reqFile) {
+    matched = files.find(
+      (f) => f === reqFile || path.posix.basename(f) === reqFile
+    );
+  } else if (files.length > 0) {
+    matched = files[0];
   }
+  const romFile = matched ? path.join(localDir, matched) : null;
   if (!romFile || !fs.existsSync(romFile)) {
     sendJson(res, 404, { available: false });
     return;

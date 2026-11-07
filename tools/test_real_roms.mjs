@@ -23,11 +23,17 @@ import {
   runStage4AsymmetricDelay,
   runStage5PowerBladeHudAndAudio
 } from './real_rom_advanced_stages.mjs';
+import { extractRomFromFile } from '../server/archive_extractor.mjs';
+import { createSegaGpgxCore } from '../src/sega_gpgx_core.mjs';
 
 const jsnes = jsnesModule.NES ? jsnesModule : jsnesModule.default;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const LOCAL_ROMS_DIR = path.resolve(__dirname, '..', 'local');
+const LOCAL_BASE_DIR = path.resolve(__dirname, '..', 'local');
+const LOCAL_ROMS_DIR = fs.existsSync(path.join(LOCAL_BASE_DIR, 'nes'))
+  ? path.join(LOCAL_BASE_DIR, 'nes')
+  : LOCAL_BASE_DIR;
+const LOCAL_SEGA_DIR = path.join(LOCAL_BASE_DIR, 'sega');
 
 function inspectInesHeader(u8) {
   const prgKB = (u8[4] || 0) * 16;
@@ -133,18 +139,12 @@ async function runRealRomsSuite() {
     nes2.loadROM(bin);
 
     const eng1 = new NesNetplayEngine(nes1, {
-      localPlayer: 1,
-      online: true,
-      inputDelayFrames: 3,
-      enableRiftPacing: true,
-      enableVisualSmoothing: true
+      localPlayer: 1, online: true, inputDelayFrames: 3,
+      enableRiftPacing: true, enableVisualSmoothing: true
     });
     const eng2 = new NesNetplayEngine(nes2, {
-      localPlayer: 2,
-      online: true,
-      inputDelayFrames: 3,
-      enableRiftPacing: true,
-      enableVisualSmoothing: true
+      localPlayer: 2, online: true, inputDelayFrames: 3,
+      enableRiftPacing: true, enableVisualSmoothing: true
     });
 
     const q12 = [];
@@ -197,19 +197,13 @@ async function runRealRomsSuite() {
     }
 
     let drainNow = 540 * 16.667 + 300;
-    while (q12.length > 0) {
-      eng2.receiveRemoteInputPacket(q12.shift().pkt, drainNow);
-    }
-    while (q21.length > 0) {
-      eng1.receiveRemoteInputPacket(q21.shift().pkt, drainNow);
-    }
+    while (q12.length) eng2.receiveRemoteInputPacket(q12.shift().pkt, drainNow);
+    while (q21.length) eng1.receiveRemoteInputPacket(q21.shift().pkt, drainNow);
 
     const targetFinalFrame =
       Math.max(eng1.currentFrame, eng2.currentFrame) + 12;
-    while (
-      eng1.currentFrame < targetFinalFrame ||
-      eng2.currentFrame < targetFinalFrame
-    ) {
+    while (eng1.currentFrame < targetFinalFrame ||
+           eng2.currentFrame < targetFinalFrame) {
       drainNow += 16.667;
       if (eng1.currentFrame < targetFinalFrame) {
         const r1 = eng1.stepNetplayFrame(0);
@@ -253,10 +247,8 @@ async function runRealRomsSuite() {
 
     console.log(
       `[PASS] Stage 2 Pinggy Torture (${fileName}): ` +
-        `Rollbacks P1=${t1.rollbacksTotal} ` +
-        `(max=${t1.maxRollbackDepthSeen}f, ` +
-        `smoothed=${t1.smoothedFramesCount}), ` +
-        `P2=${t2.rollbacksTotal} ` +
+        `Rollbacks P1=${t1.rollbacksTotal} (max=${t1.maxRollbackDepthSeen}f, ` +
+        `smoothed=${t1.smoothedFramesCount}), P2=${t2.rollbacksTotal} ` +
         `(max=${t2.maxRollbackDepthSeen}f, clump=${t2.rxClumpFrames}f) | ` +
         `0 Desyncs | Final Hash=${finalHash1}`
     );
@@ -269,10 +261,7 @@ async function runRealRomsSuite() {
   // Stage 6: Chip 'n Dale 2 Anti-Lag Overclock & Save-Slot Sync Verification
   const cndFile = romFiles.find((f) => f.toLowerCase().includes('chip'));
   if (cndFile) {
-    const bin = fs.readFileSync(
-      path.join(LOCAL_ROMS_DIR, cndFile),
-      'binary'
-    );
+    const bin = fs.readFileSync(path.join(LOCAL_ROMS_DIR, cndFile), 'binary');
     const nes1 = new jsnes.NES({});
     const nes2 = new jsnes.NES({});
     nes1.loadROM(bin);
@@ -295,13 +284,11 @@ async function runRealRomsSuite() {
     assert.strictEqual(nes1.ppu._noSpriteLimit, true);
     assert.ok(savedSlot1 && savedSlot1.frame === 321);
 
-    // Fast Load Slot 1 on both PCs and verify deterministic lockstep resume
     const resumeState = { ...savedSlot1, sessionId: 'slot1_loaded' };
     eng1.importSyncState(resumeState, { preserveLocalInputDelay: true });
     eng2.importSyncState(resumeState, { preserveLocalInputDelay: true });
     assert.strictEqual(
-      computeDeterministicHash(nes1),
-      computeDeterministicHash(nes2)
+      computeDeterministicHash(nes1), computeDeterministicHash(nes2)
     );
     for (let f = 0; f < 60; f++) {
       const r1 = eng1.stepNetplayFrame(INPUT_BITS.RIGHT | INPUT_BITS.B);
@@ -310,15 +297,49 @@ async function runRealRomsSuite() {
       if (r2.packetToSend) eng1.receiveRemoteInputPacket(r2.packetToSend);
     }
     const h1 = formatHex32(computeDeterministicHash(nes1));
-    const h2 = formatHex32(computeDeterministicHash(nes2));
-    assert.strictEqual(h1, h2);
+    assert.strictEqual(h1, formatHex32(computeDeterministicHash(nes2)));
     console.log(
       `[PASS] Stage 6 (${cndFile}): Anti-Lag Post-Render Overclock, ` +
         `16-Sprite Limit & Save-Slot Fast Load Sync Verified (Hash=${h1})`
     );
   }
 
-  console.log('\nALL REAL NES ROM & ADVANCED NETCODE TESTS PASSED!');
+  // Stage 7: Real Sega Genesis ROM (Sonic 3 & Knuckles) Rollback & State Sync
+  if (fs.existsSync(LOCAL_SEGA_DIR)) {
+    const segaFiles = fs.readdirSync(LOCAL_SEGA_DIR).sort();
+    if (segaFiles.length > 0) {
+      const { romName, romBuffer } = extractRomFromFile(
+        path.join(LOCAL_SEGA_DIR, segaFiles[0])
+      );
+      const u8 = new Uint8Array(romBuffer);
+      const s1 = await createSegaGpgxCore({ romBytes: u8, romName });
+      const s2 = await createSegaGpgxCore({ romBytes: u8, romName });
+      const e1 = new NesNetplayEngine(s1, { localPlayer: 1, online: true });
+      const e2 = new NesNetplayEngine(s2, { localPlayer: 2, online: true });
+      const q1 = [];
+      for (let f = 0; f < 90; f++) {
+        const r1 = e1.stepNetplayFrame(f % 15 === 5 ? INPUT_BITS.START : 0);
+        const r2 = e2.stepNetplayFrame(INPUT_BITS.RIGHT | INPUT_BITS.C);
+        if (r1.packetToSend) e2.receiveRemoteInputPacket(r1.packetToSend);
+        if (r2.packetToSend) q1.push(r2.packetToSend);
+        if (f % 4 === 3) {
+          while (q1.length) e1.receiveRemoteInputPacket(q1.shift());
+        }
+      }
+      while (q1.length) e1.receiveRemoteInputPacket(q1.shift());
+      e1.stepNetplayFrame(0);
+      e2.stepNetplayFrame(0);
+      const syncSnap = e1.exportSyncState();
+      e2.importSyncState(syncSnap);
+      assert.strictEqual(s1.computeHash(), s2.computeHash());
+      console.log(
+        `[PASS] Stage 7 (${romName}): 320x224 Sega Genesis Rollback ` +
+          `& State Sync Verified (Hash=${formatHex32(s1.computeHash())})`
+      );
+    }
+  }
+
+  console.log('\nALL REAL NES & SEGA ROM NETCODE TESTS PASSED!');
 }
 
 runRealRomsSuite().catch((err) => {

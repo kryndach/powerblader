@@ -74,6 +74,70 @@ export function detectSystemFromRomName(romName = '') {
   return 'nes';
 }
 
+export function detectSystemFromRomBytes(u8, romName = '') {
+  if (u8 && u8.length >= 4) {
+    if (u8[0] === 0x4e && u8[1] === 0x45 && u8[2] === 0x53 && u8[3] === 0x1a) {
+      return 'nes';
+    }
+    if (u8.length > 0x110 &&
+        u8[0x100] === 0x53 && u8[0x101] === 0x45 &&
+        u8[0x102] === 0x47 && u8[0x103] === 0x41) {
+      return 'sega_md';
+    }
+  }
+  return detectSystemFromRomName(romName);
+}
+
+export function packSparseState(u8) {
+  if (!u8 || u8.length < 64) return u8;
+  const out = [
+    0x5a, 0x52, 0x4c, 0x45,
+    u8.length & 255, (u8.length >>> 8) & 255,
+    (u8.length >>> 16) & 255, (u8.length >>> 24) & 255
+  ];
+  let i = 0;
+  while (i < u8.length) {
+    const b = u8[i++];
+    if (b !== 0) {
+      out.push(b);
+      continue;
+    }
+    let run = 1;
+    while (i < u8.length && u8[i] === 0 && run < 32767) {
+      run++;
+      i++;
+    }
+    out.push(0);
+    if (run < 128) out.push(run);
+    else out.push(0x80 | (run & 0x7f), (run >>> 7) & 0xff);
+  }
+  return new Uint8Array(out);
+}
+
+export function unpackSparseState(u8) {
+  if (!u8 || u8.length < 8 || u8[0] !== 0x5a || u8[1] !== 0x52 ||
+      u8[2] !== 0x4c || u8[3] !== 0x45) {
+    return u8;
+  }
+  const len = (
+    u8[4] | (u8[5] << 8) | (u8[6] << 16) | (u8[7] << 24)
+  ) >>> 0;
+  const out = new Uint8Array(len);
+  let i = 8;
+  let o = 0;
+  while (i < u8.length && o < len) {
+    const b = u8[i++];
+    if (b !== 0) {
+      out[o++] = b;
+      continue;
+    }
+    let run = u8[i++];
+    if (run & 0x80) run = (run & 0x7f) | (u8[i++] << 7);
+    o += run;
+  }
+  return out;
+}
+
 export function isSupportedRomFile(fileName = '') {
   const lower = String(fileName).trim().toLowerCase();
   return SUPPORTED_ROM_EXTENSIONS.some((ext) => lower.endsWith(ext));
@@ -184,6 +248,10 @@ export class GenericCoreAdapter {
   }
 
   saveState(slot, frame) {
+    if (typeof this.rawCore.saveStateInto === 'function') {
+      this.rawCore.saveStateInto(slot, frame);
+      return;
+    }
     slot.frame = frame;
     if (typeof this.rawCore.saveStateBytes === 'function') {
       const bytes = this.rawCore.saveStateBytes();
@@ -195,6 +263,9 @@ export class GenericCoreAdapter {
   }
 
   loadState(slot) {
+    if (typeof this.rawCore.loadStateFromSlot === 'function') {
+      return this.rawCore.loadStateFromSlot(slot);
+    }
     if (!slot || slot.frame < 0 || !slot.stateBytes) return false;
     if (typeof this.rawCore.loadStateBytes === 'function') {
       this.rawCore.loadStateBytes(slot.stateBytes);
@@ -229,7 +300,7 @@ export class GenericCoreAdapter {
 
   exportSyncState(sessionId, frame, inputDelayFrames) {
     const bytes = typeof this.rawCore.saveStateBytes === 'function'
-      ? this.rawCore.saveStateBytes()
+      ? packSparseState(this.rawCore.saveStateBytes())
       : new Uint8Array(0);
     return {
       v: 3,
@@ -244,7 +315,8 @@ export class GenericCoreAdapter {
   importSyncState(syncObj) {
     if (!syncObj || typeof syncObj.rawStateB64 !== 'string') return false;
     if (typeof this.rawCore.loadStateBytes === 'function') {
-      this.rawCore.loadStateBytes(base64ToUint8(syncObj.rawStateB64));
+      const raw = unpackSparseState(base64ToUint8(syncObj.rawStateB64));
+      this.rawCore.loadStateBytes(raw);
       return true;
     }
     return false;

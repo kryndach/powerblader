@@ -1,6 +1,7 @@
 // Customizable Key Bindings, Fast A/B (Z<->X) Swap & Interactive Modal UI
 const INPUT_BITS = {
-  A: 1, B: 2, SELECT: 4, START: 8, UP: 16, DOWN: 32, LEFT: 64, RIGHT: 128
+  A: 1, B: 2, SELECT: 4, START: 8, UP: 16, DOWN: 32, LEFT: 64, RIGHT: 128,
+  C: 256, X: 512, Y: 1024, Z: 2048
 };
 
 const STORAGE_KEY = 'nes_key_bindings_v1';
@@ -12,7 +13,11 @@ const ACTIONS = [
   { id: 'RIGHT', label: 'D-Pad Right', bit: INPUT_BITS.RIGHT },
   { id: 'A', label: 'Button A (Jump/Action)', bit: INPUT_BITS.A },
   { id: 'B', label: 'Button B (Attack/Run)', bit: INPUT_BITS.B },
-  { id: 'SELECT', label: 'Select', bit: INPUT_BITS.SELECT },
+  { id: 'C', label: 'Button C (Sega Genesis)', bit: INPUT_BITS.C },
+  { id: 'X', label: 'Button X (Sega 6-Btn)', bit: INPUT_BITS.X },
+  { id: 'Y', label: 'Button Y (Sega 6-Btn)', bit: INPUT_BITS.Y },
+  { id: 'Z', label: 'Button Z (Sega 6-Btn)', bit: INPUT_BITS.Z },
+  { id: 'SELECT', label: 'Select / Mode', bit: INPUT_BITS.SELECT },
   { id: 'START', label: 'Start', bit: INPUT_BITS.START },
   { id: 'TURBO', label: 'Hold Fast-Forward (4x)', bit: 0 }
 ];
@@ -24,6 +29,10 @@ const DEFAULT_BINDINGS = {
   RIGHT: ['KeyD', 'ArrowRight'],
   A: ['KeyZ', 'KeyJ'],
   B: ['KeyX', 'KeyK'],
+  C: ['KeyC', 'KeyL'],
+  X: ['KeyQ', 'KeyU'],
+  Y: ['KeyE', 'KeyI'],
+  Z: ['KeyR', 'KeyO'],
   SELECT: ['ShiftLeft', 'ShiftRight'],
   START: ['Enter', 'Space'],
   TURBO: ['Backquote', 'Tab']
@@ -106,6 +115,7 @@ export function createKeyBindingsManager(state, ui) {
     }
     const hintEl = document.getElementById('bezelKeyHint');
     if (hintEl) {
+      const cKey = formatKeyCode(bindings.C ? bindings.C[0] : 'KeyC');
       const u = formatKeyCode(bindings.UP[0]);
       const l = formatKeyCode(bindings.LEFT[0]);
       const d = formatKeyCode(bindings.DOWN[0]);
@@ -115,8 +125,8 @@ export function createKeyBindingsManager(state, ui) {
       const trb = formatKeyCode(bindings.TURBO[0]);
       hintEl.innerHTML =
         `Move: <span class="kbd">${u}${l}${d}${r}</span> ` +
-        `A/B: <span class="kbd">${aKey}</span>/` +
-        `<span class="kbd">${bKey}</span> ` +
+        `A/B/C: <span class="kbd">${aKey}</span>/` +
+        `<span class="kbd">${bKey}</span>/<span class="kbd">${cKey}</span> ` +
         `Sel/Sta: <span class="kbd">${sel}</span>/` +
         `<span class="kbd">${sta}</span> ` +
         `Turbo: <span class="kbd">${trb}</span> ` +

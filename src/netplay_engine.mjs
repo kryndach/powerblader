@@ -9,8 +9,8 @@ import {
 } from './fast_savestate.mjs';
 import {
   SEGA_MD_INPUT_BITS, N3DS_INPUT_BITS, CONSOLE_PROFILES,
-  SUPPORTED_ROM_EXTENSIONS, detectSystemFromRomName, isSupportedRomFile,
-  NesCoreAdapter, GenericCoreAdapter, ensureCoreAdapter
+  SUPPORTED_ROM_EXTENSIONS, detectSystemFromRomName, detectSystemFromRomBytes,
+  isSupportedRomFile, NesCoreAdapter, GenericCoreAdapter, ensureCoreAdapter
 } from './core_adapter.mjs';
 import {
   resetEngineTimeline, wrapNesNetplayCallbacks, processRemoteInputPacket,
@@ -19,8 +19,8 @@ import {
 
 export {
   INPUT_BITS, SEGA_MD_INPUT_BITS, N3DS_INPUT_BITS, CONSOLE_PROFILES,
-  SUPPORTED_ROM_EXTENSIONS, detectSystemFromRomName, isSupportedRomFile,
-  NesCoreAdapter, GenericCoreAdapter, ensureCoreAdapter,
+  SUPPORTED_ROM_EXTENSIONS, detectSystemFromRomName, detectSystemFromRomBytes,
+  isSupportedRomFile, NesCoreAdapter, GenericCoreAdapter, ensureCoreAdapter,
   crc32Bytes, computeRomCrc32, formatHex32, computeDeterministicHash,
   patchJsnes8x16Sprites, saveFastState, loadFastState, applyControllerMask
 };

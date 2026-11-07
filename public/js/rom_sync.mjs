@@ -1,29 +1,15 @@
 // ROM Loader, Local Cartridge Discovery, Lockstep Barrier & Chunked Transfer
-import { NesNetplayEngine, computeRomCrc32 } from '/src/netplay_engine.mjs';
+import {
+  NesNetplayEngine, computeRomCrc32, detectSystemFromRomBytes
+} from '/src/netplay_engine.mjs';
+import {
+  uint8ToBinaryString, uint8ToBase64, base64ToUint8
+} from '/src/crc32.mjs';
+import { createSegaGpgxCore, ensureGpgxRuntime } from '/src/sega_gpgx_core.mjs';
 
+export { base64ToUint8 };
 const jsnes = window.jsnes;
-
-function uint8ToBinaryString(u8) {
-  const chunkSize = 0x8000;
-  let str = '';
-  for (let i = 0; i < u8.length; i += chunkSize) {
-    str += String.fromCharCode.apply(null, u8.subarray(i, i + chunkSize));
-  }
-  return str;
-}
-
-function uint8ToBase64(u8) {
-  return btoa(uint8ToBinaryString(u8));
-}
-
-export function base64ToUint8(b64) {
-  const bin = atob(b64);
-  const u8 = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) {
-    u8[i] = bin.charCodeAt(i) & 0xff;
-  }
-  return u8;
-}
+ensureGpgxRuntime().catch(() => {});
 
 export function createRomSyncManager(state, ui, audio) {
   function resolveDesiredInputDelay() {
@@ -119,7 +105,7 @@ export function createRomSyncManager(state, ui, audio) {
     ui.updateStatusStrip();
   }
 
-  function loadRomFromUint8(u8, name, options = {}) {
+  async function loadRomFromUint8(u8, name, options = {}) {
     const broadcastToPeer = typeof options === 'boolean'
       ? options : options.broadcastToPeer !== false;
     const isAutoDefault = Boolean(options && options.isAutoDefault);
@@ -131,21 +117,36 @@ export function createRomSyncManager(state, ui, audio) {
     state.isAutoDefaultRom = isAutoDefault;
     state.matchStarted = false;
 
-    ensureRomInDropdown(state.romName, u8);
+    ensureRomInDropdown(options.dropdownKey || state.romName, u8);
+
+    const sysId = detectSystemFromRomBytes(u8, state.romName);
+    const w = sysId === 'sega_md' ? 320 : 256;
+    const h = sysId === 'sega_md' ? 224 : sysId === 'sega_sms' ? 192 : 240;
+    ui.setConsoleResolution(w, h);
 
     let audioSub = 0;
-    state.nes = new jsnes.NES({
-      onFrame: (fb) => ui.renderFrameToCanvas(fb),
-      onAudioSample: (l, r) => {
-        const eff = state.holdTurboActive
-          ? Math.max(4, state.turboMultiplier || 1)
-          : state.turboMultiplier || 1;
-        if (eff > 1 && ++audioSub % eff !== 0) return;
-        audio.pushSample(l, r);
-      }
-    });
+    const onFrame = (fb) => ui.renderFrameToCanvas(fb);
+    const onAudioSample = (l, r) => {
+      const eff = state.holdTurboActive
+        ? Math.max(4, state.turboMultiplier || 1)
+        : state.turboMultiplier || 1;
+      if (eff > 1 && ++audioSub % eff !== 0) return;
+      audio.pushSample(l, r);
+    };
 
-    state.nes.loadROM(state.romBinaryString);
+    if (sysId === 'sega_md' || sysId === 'sega_sms') {
+      state.nes = await createSegaGpgxCore({
+        romBytes: u8,
+        romName: state.romName,
+        systemId: sysId,
+        onFrame,
+        onAudioSample
+      });
+    } else {
+      state.nes = new jsnes.NES({ onFrame, onAudioSample });
+      state.nes.loadROM(state.romBinaryString);
+    }
+
     const isOnline = Boolean(
       state.ws && state.ws.readyState === 1 && state.peerConnected
     );
@@ -155,43 +156,36 @@ export function createRomSyncManager(state, ui, audio) {
       enableRiftPacing: true,
       inputDelayFrames: resolveDesiredInputDelay(),
       maxRollbackFrames: 36,
-      saveBufferSize: 96
+      saveBufferSize: sysId === 'nes' ? 96 : 48
     });
 
     if (isOnline) state.engine.syncPaused = true;
 
-    const shortName = state.romName.replace(/\.nes$/i, '');
+    const shortName = state.romName.replace(
+      /\.(nes|md|gen|smd|bin|sms|gg)$/i, ''
+    );
     ui.romBadge.textContent = `ROM: ${shortName} [${state.romCrc32}]`;
     const mType = state.nes.rom.mapperType;
     const isChrRam = state.nes.rom.vromCount === 0;
     ui.logDebug(
-      `Loaded ROM "${state.romName}" (CRC32=${state.romCrc32}, ` +
-        `Mapper=${mType}, CHR-RAM=${isChrRam})`
+      `Loaded ROM "${state.romName}" (Sys=${sysId}, ` +
+        `CRC32=${state.romCrc32}, Mapper=${mType}, CHR-RAM=${isChrRam})`
     );
 
     if (!isAutoDefault) {
       ui.showScreenBanner(
-        `LOADED "${state.romName}" [${state.romCrc32}]`,
-        'ok',
-        2800
+        `LOADED "${state.romName}" [${state.romCrc32}]`, 'ok', 2800
       );
     }
 
     if (state.ws && state.ws.readyState === 1) {
-      state.ws.send(
-        JSON.stringify({
-          type: 'rom_status',
-          romCrc32: state.romCrc32,
-          romName: state.romName,
-          isAutoDefaultRom: false
-        })
-      );
-      if (
-        broadcastToPeer &&
-        state.peerConnected &&
-        state.localPlayerIndex === 1 &&
-        state.partnerRomCrc32 === state.romCrc32
-      ) {
+      state.ws.send(JSON.stringify({
+        type: 'rom_status', romCrc32: state.romCrc32,
+        romName: state.romName, isAutoDefaultRom: false
+      }));
+      if (broadcastToPeer && state.peerConnected &&
+          state.localPlayerIndex === 1 &&
+          state.partnerRomCrc32 === state.romCrc32) {
         startLockstepMatchAtFrameZero('Both PCs selected same ROM');
       }
     }
@@ -229,29 +223,19 @@ export function createRomSyncManager(state, ui, audio) {
     ui.showScreenBanner(`SENDING "${state.romName}" (${kb} KB)...`, 'warn', 0);
     ui.updateStatusStrip();
 
-    state.ws.send(
-      JSON.stringify({
-        type: 'rom_chunk_start',
-        sessionId: newSessionId,
-        romName: state.romName,
-        romCrc32: state.romCrc32,
-        isAutoDefaultRom: state.isAutoDefaultRom,
-        totalBytes,
-        totalChunks,
-        syncState
-      })
-    );
+    state.ws.send(JSON.stringify({
+      type: 'rom_chunk_start', sessionId: newSessionId,
+      romName: state.romName, romCrc32: state.romCrc32,
+      isAutoDefaultRom: state.isAutoDefaultRom,
+      totalBytes, totalChunks, syncState
+    }));
     for (let i = 0; i < totalChunks; i++) {
       const end = Math.min(totalBytes, (i + 1) * chunkSize);
       const slice = state.romUint8.subarray(i * chunkSize, end);
-      state.ws.send(
-        JSON.stringify({
-          type: 'rom_chunk_data',
-          sessionId: newSessionId,
-          index: i,
-          dataB64: uint8ToBase64(slice)
-        })
-      );
+      state.ws.send(JSON.stringify({
+        type: 'rom_chunk_data', sessionId: newSessionId,
+        index: i, dataB64: uint8ToBase64(slice)
+      }));
     }
     state.ws.send(
       JSON.stringify({ type: 'rom_chunk_end', sessionId: newSessionId })
@@ -280,14 +264,10 @@ export function createRomSyncManager(state, ui, audio) {
     state.engine.syncPaused = true;
     armSyncAckWatchdog(newSessionId);
 
-    state.ws.send(
-      JSON.stringify({
-        type: 'state_sync',
-        romName: state.romName,
-        romCrc32: state.romCrc32,
-        syncState
-      })
-    );
+    state.ws.send(JSON.stringify({
+      type: 'state_sync', romName: state.romName,
+      romCrc32: state.romCrc32, syncState
+    }));
     ui.logDebug(
       `Sent lockstep state snapshot at frame #${syncState.frame}`
     );
@@ -306,7 +286,10 @@ export function createRomSyncManager(state, ui, audio) {
           for (const f of data.files) {
             const opt = document.createElement('option');
             opt.value = f;
-            opt.textContent = f;
+            const slash = f.indexOf('/');
+            opt.textContent = slash > 0
+              ? `[${f.slice(0, slash).toUpperCase()}] ${f.slice(slash + 1)}`
+              : f;
             ui.localRomSelect.appendChild(opt);
           }
         }
@@ -321,7 +304,9 @@ export function createRomSyncManager(state, ui, audio) {
   async function fetchLocalRomByName(fileName, options = {}) {
     try {
       if (state.customRomsMap.has(fileName)) {
-        loadRomFromUint8(state.customRomsMap.get(fileName), fileName, options);
+        await loadRomFromUint8(
+          state.customRomsMap.get(fileName), fileName, options
+        );
         return;
       }
       const url = `/api/local-rom?file=${encodeURIComponent(fileName)}`;
@@ -330,7 +315,10 @@ export function createRomSyncManager(state, ui, audio) {
       const hdr = res.headers.get('X-Rom-Filename');
       const rName = hdr ? decodeURIComponent(hdr) : fileName;
       const buf = await res.arrayBuffer();
-      loadRomFromUint8(new Uint8Array(buf), rName, options);
+      await loadRomFromUint8(new Uint8Array(buf), rName, {
+        ...options,
+        dropdownKey: fileName
+      });
     } catch (e) {
       ui.logDebug(`Failed to load ${fileName}: ${e.message}`);
     }

@@ -1,5 +1,5 @@
 // Client-Side ZIP Extractor, Server Archive (.rar/.7z) Bridge & Drag-and-Drop
-const ROM_EXTS = ['.nes', '.md', '.gen', '.smd', '.sms', '.gg', '.3ds'];
+const ROM_EXTS = ['.nes', '.md', '.gen', '.smd', '.bin', '.sms', '.gg', '.3ds'];
 const ARCHIVE_EXTS = ['.zip', '.rar', '.7z'];
 
 function isRomEntryName(name = '') {
@@ -138,7 +138,7 @@ export function setupRomDropAndPicker(state, ui, romSync) {
         ui.showScreenBanner(`EXTRACTING "${file.name}"...`, 'warn', 0);
       }
       const { romName, romUint8 } = await unpackRomIfNeeded(rawU8, file.name);
-      romSync.loadRomFromUint8(romUint8, romName, {
+      await romSync.loadRomFromUint8(romUint8, romName, {
         broadcastToPeer: true,
         isAutoDefault: false
       });

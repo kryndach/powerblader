@@ -22,7 +22,11 @@ const MIME_TYPES = {
   '.mjs': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
-  '.nes': 'application/octet-stream'
+  '.wasm': 'application/wasm',
+  '.nes': 'application/octet-stream',
+  '.md': 'application/octet-stream',
+  '.gen': 'application/octet-stream',
+  '.smd': 'application/octet-stream'
 };
 
 function sendJson(res, status, obj, noStore = false) {
@@ -69,6 +73,10 @@ function resolveStaticAsset(pathname, req, recordAccess) {
   if (pathname.startsWith('/js/') &&
       (pathname.endsWith('.mjs') || pathname.endsWith('.js'))) {
     return path.join(ROOT_DIR, 'public', 'js', path.basename(pathname));
+  }
+  if (pathname.startsWith('/vendor/') &&
+      (pathname.endsWith('.js') || pathname.endsWith('.wasm'))) {
+    return path.join(ROOT_DIR, 'public', 'vendor', path.basename(pathname));
   }
   return null;
 }

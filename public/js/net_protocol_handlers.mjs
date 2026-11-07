@@ -29,7 +29,7 @@ export function createProtocolHandlers(
     ui.updateStatusStrip();
   }
 
-  function finalizeIncomingRomTransfer() {
+  async function finalizeIncomingRomTransfer() {
     const xfer = state.incomingRomTransfer;
     if (!xfer) return;
     state.incomingRomTransfer = null;
@@ -41,7 +41,7 @@ export function createProtocolHandlers(
       full.set(part, offset);
       offset += part.length;
     }
-    romSync.loadRomFromUint8(full, xfer.romName, {
+    await romSync.loadRomFromUint8(full, xfer.romName, {
       broadcastToPeer: false,
       isAutoDefault: xfer.isAutoDefaultRom
     });
@@ -285,11 +285,8 @@ export function createProtocolHandlers(
       return ui.updateStatusStrip();
     }
 
-    if (
-      msg.type === 'rom_chunk_data' &&
-      state.incomingRomTransfer &&
-      msg.sessionId === state.incomingRomTransfer.sessionId
-    ) {
+    if (msg.type === 'rom_chunk_data' && state.incomingRomTransfer &&
+        msg.sessionId === state.incomingRomTransfer.sessionId) {
       const xfer = state.incomingRomTransfer;
       xfer.chunks.set(msg.index, base64ToUint8(msg.dataB64));
       if (xfer.chunks.size >= xfer.totalChunks && xfer.endSeen) {
@@ -298,11 +295,8 @@ export function createProtocolHandlers(
       return;
     }
 
-    if (
-      msg.type === 'rom_chunk_end' &&
-      state.incomingRomTransfer &&
-      msg.sessionId === state.incomingRomTransfer.sessionId
-    ) {
+    if (msg.type === 'rom_chunk_end' && state.incomingRomTransfer &&
+        msg.sessionId === state.incomingRomTransfer.sessionId) {
       state.incomingRomTransfer.endSeen = true;
       const xfer = state.incomingRomTransfer;
       if (xfer.chunks.size >= xfer.totalChunks) finalizeIncomingRomTransfer();
@@ -311,12 +305,17 @@ export function createProtocolHandlers(
 
     if (msg.type === 'rom_sync') {
       const u8 = base64ToUint8(msg.romBase64);
-      romSync.loadRomFromUint8(u8, msg.romName, {
+      const opts = {
         broadcastToPeer: false, isAutoDefault: Boolean(msg.isAutoDefaultRom)
-      });
-      state.partnerRomName = msg.romName;
-      state.partnerRomCrc32 = state.romCrc32;
-      return applyImportedSyncState(msg.syncState);
+      };
+      Promise.resolve(romSync.loadRomFromUint8(u8, msg.romName, opts)).then(
+        () => {
+          state.partnerRomName = msg.romName;
+          state.partnerRomCrc32 = state.romCrc32;
+          applyImportedSyncState(msg.syncState);
+        }
+      );
+      return;
     }
 
     if (msg.type === 'state_sync') {

@@ -11,7 +11,11 @@ export const INPUT_BITS = {
   UP: 1 << 4,
   DOWN: 1 << 5,
   LEFT: 1 << 6,
-  RIGHT: 1 << 7
+  RIGHT: 1 << 7,
+  C: 1 << 8,
+  X: 1 << 9,
+  Y: 1 << 10,
+  Z: 1 << 11
 };
 
 const CRC32_TABLE = new Uint32Array(256);
@@ -62,18 +66,22 @@ export function formatHex32(val) {
   return (val >>> 0).toString(16).toUpperCase().padStart(8, '0');
 }
 
+export function uint8ToBinaryString(u8) {
+  let bin = '';
+  const step = 0x8000;
+  for (let i = 0; i < u8.length; i += step) {
+    bin += String.fromCharCode.apply(null, u8.subarray(i, i + step));
+  }
+  return bin;
+}
+
 export function uint8ToBase64(u8) {
   if (typeof Buffer !== 'undefined') {
     return Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength).toString(
       'base64'
     );
   }
-  let bin = '';
-  const step = 0x8000;
-  for (let i = 0; i < u8.length; i += step) {
-    bin += String.fromCharCode.apply(null, u8.subarray(i, i + step));
-  }
-  return btoa(bin);
+  return btoa(uint8ToBinaryString(u8));
 }
 
 export function base64ToUint8(b64) {
