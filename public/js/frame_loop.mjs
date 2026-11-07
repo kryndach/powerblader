@@ -58,8 +58,8 @@ export function startConsoleFrameLoop(
       if (viewportCtrl) viewportCtrl.setHoldTurbo(true);
       return;
     }
-    if (saveSlots && !e.repeat) {
-      if (e.code === 'F5') {
+    if (saveSlots && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (e.code === 'F6') {
         e.preventDefault();
         saveSlots.saveToCurrentSlot();
         return;
@@ -69,12 +69,7 @@ export function startConsoleFrameLoop(
         saveSlots.loadFromCurrentSlot();
         return;
       }
-      if (
-        e.code >= 'Digit1' &&
-        e.code <= 'Digit5' &&
-        !e.ctrlKey &&
-        !e.metaKey
-      ) {
+      if (e.code >= 'Digit1' && e.code <= 'Digit5') {
         e.preventDefault();
         saveSlots.selectSlot(Number(e.code.slice(-1)), true);
         return;

@@ -7,6 +7,9 @@ import {
 } from '/src/crc32.mjs';
 import { createSegaGpgxCore, ensureGpgxRuntime } from '/src/sega_gpgx_core.mjs';
 import { createFbneoArcadeCore } from '/src/fbneo_arcade_core.mjs';
+import {
+  fetchRomBytesWithProgress, streamRomToPeer
+} from './rom_archive.mjs';
 
 export { base64ToUint8 };
 const jsnes = window.jsnes;
@@ -184,6 +187,10 @@ export function createRomSyncManager(state, ui, audio) {
         `LOADED "${state.romName}" [${state.romCrc32}]`, 'ok', 2800
       );
     }
+    if (ui.sendRomManualBtn) {
+      ui.sendRomManualBtn.textContent = 'Send My ROM File to Partner';
+      ui.sendRomManualBtn.disabled = false;
+    }
 
     if (state.ws && state.ws.readyState === 1) {
       state.ws.send(JSON.stringify({
@@ -200,9 +207,19 @@ export function createRomSyncManager(state, ui, audio) {
     ui.updateStatusStrip();
   }
 
-  function sendRomAndStateToPeer({ resetToZero = false } = {}) {
-    if (!state.ws || state.ws.readyState !== 1 || !state.romUint8) return;
-    if (!state.engine) return;
+  async function sendRomAndStateToPeer({ resetToZero = false } = {}) {
+    if (!state.romUint8 || !state.engine) {
+      ui.showScreenBanner('LOAD A ROM FIRST BEFORE SENDING', 'warn', 3000);
+      return;
+    }
+    if (!state.ws || state.ws.readyState !== 1) {
+      ui.showScreenBanner('NOT CONNECTED - JOIN A ROOM FIRST', 'err', 3500);
+      return;
+    }
+    if (!state.peerConnected) {
+      ui.showScreenBanner('WAITING FOR PARTNER TO JOIN ROOM', 'warn', 3500);
+      return;
+    }
     const rand = Math.random().toString(36).slice(2, 7);
     const newSessionId = `${Date.now().toString(36)}_${rand}`;
     if (resetToZero && state.nes && state.romBinaryString) {
@@ -217,36 +234,8 @@ export function createRomSyncManager(state, ui, audio) {
     state.engine.online = true;
     state.engine.importSyncState(syncState);
     state.engine.syncPaused = true;
-    armSyncAckWatchdog(newSessionId, 60000);
-
-    const chunkSize = 16 * 1024;
-    const totalBytes = state.romUint8.length;
-    const totalChunks = Math.ceil(totalBytes / chunkSize);
-    const kb = Math.round(totalBytes / 1024);
-
-    ui.logDebug(
-      `Sending ROM "${state.romName}" (${kb} KB in ${totalChunks} chunks)...`
-    );
-    ui.showScreenBanner(`SENDING "${state.romName}" (${kb} KB)...`, 'warn', 0);
-    ui.updateStatusStrip();
-
-    state.ws.send(JSON.stringify({
-      type: 'rom_chunk_start', sessionId: newSessionId,
-      romName: state.romName, romCrc32: state.romCrc32,
-      isAutoDefaultRom: state.isAutoDefaultRom,
-      totalBytes, totalChunks, syncState
-    }));
-    for (let i = 0; i < totalChunks; i++) {
-      const end = Math.min(totalBytes, (i + 1) * chunkSize);
-      const slice = state.romUint8.subarray(i * chunkSize, end);
-      state.ws.send(JSON.stringify({
-        type: 'rom_chunk_data', sessionId: newSessionId,
-        index: i, dataB64: uint8ToBase64(slice)
-      }));
-    }
-    state.ws.send(
-      JSON.stringify({ type: 'rom_chunk_end', sessionId: newSessionId })
-    );
+    armSyncAckWatchdog(newSessionId, 180000);
+    await streamRomToPeer(state, ui, newSessionId, syncState, uint8ToBase64);
   }
 
   function sendStateSyncToPeer({ resetToZero = false } = {}) {
@@ -311,18 +300,19 @@ export function createRomSyncManager(state, ui, audio) {
   async function fetchLocalRomByName(fileName, options = {}) {
     try {
       if (state.customRomsMap.has(fileName)) {
+        state.localServerRomKey = null;
         await loadRomFromUint8(
           state.customRomsMap.get(fileName), fileName, options
         );
         return;
       }
+      state.localServerRomKey = fileName;
       const url = `/api/local-rom?file=${encodeURIComponent(fileName)}`;
-      const res = await fetch(url);
-      if (!res.ok) return;
-      const hdr = res.headers.get('X-Rom-Filename');
-      const rName = hdr ? decodeURIComponent(hdr) : fileName;
-      const buf = await res.arrayBuffer();
-      await loadRomFromUint8(new Uint8Array(buf), rName, {
+      const loaded = await fetchRomBytesWithProgress(
+        url, 'LOADING', fileName, ui
+      );
+      if (!loaded) return;
+      await loadRomFromUint8(loaded.u8, loaded.romName, {
         ...options,
         dropdownKey: fileName
       });

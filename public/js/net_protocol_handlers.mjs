@@ -1,5 +1,6 @@
 // Incoming WebSocket/WebRTC Protocol Message Dispatcher
 import { base64ToUint8 } from './rom_sync.mjs';
+import { handleRomTransferMessage } from './rom_archive.mjs';
 
 export function createProtocolHandlers(
   state, ui, romSync, transport, telemetry
@@ -27,30 +28,6 @@ export function createProtocolHandlers(
     if (bannerText) ui.showScreenBanner(bannerText, 'ok', 3500);
     if (typeof state.onGameStarted === 'function') state.onGameStarted();
     ui.updateStatusStrip();
-  }
-
-  async function finalizeIncomingRomTransfer() {
-    const xfer = state.incomingRomTransfer;
-    if (!xfer) return;
-    state.incomingRomTransfer = null;
-    const full = new Uint8Array(xfer.totalBytes);
-    let offset = 0;
-    for (let i = 0; i < xfer.totalChunks; i++) {
-      const part = xfer.chunks.get(i);
-      if (!part) return;
-      full.set(part, offset);
-      offset += part.length;
-    }
-    await romSync.loadRomFromUint8(full, xfer.romName, {
-      broadcastToPeer: false,
-      isAutoDefault: xfer.isAutoDefaultRom
-    });
-    state.partnerRomName = xfer.romName;
-    state.partnerRomCrc32 = state.romCrc32;
-    applyImportedSyncState(
-      xfer.syncState,
-      `ONLINE SYNCED - PLAYING "${state.romName}"`
-    );
   }
 
   function sendLocalRomStatus() {
@@ -250,6 +227,10 @@ export function createProtocolHandlers(
           clearTimeout(state.syncAckTimeout);
           state.syncAckTimeout = null;
         }
+        if (ui.sendRomManualBtn) {
+          ui.sendRomManualBtn.textContent = 'Send My ROM File to Partner';
+          ui.sendRomManualBtn.disabled = false;
+        }
         state.engine.syncPaused = false;
         state.matchStarted = true;
         state.lastRxInputAt = 0;
@@ -273,33 +254,9 @@ export function createProtocolHandlers(
       return;
     }
 
-    if (msg.type === 'rom_chunk_start') {
-      state.incomingRomTransfer = {
-        sessionId: msg.sessionId, romName: msg.romName, romCrc32: msg.romCrc32,
-        isAutoDefaultRom: Boolean(msg.isAutoDefaultRom),
-        totalBytes: msg.totalBytes, totalChunks: msg.totalChunks,
-        syncState: msg.syncState, chunks: new Map(), endSeen: false
-      };
-      if (state.engine) state.engine.syncPaused = true;
-      ui.showScreenBanner(`DOWNLOADING "${msg.romName}" (0%)...`, 'warn', 0);
-      return ui.updateStatusStrip();
-    }
-
-    if (msg.type === 'rom_chunk_data' && state.incomingRomTransfer &&
-        msg.sessionId === state.incomingRomTransfer.sessionId) {
-      const xfer = state.incomingRomTransfer;
-      xfer.chunks.set(msg.index, base64ToUint8(msg.dataB64));
-      if (xfer.chunks.size >= xfer.totalChunks && xfer.endSeen) {
-        finalizeIncomingRomTransfer();
-      }
-      return;
-    }
-
-    if (msg.type === 'rom_chunk_end' && state.incomingRomTransfer &&
-        msg.sessionId === state.incomingRomTransfer.sessionId) {
-      state.incomingRomTransfer.endSeen = true;
-      const xfer = state.incomingRomTransfer;
-      if (xfer.chunks.size >= xfer.totalChunks) finalizeIncomingRomTransfer();
+    if (handleRomTransferMessage(
+      msg, state, ui, romSync, applyImportedSyncState, sendWs, base64ToUint8
+    )) {
       return;
     }
 

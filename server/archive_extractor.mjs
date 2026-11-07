@@ -5,9 +5,7 @@ import path from 'path';
 import zlib from 'zlib';
 import { execFileSync } from 'child_process';
 import {
-  isSupportedRomFile,
-  isArchiveFile,
-  isSupportedRomOrArchiveFile
+  isSupportedRomFile, isArchiveFile, isSupportedRomOrArchiveFile
 } from '../src/core_adapter.mjs';
 
 const WINRAR_PATHS = [
@@ -24,9 +22,7 @@ const SEVENZIP_PATHS = [
 ];
 
 function findFirstExisting(paths) {
-  for (const p of paths) {
-    if (fs.existsSync(p)) return p;
-  }
+  for (const p of paths) if (fs.existsSync(p)) return p;
   return null;
 }
 
@@ -37,10 +33,7 @@ export function extractRomFromZipBuffer(buf) {
   let eocdOffset = -1;
   const minEocd = Math.max(0, u8.length - 65557);
   for (let i = u8.length - 22; i >= minEocd; i--) {
-    if (u8.readUInt32LE(i) === 0x06054b50) {
-      eocdOffset = i;
-      break;
-    }
+    if (u8.readUInt32LE(i) === 0x06054b50) { eocdOffset = i; break; }
   }
 
   if (eocdOffset >= 0) {
@@ -258,12 +251,15 @@ export function extractRomFromBuffer(buf, fileName = 'archive.zip') {
       if (zipRes) return zipRes;
     } catch {}
     if (buf.length >= 30 && buf[0] === 0x50 && buf[1] === 0x4b) {
-      return { romName: base, romBuffer: Buffer.from(buf) };
+      const arcPath = path.resolve('local', 'arcade', base);
+      return {
+        romName: base,
+        romBuffer: Buffer.from(mergeCompanionZipIfPresent(buf, arcPath))
+      };
     }
   }
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nes_arc_in_'));
-  const ext = path.extname(base) || '.bin';
-  const archivePath = path.join(tmpDir, `input${ext}`);
+  const archivePath = path.join(tmpDir, `input${path.extname(base) || '.bin'}`);
   const outDir = path.join(tmpDir, 'out');
   fs.mkdirSync(outDir, { recursive: true });
   try {
@@ -283,10 +279,11 @@ export function listLocalRomFiles(localDir) {
     if (ent.isFile() && isSupportedRomOrArchiveFile(ent.name)) {
       out.push(ent.name);
     } else if (ent.isDirectory()) {
-      const subDir = path.join(localDir, ent.name);
-      for (const sub of fs.readdirSync(subDir, { withFileTypes: true })) {
-        if (sub.isFile() && isSupportedRomOrArchiveFile(sub.name)) {
-          out.push(`${ent.name}/${sub.name}`);
+      for (const s of fs.readdirSync(
+        path.join(localDir, ent.name), { withFileTypes: true }
+      )) {
+        if (s.isFile() && isSupportedRomOrArchiveFile(s.name)) {
+          out.push(`${ent.name}/${s.name}`);
         }
       }
     }
@@ -313,6 +310,7 @@ export function handleLocalRomDownloadApi(urlObj, res, rootDir, sendJson) {
     const { romName, romBuffer } = extractRomFromFile(romFile);
     res.writeHead(200, {
       'Content-Type': 'application/octet-stream',
+      'Content-Length': String(romBuffer.length),
       'X-Rom-Filename': encodeURIComponent(romName)
     });
     res.end(romBuffer);
@@ -337,6 +335,7 @@ export function handleExtractRomPostApi(req, urlObj, res, sendJson) {
       );
       res.writeHead(200, {
         'Content-Type': 'application/octet-stream',
+        'Content-Length': String(romBuffer.length),
         'X-Rom-Filename': encodeURIComponent(romName)
       });
       res.end(romBuffer);

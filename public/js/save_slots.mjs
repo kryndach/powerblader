@@ -31,6 +31,7 @@ export function createSaveSlotsManager(state, ui, romSync) {
     memorySlots.set(key, entry);
     try {
       const json = JSON.stringify(entry);
+      if (json.length > 512 * 1024) return;
       try {
         localStorage.setItem(key, json);
       } catch {
