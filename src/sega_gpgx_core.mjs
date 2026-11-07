@@ -24,8 +24,8 @@ export async function ensureGpgxRuntime() {
   runtimePromise = (async () => {
     if (typeof window !== 'undefined' && typeof fetch === 'function') {
       const [ns, res] = await Promise.all([
-        import('/vendor/genesis_plus_gx_libretro.js'),
-        fetch('/vendor/genesis_plus_gx_libretro.wasm')
+        import('/vendor/genesis_plus_gx_libretro.js?v=2'),
+        fetch('/vendor/genesis_plus_gx_libretro.wasm?v=2')
       ]);
       cachedFactory = ns.default;
       cachedWasmBinary = new Uint8Array(await res.arrayBuffer());

@@ -287,7 +287,8 @@ export function createCoopServer(options = {}) {
 
     const ext = path.extname(filePath).toLowerCase();
     res.writeHead(200, {
-      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream'
+      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
+      'Cache-Control': 'no-cache'
     });
     fs.createReadStream(filePath).pipe(res);
   });
