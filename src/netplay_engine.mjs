@@ -243,7 +243,9 @@ export class RollbackNetplayEngine {
       this.simulatedFrameTag[idx] = f;
       this.lastConfirmedRemoteFrame = f;
       this.lastLocalScheduledFrame = f;
-      this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
+      if (this.systemId === 'nes') {
+        this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
+      }
       this.suppressCallbacks = false;
       this.core.stepFrame(m1, m2, false);
       this.currentFrame++;

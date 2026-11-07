@@ -25,8 +25,8 @@ export async function ensureFbneoRuntime() {
     let wasmBytes;
     if (typeof window !== 'undefined' && typeof fetch === 'function') {
       const [ns, res] = await Promise.all([
-        import('/vendor/fbneo_arcade.js?v=1'),
-        fetch('/vendor/fbneo_arcade.wasm?v=1')
+        import('/vendor/fbneo_arcade.js?v=2'),
+        fetch('/vendor/fbneo_arcade.wasm?v=2')
       ]);
       fbneoFactory = ns.default;
       wasmBytes = new Uint8Array(await res.arrayBuffer());
@@ -176,9 +176,18 @@ export async function createFbneoArcadeCore({
       const frames = length >>> 1;
       const outCount = Math.round((frames * 48000) / coreState.audioRate);
       const scale = 1 / 32768;
+      const maxIdx = Math.max(0, frames - 1);
+      const step = frames / outCount;
       for (let i = 0; i < outCount; i++) {
-        const idx = Math.min(frames - 1, ((i * frames) / outCount) | 0) * 2;
-        cb(s16[base + idx] * scale, s16[base + idx + 1] * scale);
+        const pos = i * step;
+        const i0 = Math.min(maxIdx, pos | 0);
+        const i1 = Math.min(maxIdx, i0 + 1);
+        const frac = pos - i0;
+        const b0 = base + i0 * 2;
+        const b1 = base + i1 * 2;
+        const l = (s16[b0] + (s16[b1] - s16[b0]) * frac) * scale;
+        const r = (s16[b0 + 1] + (s16[b1 + 1] - s16[b0 + 1]) * frac) * scale;
+        cb(l, r);
       }
     },
     drawScreen: (vidPtr) => {
@@ -217,9 +226,21 @@ export async function createFbneoArcadeCore({
     throw new Error(`FBNeo failed to boot arcade ROM "${driver}"${miss}`);
   }
   const statePath = `/libsdl/fbneo/states/${driver}.fs.all`;
+  let stateNode = null;
+  let stateDirty = true;
+
+  function getMemfsStateView() {
+    if (stateDirty) {
+      mod._saveAllState(1);
+      stateDirty = false;
+      if (!stateNode) stateNode = mod.FS.lookupPath(statePath).node;
+    }
+    return stateNode.contents.subarray(0, stateNode.usedBytes);
+  }
 
   core.stepFrame = function (p1Mask, p2Mask, headless = false) {
     coreState.headless = Boolean(headless);
+    stateDirty = true;
     mod._setEmInput(0, toFbneoInputMask(p1Mask), 0, 0, 0, 0);
     mod._setEmInput(1, toFbneoInputMask(p2Mask), 0, 0, 0, 0);
     mod._collectGameInputs();
@@ -230,24 +251,25 @@ export async function createFbneoArcadeCore({
   core.getFrameBuffer = () => frameBuffer;
 
   core.saveStateBytes = function () {
-    mod._saveAllState(1);
-    return new Uint8Array(mod.FS.readFile(statePath));
+    return new Uint8Array(getMemfsStateView());
   };
 
   core.loadStateBytes = function (bytes) {
     if (!bytes || !bytes.length) return;
     mod.FS.writeFile(statePath, bytes);
+    stateNode = mod.FS.lookupPath(statePath).node;
+    stateDirty = false;
     mod._saveAllState(0);
   };
 
   core.saveStateInto = function (slot, frame) {
-    const bytes = core.saveStateBytes();
+    const view = getMemfsStateView();
     slot.frame = frame;
-    slot.usedLen = bytes.length;
-    if (!slot.stateBytes || slot.stateBytes.length < bytes.length) {
-      slot.stateBytes = new Uint8Array(bytes.length);
+    slot.usedLen = view.length;
+    if (!slot.stateBytes || slot.stateBytes.length < view.length) {
+      slot.stateBytes = new Uint8Array(view.length);
     }
-    slot.stateBytes.set(bytes);
+    slot.stateBytes.set(view);
   };
 
   core.loadStateFromSlot = function (slot) {
@@ -258,7 +280,7 @@ export async function createFbneoArcadeCore({
   };
 
   core.computeHash = function () {
-    return crc32Bytes(core.saveStateBytes()) >>> 0;
+    return crc32Bytes(getMemfsStateView()) >>> 0;
   };
 
   core.stepFrame(0, 0, true);
