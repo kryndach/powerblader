@@ -1,27 +1,16 @@
-/**
- * @fileoverview Universal NES Netplay & Rollback QA Test Suite Entry Point.
- *
- * Line width <= 80 chars, file size <= 350 lines.
- */
-
+// Universal NES, SNES & Sega Netplay & Rollback QA Test Suite Entry Point
 import assert from 'assert';
 import fs from 'fs';
 import * as jsnesModule from 'jsnes';
 import {
-  RollbackNetplayEngine,
-  NesNetplayEngine,
-  INPUT_BITS,
-  SEGA_MD_INPUT_BITS,
-  detectSystemFromRomName,
-  computeDeterministicHash,
-  formatHex32,
-  saveFastState,
-  loadFastState
+  RollbackNetplayEngine, NesNetplayEngine, INPUT_BITS, SEGA_MD_INPUT_BITS,
+  detectSystemFromRomName, computeDeterministicHash, formatHex32,
+  saveFastState, loadFastState
 } from '../src/netplay_engine.mjs';
+import { createSnes9xCore } from '../src/sega_gpgx_core.mjs';
 import { createDualControllerTestRom } from './test_rom_builder_tables.mjs';
 import {
-  runTest4LateJoinAndDesync,
-  runTest5BiDirectionalRomSwitch
+  runTest4LateJoinAndDesync, runTest5BiDirectionalRomSwitch
 } from './coop_qa_server_tests.mjs';
 import { runTest6ChrRamRiftAndTelemetry } from './coop_qa_advanced_tests.mjs';
 
@@ -30,9 +19,7 @@ const jsnes = jsnesModule.NES ? jsnesModule : jsnesModule.default;
 async function runTests() {
   console.log('=== Universal NES Netplay & Rollback QA Test Suite ===\n');
 
-  // ---------------------------------------------------------------------------
   // Test 1: Multi-Mapper Fast Binary Savestate Determinism (Mappers 0, 1, 2, 4)
-  // ---------------------------------------------------------------------------
   for (const mapperId of [0, 1, 2, 4]) {
     const { binaryString } = createDualControllerTestRom(mapperId);
     const nes = new jsnes.NES({});
@@ -312,6 +299,39 @@ async function runTests() {
     console.log(
       '[PASS] Test 7: Multi-Console Core Adapter (Sega MD 320x224 12-Bit ' +
         '6-Button Rollback & 3DS Profile) Verified'
+    );
+  }
+
+  // Test 8: Super Nintendo (Snes9x WASM 256x224) Rollback & State Sync
+  {
+    assert.strictEqual(detectSystemFromRomName('Contra3.sfc'), 'snes');
+    assert.strictEqual(detectSystemFromRomName('SMW.smc'), 'snes');
+    const rom = new Uint8Array(0x8000);
+    rom.set([0x20, 0, 5, 0, 0, 0, 0, 255, 255, 0, 0], 0x7fd5);
+    rom[0x7ffc] = 0x00;
+    rom[0x7ffd] = 0x80;
+    rom.set([0x78, 0x18, 0xfb, 0xee, 0x00, 0x00, 0x4c, 0x03, 0x80], 0);
+    let snesFrames = 0;
+    const snes1 = await createSnes9xCore({
+      romBytes: rom, romName: 'Test.sfc', onFrame: () => snesFrames++
+    });
+    const origProc = globalThis.process;
+    delete globalThis.process;
+    const snes2 = await createSnes9xCore({ romBytes: rom, romName: 'T.sfc' });
+    globalThis.process = origProc;
+    const e1 = new NesNetplayEngine(snes1, { localPlayer: 1, online: true });
+    const e2 = new NesNetplayEngine(snes2, { localPlayer: 2, online: true });
+    for (let f = 0; f < 30; f++) {
+      const r1 = e1.stepNetplayFrame(INPUT_BITS.B | INPUT_BITS.Y);
+      const r2 = e2.stepNetplayFrame(INPUT_BITS.A | INPUT_BITS.X);
+      if (r1.packetToSend) e2.receiveRemoteInputPacket(r1.packetToSend);
+      if (r2.packetToSend) e1.receiveRemoteInputPacket(r2.packetToSend);
+    }
+    e2.importSyncState(e1.exportSyncState());
+    assert.strictEqual(snes1.computeHash(), snes2.computeHash());
+    assert.ok(snesFrames >= 30);
+    console.log(
+      '[PASS] Test 8: Super Nintendo (Snes9x WASM 256x224) Rollback & Sync'
     );
   }
 

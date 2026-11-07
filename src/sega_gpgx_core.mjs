@@ -1,4 +1,4 @@
-// Sega Mega Drive / Genesis & Master System / Game Gear Core (Genesis Plus GX)
+// Sega (Genesis Plus GX) & Super Nintendo (Snes9x) Libretro WASM Cores
 import { INPUT_BITS, crc32Bytes } from './crc32.mjs';
 
 const RGB565_TO_BGR24 = new Uint32Array(65536);
@@ -12,60 +12,77 @@ for (let p = 0; p < 65536; p++) {
   RGB565_TO_BGR24[p] = (b << 16) | (g << 8) | r;
 }
 
-let cachedFactory = null;
-let cachedWasmBinary = null;
-let runtimePromise = null;
-
-export async function ensureGpgxRuntime() {
-  if (cachedFactory && cachedWasmBinary) {
-    return { factory: cachedFactory, wasmBinary: cachedWasmBinary };
+const RUNTIMES = {
+  gpgx: {
+    file: 'genesis_plus_gx_libretro',
+    factory: null, wasmBinary: null, promise: null
+  },
+  snes9x: {
+    file: 'snes9x_libretro',
+    factory: null, wasmBinary: null, promise: null
   }
-  if (runtimePromise) return runtimePromise;
-  runtimePromise = (async () => {
+};
+
+export async function ensureLibretroRuntime(coreKey = 'gpgx') {
+  const rt = RUNTIMES[coreKey] || RUNTIMES.gpgx;
+  if (rt.factory && rt.wasmBinary) {
+    return { factory: rt.factory, wasmBinary: rt.wasmBinary };
+  }
+  if (rt.promise) return rt.promise;
+  rt.promise = (async () => {
     if (typeof window !== 'undefined' && typeof fetch === 'function') {
       const [ns, res] = await Promise.all([
-        import('/vendor/genesis_plus_gx_libretro.js?v=2'),
-        fetch('/vendor/genesis_plus_gx_libretro.wasm?v=2')
+        import(`/vendor/${rt.file}.js?v=2`),
+        fetch(`/vendor/${rt.file}.wasm?v=2`)
       ]);
-      cachedFactory = ns.default;
-      cachedWasmBinary = new Uint8Array(await res.arrayBuffer());
+      rt.factory = ns.default;
+      rt.wasmBinary = new Uint8Array(await res.arrayBuffer());
     } else {
       const fs = await import('node:fs');
       const path = await import('node:path');
       const url = await import('node:url');
       const dir = path.dirname(url.fileURLToPath(import.meta.url));
       const vDir = path.resolve(dir, '..', 'public', 'vendor');
-      const jsUrl = url.pathToFileURL(
-        path.join(vDir, 'genesis_plus_gx_libretro.js')
-      ).href;
+      const jsUrl = url.pathToFileURL(path.join(vDir, `${rt.file}.js`)).href;
       const ns = await import(jsUrl);
-      cachedFactory = ns.default;
-      cachedWasmBinary = new Uint8Array(
-        fs.readFileSync(path.join(vDir, 'genesis_plus_gx_libretro.wasm'))
+      rt.factory = ns.default;
+      rt.wasmBinary = new Uint8Array(
+        fs.readFileSync(path.join(vDir, `${rt.file}.wasm`))
       );
     }
-    return { factory: cachedFactory, wasmBinary: cachedWasmBinary };
+    return { factory: rt.factory, wasmBinary: rt.wasmBinary };
   })().catch((err) => {
-    runtimePromise = null;
+    rt.promise = null;
     throw err;
   });
-  return runtimePromise;
+  return rt.promise;
 }
 
-export function toRetroPadMask(mask) {
+export const ensureGpgxRuntime = () => ensureLibretroRuntime('gpgx');
+export const ensureSnes9xRuntime = () => ensureLibretroRuntime('snes9x');
+
+export function toRetroPadMask(mask, systemId = 'sega_md') {
   let r = 0;
   if (mask & INPUT_BITS.B) r |= 1 << 0;
-  if (mask & INPUT_BITS.A) r |= 1 << 1;
   if (mask & INPUT_BITS.SELECT) r |= 1 << 2;
   if (mask & INPUT_BITS.START) r |= 1 << 3;
   if (mask & INPUT_BITS.UP) r |= 1 << 4;
   if (mask & INPUT_BITS.DOWN) r |= 1 << 5;
   if (mask & INPUT_BITS.LEFT) r |= 1 << 6;
   if (mask & INPUT_BITS.RIGHT) r |= 1 << 7;
-  if (mask & INPUT_BITS.C) r |= 1 << 8;
-  if (mask & INPUT_BITS.Y) r |= 1 << 9;
-  if (mask & INPUT_BITS.X) r |= 1 << 10;
-  if (mask & INPUT_BITS.Z) r |= 1 << 11;
+  if (systemId === 'snes') {
+    if (mask & INPUT_BITS.Y) r |= 1 << 1;
+    if (mask & INPUT_BITS.A) r |= 1 << 8;
+    if (mask & INPUT_BITS.X) r |= 1 << 9;
+    if (mask & INPUT_BITS.C) r |= 1 << 10;
+    if (mask & INPUT_BITS.Z) r |= 1 << 11;
+  } else {
+    if (mask & INPUT_BITS.A) r |= 1 << 1;
+    if (mask & INPUT_BITS.C) r |= 1 << 8;
+    if (mask & INPUT_BITS.Y) r |= 1 << 9;
+    if (mask & INPUT_BITS.X) r |= 1 << 10;
+    if (mask & INPUT_BITS.Z) r |= 1 << 11;
+  }
   return r;
 }
 
@@ -80,10 +97,7 @@ function allocCString(mod, ptrs, str) {
 function wireLibretroEnv(mod, coreState) {
   const envCb = mod.addFunction((rawCmd, dataPtr) => {
     const cmd = rawCmd & ~0x10000;
-    if (cmd === 3) {
-      mod.setValue(dataPtr, 1, 'i8');
-      return 1;
-    }
+    if (cmd === 3) { mod.setValue(dataPtr, 1, 'i8'); return 1; }
     if (cmd === 2 || cmd === 17 || cmd === 49) {
       mod.setValue(dataPtr, 0, 'i8');
       return 1;
@@ -108,14 +122,8 @@ function wireLibretroEnv(mod, coreState) {
       mod.setValue(dataPtr, coreState.logCbPtr, 'i32');
       return 1;
     }
-    if (cmd === 15) {
-      mod.setValue(dataPtr + 4, 0, 'i32');
-      return 0;
-    }
-    if (cmd === 24) {
-      mod.setValue(dataPtr, 2, 'i32');
-      return 1;
-    }
+    if (cmd === 15) { mod.setValue(dataPtr + 4, 0, 'i32'); return 0; }
+    if (cmd === 24) { mod.setValue(dataPtr, 2, 'i32'); return 1; }
     if (cmd === 51 || cmd === 16 || cmd === 53 || cmd === 54 ||
         cmd === 67 || cmd === 68 || cmd === 11 || cmd === 35 ||
         cmd === 36 || cmd === 37 || cmd === 8 || cmd === 6) {
@@ -127,48 +135,31 @@ function wireLibretroEnv(mod, coreState) {
 }
 
 export async function createSegaGpgxCore({
-  romBytes,
-  romName = 'Game.md',
-  systemId = 'sega_md',
-  onFrame = null,
-  onAudioSample = null
+  romBytes, romName = 'Game.md', systemId = 'sega_md',
+  onFrame = null, onAudioSample = null
 }) {
-  const { factory, wasmBinary } = await ensureGpgxRuntime();
+  const coreKey = systemId === 'snes' ? 'snes9x' : 'gpgx';
+  const { factory, wasmBinary } = await ensureLibretroRuntime(coreKey);
   const mod = await factory({
-    wasmBinary,
-    noInitialRun: true,
-    print: () => {},
-    printErr: () => {}
+    wasmBinary, noInitialRun: true, print: () => {}, printErr: () => {}
   });
 
-  const width = systemId === 'sega_sms' ? 256 : 320;
+  const width = systemId === 'sega_md' ? 320 : 256;
   const height = systemId === 'sega_sms' ? 192 : 224;
   const frameBuffer = new Uint32Array(width * height);
   const coreState = {
-    pixelFormat: 2,
-    ports: [0, 0],
-    headless: false,
-    audioSampleRate: 44100,
-    ptrs: [],
-    logCbPtr: 0
+    pixelFormat: 2, ports: [0, 0], headless: false,
+    audioSampleRate: 44100, ptrs: [], logCbPtr: 0
   };
+  const mType = systemId === 'snes'
+    ? 'SNES' : systemId === 'sega_sms' ? 'SEGA-SMS' : 'SEGA-MD';
 
   const core = {
-    systemId,
-    width,
-    height,
-    frameBuffer,
-    mod,
+    systemId, width, height, frameBuffer, mod,
     ppu: { _headlessFrame: false, buffer: frameBuffer },
-    rom: {
-      mapperType: systemId === 'sega_sms' ? 'SEGA-SMS' : 'SEGA-MD',
-      vromCount: 1
-    },
+    rom: { mapperType: mType, vromCount: 1 },
     opts: { onFrame, onAudioSample },
-    _statePtr: 0,
-    _stateSize: 0,
-    _lastUsedLen: 0,
-    _initialBootState: null
+    _statePtr: 0, _stateSize: 0, _lastUsedLen: 0, _initialBootState: null
   };
 
   wireLibretroEnv(mod, coreState);
@@ -221,24 +212,21 @@ export async function createSegaGpgxCore({
   mod._retro_set_audio_sample(mod.addFunction(() => {}, 'vii'));
   mod._retro_set_input_poll(mod.addFunction(() => {}, 'v'));
 
-  const inputStateCb = mod.addFunction((port, device, _idx, id) => {
+  const inputStateCb = mod.addFunction((port, _device, _idx, id) => {
     if (port !== 0 && port !== 1) return 0;
     const bits = coreState.ports[port];
-    if (id === 256) return bits;
-    return bits & (1 << id) ? 1 : 0;
+    return id === 256 ? bits : (bits & (1 << id) ? 1 : 0);
   }, 'iiiii');
   mod._retro_set_input_state(inputStateCb);
-
   mod._retro_init();
 
   const lower = String(romName).toLowerCase();
-  const ext = lower.endsWith('.gg')
-    ? '.gg'
-    : lower.endsWith('.sms') ? '.sms' : '.md';
+  const ext = systemId === 'snes'
+    ? '.sfc'
+    : lower.endsWith('.gg') ? '.gg' : lower.endsWith('.sms') ? '.sms' : '.md';
   const vfsPath = `/rom${ext}`;
   const u8 = romBytes instanceof Uint8Array
-    ? romBytes
-    : new Uint8Array(romBytes);
+    ? romBytes : new Uint8Array(romBytes);
   try {
     if (mod.FS) mod.FS.writeFile(vfsPath, u8);
   } catch {}
@@ -253,7 +241,7 @@ export async function createSegaGpgxCore({
   mod.setValue(infoPtr + 12, 0, 'i32');
   const ok = mod._retro_load_game(infoPtr);
   mod._free(infoPtr);
-  if (!ok) throw new Error(`Genesis Plus GX refused ROM "${romName}"`);
+  if (!ok) throw new Error(`Libretro core refused ROM "${romName}"`);
 
   const avPtr = mod._malloc(64);
   mod._retro_get_system_av_info(avPtr);
@@ -265,12 +253,13 @@ export async function createSegaGpgxCore({
   mod._retro_set_controller_port_device(1, 1);
 
   core._stateSize = mod._retro_serialize_size();
-  core._statePtr = mod._malloc(core._stateSize);
-  mod.HEAPU8.fill(0, core._statePtr, core._statePtr + core._stateSize);
+  const alignedSz = (core._stateSize + 7) & ~3;
+  core._statePtr = mod._malloc(alignedSz);
+  mod.HEAPU8.fill(0, core._statePtr, core._statePtr + alignedSz);
 
   core.stepFrame = function (p1Mask, p2Mask, headless = false) {
-    coreState.ports[0] = toRetroPadMask(p1Mask);
-    coreState.ports[1] = toRetroPadMask(p2Mask);
+    coreState.ports[0] = toRetroPadMask(p1Mask, systemId);
+    coreState.ports[1] = toRetroPadMask(p2Mask, systemId);
     coreState.headless = Boolean(headless);
     mod._retro_run();
     coreState.headless = false;
@@ -282,7 +271,7 @@ export async function createSegaGpgxCore({
     mod._retro_serialize(core._statePtr, core._stateSize);
     const u32 = mod.HEAPU32;
     const baseWord = core._statePtr >>> 2;
-    let wIdx = (core._stateSize >>> 2) - 1;
+    let wIdx = ((core._stateSize + 3) >>> 2) - 1;
     while (wIdx > 0 && u32[baseWord + wIdx] === 0) wIdx--;
     const used = Math.min(core._stateSize, (wIdx + 2) << 2);
     if (used > core._lastUsedLen) core._lastUsedLen = used;
@@ -294,7 +283,7 @@ export async function createSegaGpgxCore({
     slot.frame = frame;
     slot.usedLen = used;
     if (!slot.stateBytes || slot.stateBytes.length < used) {
-      slot.stateBytes = new Uint8Array(Math.max(used, 163840));
+      slot.stateBytes = new Uint8Array(Math.max(used, core._stateSize));
     }
     slot.stateBytes.set(
       mod.HEAPU8.subarray(core._statePtr, core._statePtr + used)
@@ -348,3 +337,6 @@ export async function createSegaGpgxCore({
 
   return core;
 }
+
+export const createSnes9xCore = (opts) =>
+  createSegaGpgxCore({ ...opts, systemId: 'snes' });

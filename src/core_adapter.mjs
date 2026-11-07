@@ -30,6 +30,15 @@ export const CONSOLE_PROFILES = {
     netplayMode: 'rollback',
     inputBits: 8
   },
+  snes: {
+    systemId: 'snes',
+    name: 'Super Nintendo (SNES)',
+    width: 256,
+    height: 224,
+    extensions: ['.sfc', '.smc', '.fig', '.swc'],
+    netplayMode: 'rollback',
+    inputBits: 12
+  },
   sega_md: {
     systemId: 'sega_md',
     name: 'Sega Mega Drive / Genesis',

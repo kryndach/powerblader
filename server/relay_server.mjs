@@ -24,6 +24,8 @@ const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
   '.wasm': 'application/wasm',
   '.nes': 'application/octet-stream',
+  '.sfc': 'application/octet-stream',
+  '.smc': 'application/octet-stream',
   '.md': 'application/octet-stream',
   '.gen': 'application/octet-stream',
   '.smd': 'application/octet-stream'

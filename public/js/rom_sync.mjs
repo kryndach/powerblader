@@ -121,7 +121,8 @@ export function createRomSyncManager(state, ui, audio) {
 
     const sysId = detectSystemFromRomBytes(u8, state.romName);
     const w = sysId === 'sega_md' ? 320 : 256;
-    const h = sysId === 'sega_md' ? 224 : sysId === 'sega_sms' ? 192 : 240;
+    const h = sysId === 'sega_md' || sysId === 'snes'
+      ? 224 : sysId === 'sega_sms' ? 192 : 240;
     ui.setConsoleResolution(w, h);
 
     let audioSub = 0;
@@ -134,7 +135,7 @@ export function createRomSyncManager(state, ui, audio) {
       audio.pushSample(l, r);
     };
 
-    if (sysId === 'sega_md' || sysId === 'sega_sms') {
+    if (sysId === 'sega_md' || sysId === 'sega_sms' || sysId === 'snes') {
       state.nes = await createSegaGpgxCore({
         romBytes: u8,
         romName: state.romName,
@@ -162,7 +163,7 @@ export function createRomSyncManager(state, ui, audio) {
     if (isOnline) state.engine.syncPaused = true;
 
     const shortName = state.romName.replace(
-      /\.(nes|md|gen|smd|bin|sms|gg)$/i, ''
+      /\.(nes|sfc|smc|fig|swc|md|gen|smd|bin|sms|gg)$/i, ''
     );
     ui.romBadge.textContent = `ROM: ${shortName} [${state.romCrc32}]`;
     const mType = state.nes.rom.mapperType;

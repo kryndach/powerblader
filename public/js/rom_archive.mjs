@@ -1,5 +1,8 @@
 // Client-Side ZIP Extractor, Server Archive (.rar/.7z) Bridge & Drag-and-Drop
-const ROM_EXTS = ['.nes', '.md', '.gen', '.smd', '.bin', '.sms', '.gg', '.3ds'];
+const ROM_EXTS = [
+  '.nes', '.sfc', '.smc', '.fig', '.swc',
+  '.md', '.gen', '.smd', '.bin', '.sms', '.gg', '.3ds'
+];
 const ARCHIVE_EXTS = ['.zip', '.rar', '.7z'];
 
 function isRomEntryName(name = '') {
