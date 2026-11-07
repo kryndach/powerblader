@@ -61,6 +61,7 @@ export function extractRomFromZipBuffer(buf) {
 
       const baseName = path.basename(entryName);
       if (!isSupportedRomFile(baseName)) continue;
+      if (baseName.toLowerCase().endsWith('.bin') && totalEntries > 1) continue;
       if (localHdrOff + 30 > u8.length) continue;
       if (u8.readUInt32LE(localHdrOff) !== 0x04034b50) continue;
 
@@ -135,17 +136,105 @@ function extractArchiveToDir(archivePath, outDir) {
   return null;
 }
 
+function parseZipEntries(u8) {
+  if (!u8 || u8.length < 30 || u8.readUInt32LE(0) !== 0x04034b50) return null;
+  let eocd = -1;
+  const minPos = Math.max(0, u8.length - 65557);
+  for (let i = u8.length - 22; i >= minPos; i--) {
+    if (u8.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) return null;
+  const total = u8.readUInt16LE(eocd + 10);
+  let cdOff = u8.readUInt32LE(eocd + 16);
+  const entries = [];
+  for (let e = 0; e < total && cdOff + 46 <= u8.length; e++) {
+    if (u8.readUInt32LE(cdOff) !== 0x02014b50) break;
+    const compSize = u8.readUInt32LE(cdOff + 20);
+    const nLen = u8.readUInt16LE(cdOff + 28);
+    const xLen = u8.readUInt16LE(cdOff + 30);
+    const cLen = u8.readUInt16LE(cdOff + 32);
+    const lOff = u8.readUInt32LE(cdOff + 42);
+    const cdLen = 46 + nLen + xLen + cLen;
+    const name = u8.subarray(cdOff + 46, cdOff + 46 + nLen).toString('utf8');
+    const lNameLen = u8.readUInt16LE(lOff + 26);
+    const lExtraLen = u8.readUInt16LE(lOff + 28);
+    const localTotal = 30 + lNameLen + lExtraLen + compSize;
+    entries.push({
+      name: name.toLowerCase(),
+      localSlice: u8.subarray(lOff, lOff + localTotal),
+      cdSlice: Buffer.from(u8.subarray(cdOff, cdOff + cdLen))
+    });
+    cdOff += cdLen;
+  }
+  return entries;
+}
+
+function mergeZipBuffers(childBuf, parentBuf) {
+  const cEnts = parseZipEntries(childBuf);
+  const pEnts = parseZipEntries(parentBuf);
+  if (!cEnts || !pEnts) return childBuf;
+  const seen = new Set(cEnts.map((e) => e.name));
+  const merged = [...cEnts, ...pEnts.filter((e) => !seen.has(e.name))];
+  if (merged.length === cEnts.length) return childBuf;
+  const localParts = [];
+  const cdParts = [];
+  let offset = 0;
+  for (const ent of merged) {
+    const cd = Buffer.from(ent.cdSlice);
+    cd.writeUInt32LE(offset, 42);
+    localParts.push(ent.localSlice);
+    cdParts.push(cd);
+    offset += ent.localSlice.length;
+  }
+  const cdBuf = Buffer.concat(cdParts);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(merged.length, 8);
+  eocd.writeUInt16LE(merged.length, 10);
+  eocd.writeUInt32LE(cdBuf.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localParts, cdBuf, eocd]);
+}
+
+function mergeCompanionZipIfPresent(filePath, buf) {
+  const dir = path.dirname(filePath);
+  const stem = path.basename(filePath, path.extname(filePath)).toLowerCase();
+  let out = buf;
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.toLowerCase().endsWith('.zip')) continue;
+      const otherStem = path.basename(f, path.extname(f)).toLowerCase();
+      if (otherStem === stem) continue;
+      if (stem.startsWith(otherStem) || otherStem === 'neogeo' ||
+          otherStem === 'pgm' || otherStem === 'ym2608') {
+        const pBuf = fs.readFileSync(path.join(dir, f));
+        out = mergeZipBuffers(out, pBuf);
+      }
+    }
+  } catch {}
+  return out;
+}
+
 export function extractRomFromFile(filePath) {
   const base = path.basename(filePath);
   if (isSupportedRomFile(base)) {
     return { romName: base, romBuffer: fs.readFileSync(filePath) };
   }
   const buf = fs.readFileSync(filePath);
+  const isArcadeDir = filePath.replace(/\\/g, '/').includes('/arcade/');
   if (base.toLowerCase().endsWith('.zip')) {
-    try {
-      const zipRes = extractRomFromZipBuffer(buf);
-      if (zipRes) return zipRes;
-    } catch {}
+    if (!isArcadeDir) {
+      try {
+        const zipRes = extractRomFromZipBuffer(buf);
+        if (zipRes) return zipRes;
+      } catch {}
+    }
+    if (buf.length >= 30 && buf.readUInt32LE(0) === 0x04034b50) {
+      return {
+        romName: base,
+        romBuffer: mergeCompanionZipIfPresent(filePath, buf)
+      };
+    }
   }
   const tmpOut = fs.mkdtempSync(path.join(os.tmpdir(), 'nes_rom_ext_'));
   try {
@@ -168,6 +257,9 @@ export function extractRomFromBuffer(buf, fileName = 'archive.zip') {
       const zipRes = extractRomFromZipBuffer(buf);
       if (zipRes) return zipRes;
     } catch {}
+    if (buf.length >= 30 && buf[0] === 0x50 && buf[1] === 0x4b) {
+      return { romName: base, romBuffer: Buffer.from(buf) };
+    }
   }
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nes_arc_in_'));
   const ext = path.extname(base) || '.bin';
@@ -203,27 +295,19 @@ export function listLocalRomFiles(localDir) {
 }
 
 export function handleLocalRomsApi(res, rootDir, sendJson) {
-  const localDir = path.join(rootDir, 'local');
-  const files = listLocalRomFiles(localDir);
-  sendJson(res, 200, { files });
+  sendJson(res, 200, { files: listLocalRomFiles(path.join(rootDir, 'local')) });
 }
 
 export function handleLocalRomDownloadApi(urlObj, res, rootDir, sendJson) {
   const localDir = path.join(rootDir, 'local');
   const files = listLocalRomFiles(localDir);
   const reqFile = (urlObj.searchParams.get('file') || '').replace(/\\/g, '/');
-  let matched = null;
-  if (reqFile) {
-    matched = files.find(
-      (f) => f === reqFile || path.posix.basename(f) === reqFile
-    );
-  } else if (files.length > 0) {
-    matched = files[0];
-  }
+  const matched = reqFile
+    ? files.find((f) => f === reqFile || path.posix.basename(f) === reqFile)
+    : files[0] || null;
   const romFile = matched ? path.join(localDir, matched) : null;
   if (!romFile || !fs.existsSync(romFile)) {
-    sendJson(res, 404, { available: false });
-    return;
+    return sendJson(res, 404, { available: false });
   }
   try {
     const { romName, romBuffer } = extractRomFromFile(romFile);
@@ -243,16 +327,14 @@ export function handleExtractRomPostApi(req, urlObj, res, sendJson) {
   let total = 0;
   req.on('data', (chunk) => {
     total += chunk.length;
-    if (total > 32 * 1024 * 1024) {
-      req.destroy();
-      return;
-    }
+    if (total > 64 * 1024 * 1024) return req.destroy();
     chunks.push(chunk);
   });
   req.on('end', () => {
     try {
-      const buf = Buffer.concat(chunks);
-      const { romName, romBuffer } = extractRomFromBuffer(buf, fileName);
+      const { romName, romBuffer } = extractRomFromBuffer(
+        Buffer.concat(chunks), fileName
+      );
       res.writeHead(200, {
         'Content-Type': 'application/octet-stream',
         'X-Rom-Filename': encodeURIComponent(romName)

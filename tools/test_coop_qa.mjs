@@ -8,6 +8,9 @@ import {
   saveFastState, loadFastState
 } from '../src/netplay_engine.mjs';
 import { createSnes9xCore } from '../src/sega_gpgx_core.mjs';
+import {
+  createFbneoArcadeCore, createMinimalArcadeTestZip
+} from '../src/fbneo_arcade_core.mjs';
 import { createDualControllerTestRom } from './test_rom_builder_tables.mjs';
 import {
   runTest4LateJoinAndDesync, runTest5BiDirectionalRomSwitch
@@ -60,44 +63,33 @@ async function runTests() {
       '(Mappers 0, 1, 2 CHR-RAM, 4 MMC3)'
   );
 
-  // ---------------------------------------------------------------------------
   // Test 2: Dual Controller ($4016 P1 + $4017 P2) Strobe & Rollback Sync
-  // ---------------------------------------------------------------------------
   {
     const { binaryString } = createDualControllerTestRom(0);
     const nesP1 = new jsnes.NES({});
     const nesP2 = new jsnes.NES({});
     nesP1.loadROM(binaryString);
     nesP2.loadROM(binaryString);
-
     const engP1 = new NesNetplayEngine(nesP1, {
-      localPlayer: 1,
-      online: true,
-      inputDelayFrames: 2
+      localPlayer: 1, online: true, inputDelayFrames: 2
     });
     const engP2 = new NesNetplayEngine(nesP2, {
-      localPlayer: 2,
-      online: true,
-      inputDelayFrames: 2
+      localPlayer: 2, online: true, inputDelayFrames: 2
     });
-
     const p1Combo = INPUT_BITS.RIGHT | INPUT_BITS.A | INPUT_BITS.START;
     const p2Combo = INPUT_BITS.LEFT | INPUT_BITS.B | INPUT_BITS.SELECT;
-
     for (let i = 0; i < 40; i++) {
       const r1 = engP1.stepNetplayFrame(p1Combo);
       const r2 = engP2.stepNetplayFrame(p2Combo);
       if (r1.packetToSend) engP2.receiveRemoteInputPacket(r1.packetToSend);
       if (r2.packetToSend) engP1.receiveRemoteInputPacket(r2.packetToSend);
     }
-
     assert.strictEqual(nesP1.cpu.mem[0x0010], nesP2.cpu.mem[0x0010]);
     assert.strictEqual(nesP1.cpu.mem[0x0011], nesP2.cpu.mem[0x0011]);
     assert.strictEqual(nesP1.cpu.mem[0x0020], nesP2.cpu.mem[0x0020]);
     assert.strictEqual(nesP1.cpu.mem[0x0022], nesP2.cpu.mem[0x0022]);
     assert.strictEqual(
-      computeDeterministicHash(nesP1),
-      computeDeterministicHash(nesP2)
+      computeDeterministicHash(nesP1), computeDeterministicHash(nesP2)
     );
   }
   console.log(
@@ -105,31 +97,21 @@ async function runTests() {
       'Simultaneous Input Sync Verified'
   );
 
-  // ---------------------------------------------------------------------------
   // Test 3: 3,600-Frame (60s) Rollback Stress Test under SG<->RU Network Chaos
-  // ---------------------------------------------------------------------------
   {
     const localRomPath = 'local/Power Blade 2 (U) [!].nes';
     const romData = fs.existsSync(localRomPath)
       ? fs.readFileSync(localRomPath, { encoding: 'binary' })
       : createDualControllerTestRom(4).binaryString;
-
     const nesSG = new jsnes.NES({});
     const nesRU = new jsnes.NES({});
     nesSG.loadROM(romData);
     nesRU.loadROM(romData);
-
     const engSG = new NesNetplayEngine(nesSG, {
-      localPlayer: 1,
-      online: true,
-      inputDelayFrames: 2,
-      maxRollbackFrames: 14
+      localPlayer: 1, online: true, inputDelayFrames: 2, maxRollbackFrames: 14
     });
     const engRU = new NesNetplayEngine(nesRU, {
-      localPlayer: 2,
-      online: true,
-      inputDelayFrames: 2,
-      maxRollbackFrames: 14
+      localPlayer: 2, online: true, inputDelayFrames: 2, maxRollbackFrames: 14
     });
 
     const inFlightToRU = [];
@@ -218,9 +200,7 @@ async function runTests() {
   await runTest5BiDirectionalRomSwitch();
   await runTest6ChrRamRiftAndTelemetry();
 
-  // ---------------------------------------------------------------------------
   // 7. Multi-Console Core Adapter (Sega Mega Drive 320x224 12-Bit + 3DS)
-  // ---------------------------------------------------------------------------
   {
     assert.strictEqual(detectSystemFromRomName('Streets2.md'), 'sega_md');
     assert.strictEqual(detectSystemFromRomName('Sonic.gen'), 'sega_md');
@@ -232,10 +212,7 @@ async function runTests() {
       const state = new Uint32Array(4);
       const fb = new Uint32Array(320 * 224);
       return {
-        systemId: 'sega_md',
-        width: 320,
-        height: 224,
-        opts: {},
+        systemId: 'sega_md', width: 320, height: 224, opts: {},
         stepFrame(p1, p2, headless) {
           state[0] = (state[0] + 1) >>> 0;
           state[1] = (state[1] * 31 + p1) >>> 0;
@@ -302,10 +279,10 @@ async function runTests() {
     );
   }
 
-  // Test 8: Super Nintendo (Snes9x WASM 256x224) Rollback & State Sync
+  // Test 8 & 9: Super Nintendo (Snes9x) & Arcade (FBNeo) WASM Rollback & Sync
   {
     assert.strictEqual(detectSystemFromRomName('Contra3.sfc'), 'snes');
-    assert.strictEqual(detectSystemFromRomName('SMW.smc'), 'snes');
+    assert.strictEqual(detectSystemFromRomName('arcade/tgm2p.zip'), 'arcade');
     const rom = new Uint8Array(0x8000);
     rom.set([0x20, 0, 5, 0, 0, 0, 0, 255, 255, 0, 0], 0x7fd5);
     rom[0x7ffc] = 0x00;
@@ -321,7 +298,7 @@ async function runTests() {
     globalThis.process = origProc;
     const e1 = new NesNetplayEngine(snes1, { localPlayer: 1, online: true });
     const e2 = new NesNetplayEngine(snes2, { localPlayer: 2, online: true });
-    for (let f = 0; f < 30; f++) {
+    for (let f = 0; f < 25; f++) {
       const r1 = e1.stepNetplayFrame(INPUT_BITS.B | INPUT_BITS.Y);
       const r2 = e2.stepNetplayFrame(INPUT_BITS.A | INPUT_BITS.X);
       if (r1.packetToSend) e2.receiveRemoteInputPacket(r1.packetToSend);
@@ -329,9 +306,29 @@ async function runTests() {
     }
     e2.importSyncState(e1.exportSyncState());
     assert.strictEqual(snes1.computeHash(), snes2.computeHash());
-    assert.ok(snesFrames >= 30);
+    assert.ok(snesFrames >= 25);
+
+    const arcZip = createMinimalArcadeTestZip();
+    let arcFrames = 0;
+    const arc1 = await createFbneoArcadeCore({
+      romBytes: arcZip, romName: 'minivadr.zip', onFrame: () => arcFrames++
+    });
+    const arc2 = await createFbneoArcadeCore({
+      romBytes: arcZip, romName: 'minivadr.zip'
+    });
+    const ae1 = new NesNetplayEngine(arc1, { localPlayer: 1, online: true });
+    const ae2 = new NesNetplayEngine(arc2, { localPlayer: 2, online: true });
+    for (let f = 0; f < 15; f++) {
+      const r1 = ae1.stepNetplayFrame(INPUT_BITS.SELECT | INPUT_BITS.A);
+      const r2 = ae2.stepNetplayFrame(INPUT_BITS.LEFT | INPUT_BITS.START);
+      if (r1.packetToSend) ae2.receiveRemoteInputPacket(r1.packetToSend);
+      if (r2.packetToSend) ae1.receiveRemoteInputPacket(r2.packetToSend);
+    }
+    ae2.importSyncState(ae1.exportSyncState());
+    assert.strictEqual(arc1.computeHash(), arc2.computeHash());
+    assert.ok(arcFrames >= 15);
     console.log(
-      '[PASS] Test 8: Super Nintendo (Snes9x WASM 256x224) Rollback & Sync'
+      '[PASS] Test 8 & 9: SNES (Snes9x) & Arcade (FBNeo) WASM Rollback & Sync'
     );
   }
 

@@ -59,10 +59,11 @@ rules before committing:
   - `src/netplay_engine.mjs` & `src/netplay_packets.mjs` —
     `RollbackNetplayEngine` (`NesNetplayEngine`) GGPO rollback, 32-bit input
     masks, asymmetric input delay (`0f..5f`), clock-rift pacing, and smoothing.
-  - `src/core_adapter.mjs` & `src/sega_gpgx_core.mjs` — Multi-console adapter
-    (`NesCoreAdapter` + `GenericCoreAdapter`), `CONSOLE_PROFILES`, and
-    WebAssembly `Genesis Plus GX` (`public/vendor/`) Sega Mega Drive (`320x224`)
-    & Master System / Game Gear (`256x192`) core with ZRLE sparse state sync.
+  - `src/core_adapter.mjs`, `src/sega_gpgx_core.mjs` &
+    `src/fbneo_arcade_core.mjs` — Multi-console adapter (`NesCoreAdapter` +
+    `GenericCoreAdapter`), `CONSOLE_PROFILES`, and WASM cores (`Genesis Plus GX`
+    Sega MD/SMS, `Snes9x` SNES, and `FinalBurn Neo` Arcade `local/arcade/`,
+    e.g., `tgm2p.zip`) with ZRLE sparse state sync.
   - `src/jsnes_ppu_patches.mjs`, `src/jsnes_mapper_and_sprite_patches.mjs` &
     `src/ppu_register_tables.mjs` — `patchJsnes8x16Sprites` (HBlank `$2006` /
     `$2005` / `$2000` scanline flush, 8x16 sprites, 16-sprite scanline limit,

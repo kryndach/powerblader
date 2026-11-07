@@ -6,6 +6,7 @@ import {
   uint8ToBinaryString, uint8ToBase64, base64ToUint8
 } from '/src/crc32.mjs';
 import { createSegaGpgxCore, ensureGpgxRuntime } from '/src/sega_gpgx_core.mjs';
+import { createFbneoArcadeCore } from '/src/fbneo_arcade_core.mjs';
 
 export { base64ToUint8 };
 const jsnes = window.jsnes;
@@ -111,16 +112,17 @@ export function createRomSyncManager(state, ui, audio) {
     const isAutoDefault = Boolean(options && options.isAutoDefault);
 
     state.romUint8 = u8;
-    state.romBinaryString = uint8ToBinaryString(u8);
     state.romName = name || 'Game.nes';
+    const sysId = detectSystemFromRomBytes(u8, state.romName);
+    state.romBinaryString = sysId === 'nes'
+      ? uint8ToBinaryString(u8) : 'BINARY_ROM';
     state.romCrc32 = computeRomCrc32(u8);
     state.isAutoDefaultRom = isAutoDefault;
     state.matchStarted = false;
 
     ensureRomInDropdown(options.dropdownKey || state.romName, u8);
 
-    const sysId = detectSystemFromRomBytes(u8, state.romName);
-    const w = sysId === 'sega_md' ? 320 : 256;
+    const w = sysId === 'sega_md' || sysId === 'arcade' ? 320 : 256;
     const h = sysId === 'sega_md' || sysId === 'snes'
       ? 224 : sysId === 'sega_sms' ? 192 : 240;
     ui.setConsoleResolution(w, h);
@@ -135,13 +137,17 @@ export function createRomSyncManager(state, ui, audio) {
       audio.pushSample(l, r);
     };
 
-    if (sysId === 'sega_md' || sysId === 'sega_sms' || sysId === 'snes') {
+    if (sysId === 'arcade') {
+      state.nes = await createFbneoArcadeCore({
+        romBytes: u8, romName: state.romName, onFrame, onAudioSample
+      });
+      ui.setConsoleResolution(state.nes.width, state.nes.height);
+    } else if (
+      sysId === 'sega_md' || sysId === 'sega_sms' || sysId === 'snes'
+    ) {
       state.nes = await createSegaGpgxCore({
-        romBytes: u8,
-        romName: state.romName,
-        systemId: sysId,
-        onFrame,
-        onAudioSample
+        romBytes: u8, romName: state.romName,
+        systemId: sysId, onFrame, onAudioSample
       });
     } else {
       state.nes = new jsnes.NES({ onFrame, onAudioSample });
@@ -163,7 +169,7 @@ export function createRomSyncManager(state, ui, audio) {
     if (isOnline) state.engine.syncPaused = true;
 
     const shortName = state.romName.replace(
-      /\.(nes|sfc|smc|fig|swc|md|gen|smd|bin|sms|gg)$/i, ''
+      /\.(nes|sfc|smc|fig|swc|md|gen|smd|bin|sms|gg|zip)$/i, ''
     );
     ui.romBadge.textContent = `ROM: ${shortName} [${state.romCrc32}]`;
     const mType = state.nes.rom.mapperType;

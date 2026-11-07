@@ -49,22 +49,19 @@ export const CONSOLE_PROFILES = {
     inputBits: 12
   },
   sega_sms: {
-    systemId: 'sega_sms',
-    name: 'Sega Master System / Game Gear',
-    width: 256,
-    height: 192,
-    extensions: ['.sms', '.gg'],
-    netplayMode: 'rollback',
-    inputBits: 8
+    systemId: 'sega_sms', name: 'Sega Master System / Game Gear',
+    width: 256, height: 192, extensions: ['.sms', '.gg'],
+    netplayMode: 'rollback', inputBits: 8
+  },
+  arcade: {
+    systemId: 'arcade', name: 'Arcade (FinalBurn Neo)',
+    width: 320, height: 240, extensions: ['.fbneo'],
+    netplayMode: 'rollback', inputBits: 12
   },
   n3ds: {
-    systemId: 'n3ds',
-    name: 'Nintendo 3DS',
-    width: 400,
-    height: 480,
-    extensions: ['.3ds', '.cci', '.cxi'],
-    netplayMode: 'wireless_or_lockstep',
-    inputBits: 32
+    systemId: 'n3ds', name: 'Nintendo 3DS',
+    width: 400, height: 480, extensions: ['.3ds', '.cci', '.cxi'],
+    netplayMode: 'wireless_or_lockstep', inputBits: 32
   }
 };
 
@@ -75,6 +72,10 @@ export const ARCHIVE_EXTENSIONS = ['.zip', '.rar', '.7z'];
 
 export function detectSystemFromRomName(romName = '') {
   const lower = String(romName).trim().toLowerCase();
+  if (lower.startsWith('arcade/') || lower.startsWith('arcade\\') ||
+      lower.endsWith('.zip')) {
+    return 'arcade';
+  }
   for (const prof of Object.values(CONSOLE_PROFILES)) {
     if (prof.extensions.some((ext) => lower.endsWith(ext))) {
       return prof.systemId;
@@ -87,6 +88,9 @@ export function detectSystemFromRomBytes(u8, romName = '') {
   if (u8 && u8.length >= 4) {
     if (u8[0] === 0x4e && u8[1] === 0x45 && u8[2] === 0x53 && u8[3] === 0x1a) {
       return 'nes';
+    }
+    if (u8[0] === 0x50 && u8[1] === 0x4b && u8[2] === 0x03 && u8[3] === 0x04) {
+      return 'arcade';
     }
     if (u8.length > 0x110 &&
         u8[0x100] === 0x53 && u8[0x101] === 0x45 &&

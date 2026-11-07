@@ -66,6 +66,7 @@ export async function extractRomFromZipBrowser(u8) {
 
     const cleanName = baseName(rawName);
     if (!isRomEntryName(cleanName)) continue;
+    if (cleanName.toLowerCase().endsWith('.bin') && totalEntries > 1) continue;
     if (localOff + 30 > u8.byteLength) continue;
     if (dv.getUint32(localOff, true) !== 0x04034b50) continue;
 
@@ -125,6 +126,9 @@ export async function unpackRomIfNeeded(u8, fileName) {
       const zipRes = await extractRomFromZipBrowser(u8);
       if (zipRes) return zipRes;
     } catch {}
+    if (u8.byteLength >= 30 && u8[0] === 0x50 && u8[1] === 0x4b) {
+      return { romName: baseName(fileName), romUint8: u8 };
+    }
   }
   return extractArchiveViaServer(u8, fileName);
 }
