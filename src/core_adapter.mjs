@@ -275,8 +275,9 @@ export class GenericCoreAdapter {
   }
 
   stepFrame(p1Mask, p2Mask, headless = false) {
-    this.rawCore.stepFrame(p1Mask >>> 0, p2Mask >>> 0, Boolean(headless));
-    if (!headless && this.opts.onFrame) {
+    const isHeadless = Boolean(headless || this.rawCore.ppu?._headlessFrame);
+    this.rawCore.stepFrame(p1Mask >>> 0, p2Mask >>> 0, isHeadless);
+    if (!isHeadless && this.opts.onFrame) {
       const fb = this.getFrameBuffer();
       if (fb) this.opts.onFrame(fb);
     }

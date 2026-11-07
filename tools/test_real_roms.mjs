@@ -10,13 +10,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import * as jsnesModule from 'jsnes';
 import {
-  NesNetplayEngine,
-  INPUT_BITS,
-  computeDeterministicHash,
-  computeRomCrc32,
-  formatHex32,
-  saveFastState,
-  loadFastState
+  NesNetplayEngine, INPUT_BITS, computeDeterministicHash, computeRomCrc32,
+  formatHex32, saveFastState, loadFastState
 } from '../src/netplay_engine.mjs';
 import {
   runStage3StripingAndDedup,
@@ -69,12 +64,10 @@ async function runRealRomsSuite() {
     nesHeadless.loadROM(bin);
 
     const engNormal = new NesNetplayEngine(nesNormal, {
-      localPlayer: 1,
-      online: true
+      localPlayer: 1, online: true
     });
     const engHeadless = new NesNetplayEngine(nesHeadless, {
-      localPlayer: 1,
-      online: true
+      localPlayer: 1, online: true
     });
 
     let normalMs = 0;
@@ -312,8 +305,14 @@ async function runRealRomsSuite() {
         path.join(LOCAL_SEGA_DIR, segaFiles[0])
       );
       const u8 = new Uint8Array(romBuffer);
-      const s1 = await createSegaGpgxCore({ romBytes: u8, romName });
+      let s1Frames = 0;
+      const s1 = await createSegaGpgxCore({
+        romBytes: u8, romName, onFrame: () => s1Frames++
+      });
+      const origProc = globalThis.process;
+      delete globalThis.process;
       const s2 = await createSegaGpgxCore({ romBytes: u8, romName });
+      globalThis.process = origProc;
       const e1 = new NesNetplayEngine(s1, { localPlayer: 1, online: true });
       const e2 = new NesNetplayEngine(s2, { localPlayer: 2, online: true });
       const q1 = [];
@@ -332,6 +331,7 @@ async function runRealRomsSuite() {
       const syncSnap = e1.exportSyncState();
       e2.importSyncState(syncSnap);
       assert.strictEqual(s1.computeHash(), s2.computeHash());
+      assert.ok(s1Frames > 80);
       console.log(
         `[PASS] Stage 7 (${romName}): 320x224 Sega Genesis Rollback ` +
           `& State Sync Verified (Hash=${formatHex32(s1.computeHash())})`

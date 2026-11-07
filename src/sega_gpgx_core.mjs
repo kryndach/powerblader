@@ -45,7 +45,10 @@ export async function ensureGpgxRuntime() {
       );
     }
     return { factory: cachedFactory, wasmBinary: cachedWasmBinary };
-  })();
+  })().catch((err) => {
+    runtimePromise = null;
+    throw err;
+  });
   return runtimePromise;
 }
 
