@@ -68,7 +68,6 @@ export function toFbneoInputMask(mask) {
   if (mask & INPUT_BITS.Z) b |= 0x800;
   return b;
 }
-
 function listZipEntryNames(u8) {
   const names = [];
   if (!u8 || u8.byteLength < 30) return names;
@@ -95,7 +94,6 @@ function listZipEntryNames(u8) {
   }
   return names;
 }
-
 export function detectFbneoDriver(romBytes, romName = 'tgm2p.zip') {
   const entries = listZipEntryNames(romBytes);
   if (entries.some((n) => n.endsWith('1b.u22') || n.includes('tgm2p.'))) {
@@ -104,10 +102,8 @@ export function detectFbneoDriver(romBytes, romName = 'tgm2p.zip') {
   if (entries.some((n) => n.includes('tgm2.default.nv'))) return 'tgm2';
   if (entries.some((n) => n.endsWith('d26-01.ic7'))) return 'minivadr';
   const base = String(romName)
-    .replace(/^.*[\\/]/, '')
-    .replace(/\.(zip|7z|rar|fbneo)$/i, '');
-  const clean = base.split(/[\s([[]/)[0].trim().toLowerCase();
-  return clean || 'tgm2p';
+    .replace(/^.*[\\/]/, '').replace(/\.(zip|7z|rar|fbneo)$/i, '');
+  return base.split(/[\s([[]/)[0].trim().toLowerCase() || 'tgm2p';
 }
 
 export async function createFbneoArcadeCore({
@@ -145,16 +141,11 @@ export async function createFbneoArcadeCore({
     printErr: () => {},
     setRomProps: (w, h, rot, _flip, depth, fps) => {
       romLoadedOk = true;
-      coreState.rawW = w;
-      coreState.rawH = h;
-      coreState.rot = rot;
-      coreState.depth = depth;
+      Object.assign(coreState, { rawW: w, rawH: h, rot, depth });
       if (fps >= 3000) coreState.fps = fps / 100;
-      const outW = (rot & 1) ? h : w;
-      const outH = (rot & 1) ? w : h;
-      core.width = outW;
-      core.height = outH;
-      frameBuffer = new Uint32Array(outW * outH);
+      core.width = (rot & 1) ? h : w;
+      core.height = (rot & 1) ? w : h;
+      frameBuffer = new Uint32Array(core.width * core.height);
       core.frameBuffer = frameBuffer;
       core.ppu.buffer = frameBuffer;
     },
@@ -185,16 +176,15 @@ export async function createFbneoArcadeCore({
         const frac = pos - i0;
         const b0 = base + i0 * 2;
         const b1 = base + i1 * 2;
-        const l = (s16[b0] + (s16[b1] - s16[b0]) * frac) * scale;
-        const r = (s16[b0 + 1] + (s16[b1 + 1] - s16[b0 + 1]) * frac) * scale;
-        cb(l, r);
+        cb(
+          (s16[b0] + (s16[b1] - s16[b0]) * frac) * scale,
+          (s16[b0 + 1] + (s16[b1 + 1] - s16[b0 + 1]) * frac) * scale
+        );
       }
     },
     drawScreen: (vidPtr) => {
       if (!vidPtr || coreState.headless || core.ppu._headlessFrame) return;
-      const w = coreState.rawW;
-      const h = coreState.rawH;
-      const count = w * h;
+      const count = coreState.rawW * coreState.rawH;
       if (coreState.depth === 16) {
         const u16 = mod.HEAPU16;
         const base16 = vidPtr >>> 1;
@@ -213,16 +203,12 @@ export async function createFbneoArcadeCore({
     }
   });
   core.mod = mod;
-
   try { mod.FS.mkdir('/roms'); } catch {}
   mod.FS.writeFile(`/roms/${driver}.zip`, u8);
-  const startMain = mod.cwrap('startMain', 'number', ['string']);
-  startMain(driver);
-
+  mod.cwrap('startMain', 'number', ['string'])(driver);
   if (!romLoadedOk) {
     const miss = missingFiles.length
-      ? ` (missing: ${missingFiles.slice(0, 4).join(', ')})`
-      : '';
+      ? ` (missing: ${missingFiles.slice(0, 4).join(', ')})` : '';
     throw new Error(`FBNeo failed to boot arcade ROM "${driver}"${miss}`);
   }
   const statePath = `/libsdl/fbneo/states/${driver}.fs.all`;
@@ -234,10 +220,23 @@ export async function createFbneoArcadeCore({
       mod._saveAllState(1);
       stateDirty = false;
       if (!stateNode) stateNode = mod.FS.lookupPath(statePath).node;
+      const rawLen = stateNode.usedBytes;
+      if (stateNode.contents.length < rawLen + 100) {
+        const grown = new Uint8Array(rawLen + 1024);
+        grown.set(stateNode.contents.subarray(0, rawLen));
+        stateNode.contents = grown;
+      }
+      const h8 = mod.HEAPU8;
+      const dst = stateNode.contents;
+      dst.set(h8.subarray(0x1002544, 0x100254c), rawLen);
+      dst.set(h8.subarray(0x10029a8, 0x10029ac), rawLen + 8);
+      dst.set(h8.subarray(0x1023920, 0x1023960), rawLen + 12);
+      dst.set(h8.subarray(0x102a790, 0x102a7a4), rawLen + 76);
+      dst.set([0x46, 0x42, 0x58, 0x54], rawLen + 96);
+      stateNode.usedBytes = rawLen + 100;
     }
     return stateNode.contents.subarray(0, stateNode.usedBytes);
   }
-
   core.stepFrame = function (p1Mask, p2Mask, headless = false) {
     coreState.headless = Boolean(headless);
     stateDirty = true;
@@ -247,21 +246,30 @@ export async function createFbneoArcadeCore({
     mod._doLoop();
     coreState.headless = false;
   };
-
   core.getFrameBuffer = () => frameBuffer;
-
-  core.saveStateBytes = function () {
-    return new Uint8Array(getMemfsStateView());
-  };
-
+  core.saveStateBytes = () => new Uint8Array(getMemfsStateView());
   core.loadStateBytes = function (bytes) {
     if (!bytes || !bytes.length) return;
-    mod.FS.writeFile(statePath, bytes);
-    stateNode = mod.FS.lookupPath(statePath).node;
+    if (stateNode && stateNode.contents.length >= bytes.length) {
+      stateNode.contents.set(bytes);
+      stateNode.usedBytes = bytes.length;
+    } else {
+      mod.FS.writeFile(statePath, bytes);
+      stateNode = mod.FS.lookupPath(statePath).node;
+    }
     stateDirty = false;
     mod._saveAllState(0);
+    const n = bytes.length;
+    if (n > 100 && bytes[n - 4] === 0x46 && bytes[n - 3] === 0x42 &&
+        bytes[n - 2] === 0x58 && bytes[n - 1] === 0x54) {
+      const b = n - 100;
+      const h8 = mod.HEAPU8;
+      h8.set(bytes.subarray(b, b + 8), 0x1002544);
+      h8.set(bytes.subarray(b + 8, b + 12), 0x10029a8);
+      h8.set(bytes.subarray(b + 12, b + 76), 0x1023920);
+      h8.set(bytes.subarray(b + 76, b + 96), 0x102a790);
+    }
   };
-
   core.saveStateInto = function (slot, frame) {
     const view = getMemfsStateView();
     slot.frame = frame;
@@ -271,24 +279,19 @@ export async function createFbneoArcadeCore({
     }
     slot.stateBytes.set(view);
   };
-
   core.loadStateFromSlot = function (slot) {
     if (!slot || slot.frame < 0 || !slot.stateBytes) return false;
-    const len = slot.usedLen || slot.stateBytes.length;
-    core.loadStateBytes(slot.stateBytes.subarray(0, len));
+    core.loadStateBytes(
+      slot.stateBytes.subarray(0, slot.usedLen || slot.stateBytes.length)
+    );
     return true;
   };
-
-  core.computeHash = function () {
-    return crc32Bytes(getMemfsStateView()) >>> 0;
-  };
-
+  core.computeHash = () => crc32Bytes(getMemfsStateView()) >>> 0;
   core.stepFrame(0, 0, true);
   core._initialBootState = core.saveStateBytes();
-  core.loadROM = function () {
+  core.loadROM = () => {
     if (core._initialBootState) core.loadStateBytes(core._initialBootState);
   };
-
   return core;
 }
 
