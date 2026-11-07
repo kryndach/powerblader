@@ -21,12 +21,11 @@ export function createProtocolHandlers(
     state.engine.syncPaused = false;
     state.matchStarted = true;
     sendWs({
-      type: 'sync_ack',
-      sessionId: state.engine.sessionId,
-      frame: state.engine.currentFrame,
-      romCrc32: state.romCrc32
+      type: 'sync_ack', sessionId: state.engine.sessionId,
+      frame: state.engine.currentFrame, romCrc32: state.romCrc32
     });
     if (bannerText) ui.showScreenBanner(bannerText, 'ok', 3500);
+    if (typeof state.onGameStarted === 'function') state.onGameStarted();
     ui.updateStatusStrip();
   }
 
@@ -57,10 +56,8 @@ export function createProtocolHandlers(
   function sendLocalRomStatus() {
     if (!state.romCrc32) return;
     sendWs({
-      type: 'rom_status',
-      romCrc32: state.romCrc32,
-      romName: state.romName,
-      isAutoDefaultRom: false
+      type: 'rom_status', romCrc32: state.romCrc32,
+      romName: state.romName, isAutoDefaultRom: false
     });
   }
 
@@ -231,13 +228,13 @@ export function createProtocolHandlers(
         state.lastRxInputAt = 0;
         state.maxRxGapMs = 0;
         sendWs({
-          type: 'match_start_ack',
-          sessionId: msg.sessionId,
+          type: 'match_start_ack', sessionId: msg.sessionId,
           romCrc32: state.romCrc32
         });
         ui.showScreenBanner(
           `ONLINE LOCKSTEP STARTED - "${state.romName}"`, 'ok', 3500
         );
+        if (typeof state.onGameStarted === 'function') state.onGameStarted();
         ui.updateStatusStrip();
         pushGameplayTelemetryToServer();
       }
@@ -260,6 +257,7 @@ export function createProtocolHandlers(
         ui.showScreenBanner(
           `ONLINE SYNCED - PLAYING "${state.romName}"`, 'ok', 3500
         );
+        if (typeof state.onGameStarted === 'function') state.onGameStarted();
         ui.updateStatusStrip();
         pushGameplayTelemetryToServer();
       }
@@ -332,6 +330,9 @@ export function createProtocolHandlers(
       return;
     }
 
+    if (msg.type === 'speed_ctrl' && state.onRemoteSpeedCtrl) {
+      return state.onRemoteSpeedCtrl(msg.mult);
+    }
     if (msg.type === 'resync_request' && state.localPlayerIndex === 1) {
       return romSync.sendStateSyncToPeer({ resetToZero: false });
     }

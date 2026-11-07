@@ -36,15 +36,26 @@ function pollGamepadMask() {
 }
 
 export function startConsoleFrameLoop(
-  state, ui, transport, telemetry, saveSlots
+  state, ui, transport, telemetry, saveSlots, keyBindings, viewportCtrl
 ) {
   let localButtonsMask = 0;
 
   window.addEventListener('keydown', (e) => {
+    if (keyBindings && keyBindings.handleModalKeydown(e)) return;
     if (
       document.activeElement === ui.nickInput ||
       document.activeElement === ui.roomInput
     ) {
+      return;
+    }
+    if (!e.repeat && (e.code === 'F11' || (e.code === 'Enter' && e.altKey))) {
+      e.preventDefault();
+      if (viewportCtrl) viewportCtrl.toggleFullscreen();
+      return;
+    }
+    if (keyBindings && keyBindings.isTurboHoldCode(e.code)) {
+      e.preventDefault();
+      if (viewportCtrl) viewportCtrl.setHoldTurbo(true);
       return;
     }
     if (saveSlots && !e.repeat) {
@@ -69,7 +80,9 @@ export function startConsoleFrameLoop(
         return;
       }
     }
-    const bit = KEY_MAP[e.code];
+    const bit = keyBindings
+      ? keyBindings.getBitForCode(e.code)
+      : KEY_MAP[e.code];
     if (bit !== undefined) {
       e.preventDefault();
       localButtonsMask |= bit;
@@ -77,7 +90,14 @@ export function startConsoleFrameLoop(
   });
 
   window.addEventListener('keyup', (e) => {
-    const bit = KEY_MAP[e.code];
+    if (keyBindings && keyBindings.isTurboHoldCode(e.code)) {
+      e.preventDefault();
+      if (viewportCtrl) viewportCtrl.setHoldTurbo(false);
+      return;
+    }
+    const bit = keyBindings
+      ? keyBindings.getBitForCode(e.code)
+      : KEY_MAP[e.code];
     if (bit !== undefined) {
       e.preventDefault();
       localButtonsMask &= ~bit;
@@ -114,21 +134,31 @@ export function startConsoleFrameLoop(
     while (accumulatorMs >= effectiveFrameMs) {
       accumulatorMs -= effectiveFrameMs;
       if (state.nes && state.engine) {
+        const effSpeed = viewportCtrl ? viewportCtrl.getEffectiveSpeed() : 1;
         const combinedMask = localButtonsMask | pollGamepadMask();
-        const res = state.engine.stepNetplayFrame(combinedMask, 0);
-        if (res.packetToSend && state.peerConnected) {
-          transport.sendFastNetplayPacket(res.packetToSend);
-        }
-        if (res.stepped) framesThisSec++;
-        if (state.engine.currentFrame % 4 === 0 || !res.stepped) {
-          telemetry.updateDebugTelemetry(res.p1Mask, res.p2Mask);
+        for (let s = 0; s < effSpeed; s++) {
+          if (state.nes.ppu) state.nes.ppu._headlessFrame = s < effSpeed - 1;
+          const res = state.engine.stepNetplayFrame(combinedMask, 0);
+          if (state.nes.ppu) state.nes.ppu._headlessFrame = false;
+          if (res.packetToSend && state.peerConnected) {
+            transport.sendFastNetplayPacket(res.packetToSend);
+          }
+          if (res.stepped) framesThisSec++;
+          if (
+            s === effSpeed - 1 &&
+            (state.engine.currentFrame % 4 === 0 || !res.stepped)
+          ) {
+            telemetry.updateDebugTelemetry(res.p1Mask, res.p2Mask);
+          }
         }
       }
     }
 
     if (now - lastFpsUpdate >= 1000) {
       state.lastFpsVal = framesThisSec;
-      ui.fpsLabel.textContent = `${framesThisSec} FPS`;
+      const eff = viewportCtrl ? viewportCtrl.getEffectiveSpeed() : 1;
+      ui.fpsLabel.textContent =
+        eff > 1 ? `${framesThisSec} FPS (${eff}x)` : `${framesThisSec} FPS`;
       state.txPerSec = state.txCountThisSec;
       state.rxPerSec = state.rxCountThisSec;
       state.txCountThisSec = 0;

@@ -114,22 +114,15 @@ export function createRomSyncManager(state, ui, audio) {
         `[CRC=${state.romCrc32}, delay=${state.engine.inputDelayFrames}f]`
     );
     ui.showScreenBanner(
-      `STARTING "${state.romName}" AT FRAME #0...`,
-      'warn',
-      0
+      `STARTING "${state.romName}" AT FRAME #0...`, 'warn', 0
     );
     ui.updateStatusStrip();
   }
 
   function loadRomFromUint8(u8, name, options = {}) {
-    const broadcastToPeer =
-      typeof options === 'boolean'
-        ? options
-        : options.broadcastToPeer !== false;
-    const isAutoDefault =
-      typeof options === 'object' && options !== null
-        ? Boolean(options.isAutoDefault)
-        : false;
+    const broadcastToPeer = typeof options === 'boolean'
+      ? options : options.broadcastToPeer !== false;
+    const isAutoDefault = Boolean(options && options.isAutoDefault);
 
     state.romUint8 = u8;
     state.romBinaryString = uint8ToBinaryString(u8);
@@ -140,9 +133,16 @@ export function createRomSyncManager(state, ui, audio) {
 
     ensureRomInDropdown(state.romName, u8);
 
+    let audioSub = 0;
     state.nes = new jsnes.NES({
       onFrame: (fb) => ui.renderFrameToCanvas(fb),
-      onAudioSample: (l, r) => audio.pushSample(l, r)
+      onAudioSample: (l, r) => {
+        const eff = state.holdTurboActive
+          ? Math.max(4, state.turboMultiplier || 1)
+          : state.turboMultiplier || 1;
+        if (eff > 1 && ++audioSub % eff !== 0) return;
+        audio.pushSample(l, r);
+      }
     });
 
     state.nes.loadROM(state.romBinaryString);
@@ -327,8 +327,10 @@ export function createRomSyncManager(state, ui, audio) {
       const url = `/api/local-rom?file=${encodeURIComponent(fileName)}`;
       const res = await fetch(url);
       if (!res.ok) return;
+      const hdr = res.headers.get('X-Rom-Filename');
+      const rName = hdr ? decodeURIComponent(hdr) : fileName;
       const buf = await res.arrayBuffer();
-      loadRomFromUint8(new Uint8Array(buf), fileName, options);
+      loadRomFromUint8(new Uint8Array(buf), rName, options);
     } catch (e) {
       ui.logDebug(`Failed to load ${fileName}: ${e.message}`);
     }

@@ -6,6 +6,7 @@
   <title>NES Netplay Console - Universal Rollback Multiplayer</title>
   <link rel="stylesheet" href="/css/console.css" />
   <link rel="stylesheet" href="/css/console_debug.css" />
+  <link rel="stylesheet" href="/css/console_controls.css" />
 </head>
 <body>
 
@@ -18,13 +19,15 @@
 
     <!-- Cartridge Loader -->
     <div class="deck-group">
-      <select id="localRomSelect" title="Select .nes ROM from local/ folder">
+      <select id="localRomSelect" title="Select ROM or Archive from local/">
         <option value="">-- Select Game --</option>
       </select>
-      <label class="btn-label" for="romFileInput" title="Load .nes file">
-        Load .NES
+      <label class="btn-label" for="romFileInput"
+        title="Load .nes, .zip, .rar, or .7z ROM (or Drag &amp; Drop)">
+        Load ROM
       </label>
-      <input type="file" id="romFileInput" accept=".nes" style="display:none" />
+      <input type="file" id="romFileInput" accept=".nes,.zip,.rar,.7z"
+        style="display:none" />
     </div>
 
     <!-- Online Room Connection -->
@@ -54,6 +57,18 @@
         <button id="quickSaveBtn" title="Fast Save to Slot (F5)">Save</button>
         <button id="quickLoadBtn" title="Fast Load from Slot (F8)">Load</button>
       </div>
+      <div class="speed-box" title="Game Speed / Turbo Fast-Forward">
+        <button class="speed-btn active-toggle" data-speed="1">1x</button>
+        <button class="speed-btn" data-speed="2">2x</button>
+        <button class="speed-btn" data-speed="4">4x</button>
+        <button class="speed-btn" data-speed="8">8x</button>
+      </div>
+      <button id="swapAbBtn" title="Quick Swap A &amp; B (Z &lt;-&gt; X)">
+        A/B: Z/X
+      </button>
+      <button id="keysBtn" title="Customize Controller Key Bindings">
+        Keys
+      </button>
       <select id="topInputDelaySelect"
         title="Select Local Input Lag vs Smoothness (Independent per PC)">
         <option value="0">Lag: 0f (0ms Instant)</option>
@@ -70,12 +85,12 @@
           min="0" max="100" step="5" value="80" />
         <span id="volumeValLabel" class="vol-label">80%</span>
       </div>
-      <button id="crtToggleBtn" title="Toggle CRT scanlines overlay">
-        CRT: OFF
+      <button id="centerViewBtn" title="Scroll Game Screen to Middle of Window">
+        Center
       </button>
-      <button id="debugToggleBtn" title="Show/Hide Netplay Debug Telemetry">
-        Debug
-      </button>
+      <button id="fullscreenBtn" title="Toggle Fullscreen (F11)">Full</button>
+      <button id="crtToggleBtn" title="Toggle CRT scanlines">CRT: OFF</button>
+      <button id="debugToggleBtn" title="Show/Hide Debug Panel">Debug</button>
       <a class="btn-label btn-autotest" id="autoBenchLink" href="/autotest"
         title="Switch to Zero-Click 2-PC Network AutoTest Suite">AutoTest</a>
       <a class="btn-label btn-nettest" id="netBenchLink" href="/nettest"
@@ -137,10 +152,9 @@
               <span class="badge warn" id="lobbyP2Badge">OFFLINE</span>
             </div>
             <div class="lobby-footer" id="lobbyFooterText">
-              Select any <strong>.NES</strong> file using
-              <strong>-- Select Game --</strong> or <strong>Load .NES</strong>
-              above.<br />For 2-PC Online: both players select the
-              <strong>same .NES file</strong> on their own PC!
+              Select any <strong>.NES / .ZIP / .RAR / .7Z</strong> file above
+              or drag &amp; drop onto screen.<br />For 2-PC Online: both players
+              select the <strong>same ROM</strong> on their own PC!
             </div>
             <div class="lobby-actions" id="lobbyActionsRow">
               <button id="startMatchNowBtn" class="primary"
@@ -154,13 +168,11 @@
         <div class="screen-banner" id="screenBanner"></div>
       </div>
       <div class="bezel-footer">
-        <div>
-          Move: <span class="kbd">WASD</span>/<span class="kbd">Arrows</span>
-          &nbsp; A/B: <span class="kbd">Z</span>/<span class="kbd">X</span>
-          &nbsp; Sel/Sta: <span class="kbd">Shift</span>/<span
-            class="kbd">Enter</span>
-          &nbsp; Save/Load: <span class="kbd">F5</span>/<span
-            class="kbd">F8</span> (<span class="kbd">1-5</span>)
+        <div id="bezelKeyHint">
+          Move: <span class="kbd">WASD</span> A/B:
+          <span class="kbd">Z</span>/<span class="kbd">X</span>
+          Sel/Sta: <span class="kbd">Shift</span>/<span class="kbd">Enter</span>
+          Save/Load: <span class="kbd">F5</span>/<span class="kbd">F8</span>
         </div>
         <div><span id="fpsLabel">60.0 FPS</span></div>
       </div>
@@ -173,26 +185,16 @@
           <span>1. Deterministic Sync</span>
           <span id="dbgSyncBadge" class="badge ok">SYNC OK</span>
         </div>
-        <div class="dbg-row">
-          <span class="k">Emulator Frame:</span>
-          <span class="v" id="dbgFrame">0</span>
-        </div>
-        <div class="dbg-row">
-          <span class="k">Verified Frame:</span>
-          <span class="v" id="dbgVerifiedFrame">--</span>
-        </div>
-        <div class="dbg-row">
-          <span class="k">Local RAM CRC32:</span>
-          <span class="v" id="dbgLocalHash">00000000</span>
-        </div>
-        <div class="dbg-row">
-          <span class="k">Remote RAM CRC32:</span>
-          <span class="v" id="dbgRemoteHash">00000000</span>
-        </div>
-        <div class="dbg-row">
-          <span class="k">Desync Count:</span>
-          <span class="v" id="dbgDesyncs">0</span>
-        </div>
+        <div class="dbg-row"><span class="k">Emulator Frame:</span>
+          <span class="v" id="dbgFrame">0</span></div>
+        <div class="dbg-row"><span class="k">Verified Frame:</span>
+          <span class="v" id="dbgVerifiedFrame">--</span></div>
+        <div class="dbg-row"><span class="k">Local RAM CRC32:</span>
+          <span class="v" id="dbgLocalHash">00000000</span></div>
+        <div class="dbg-row"><span class="k">Remote RAM CRC32:</span>
+          <span class="v" id="dbgRemoteHash">00000000</span></div>
+        <div class="dbg-row"><span class="k">Desync Count:</span>
+          <span class="v" id="dbgDesyncs">0</span></div>
         <div style="display:flex;gap:6px;margin-top:4px;">
           <button id="forceResyncBtn"
             style="width:100%;justify-content:center;">
@@ -206,18 +208,12 @@
           <span>2. Transport &amp; P2P Status</span>
           <span id="dbgTransportBadge" class="badge warn">OFFLINE</span>
         </div>
-        <div class="dbg-row">
-          <span class="k">WebSocket Relay (WSS):</span>
-          <span class="v" id="dbgWssState">Disconnected</span>
-        </div>
-        <div class="dbg-row">
-          <span class="k">WebRTC P2P Channel:</span>
-          <span class="v" id="dbgRtcState">Idle</span>
-        </div>
-        <div class="dbg-row">
-          <span class="k">Round-Trip Ping / Jitter:</span>
-          <span class="v" id="dbgRtt">-- ms / +/-0 ms</span>
-        </div>
+        <div class="dbg-row"><span class="k">WebSocket Relay (WSS):</span>
+          <span class="v" id="dbgWssState">Disconnected</span></div>
+        <div class="dbg-row"><span class="k">WebRTC P2P Channel:</span>
+          <span class="v" id="dbgRtcState">Idle</span></div>
+        <div class="dbg-row"><span class="k">Round-Trip Ping / Jitter:</span>
+          <span class="v" id="dbgRtt">-- ms / +/-0 ms</span></div>
         <div class="dbg-row">
           <span class="k">Packets (Tx / Rx / sec):</span>
           <span class="v" id="dbgPktRate">0 / 0</span>

@@ -7,6 +7,7 @@
 
 import assert from 'assert';
 import http from 'http';
+import zlib from 'zlib';
 import * as jsnesModule from 'jsnes';
 import WebSocket from 'ws';
 import {
@@ -16,6 +17,9 @@ import {
   loadFastState
 } from '../src/netplay_engine.mjs';
 import { createCoopServer } from '../server/relay_server.mjs';
+import { extractRomFromZipBuffer } from '../server/archive_extractor.mjs';
+import { extractRomFromZipBrowser } from '../public/js/rom_archive.mjs';
+import { formatKeyCode } from '../public/js/key_bindings.mjs';
 import { createDualControllerTestRom } from './test_rom_builder_tables.mjs';
 
 const jsnes = jsnesModule.NES ? jsnesModule : jsnesModule.default;
@@ -309,11 +313,36 @@ export async function runTest6ChrRamRiftAndTelemetry() {
   );
   assert.ok(getTelJson.session.combinedText.includes('Region: eu'));
 
+  // Verify ZIP ROM extraction (server + browser) & Key Binding formatting
+  const nameBuf = Buffer.from('Folder/TestGame.nes');
+  const compData = zlib.deflateRawSync(chrRamRom.uint8);
+  const localHdr = Buffer.alloc(30);
+  localHdr.writeUInt32LE(0x04034b50, 0);
+  localHdr.writeUInt16LE(8, 8);
+  localHdr.writeUInt32LE(compData.length, 18);
+  localHdr.writeUInt16LE(nameBuf.length, 26);
+  const cdHdr = Buffer.alloc(46);
+  cdHdr.writeUInt32LE(0x02014b50, 0);
+  cdHdr.writeUInt16LE(8, 10);
+  cdHdr.writeUInt32LE(compData.length, 20);
+  cdHdr.writeUInt16LE(nameBuf.length, 28);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(30 + nameBuf.length + compData.length, 16);
+  const zipBuf = Buffer.concat([
+    localHdr, nameBuf, compData, cdHdr, nameBuf, eocd
+  ]);
+  const srvZip = extractRomFromZipBuffer(zipBuf);
+  const brwZip = await extractRomFromZipBrowser(new Uint8Array(zipBuf));
+  assert.strictEqual(srvZip.romName, 'TestGame.nes');
+  assert.strictEqual(brwZip.romName, 'TestGame.nes');
+  assert.strictEqual(computeRomCrc32(srvZip.romBuffer), sharedCrc);
+  assert.strictEqual(computeRomCrc32(brwZip.romUint8), sharedCrc);
+  assert.strictEqual(formatKeyCode('KeyZ'), 'Z');
+
   wsA.close();
   wsB.close();
   await serverApp.close();
-  console.log(
-    '[PASS] Test 6: CHR-RAM Dirty-Tile Epochs, GGPO Clock-Rift Pacing, ' +
-      'Zero-Transfer Lockstep & Telemetry Verified'
-  );
+  console.log('[PASS] Test 6: CHR-RAM, Clock-Rift, ZIP & Telemetry Verified');
 }

@@ -6,7 +6,11 @@ import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import { createSessionTrackers } from './report_formatters.mjs';
 import { createRoomManager } from './room_manager.mjs';
-import { isSupportedRomFile } from '../src/core_adapter.mjs';
+import {
+  handleLocalRomsApi,
+  handleLocalRomDownloadApi,
+  handleExtractRomPostApi
+} from './archive_extractor.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -235,35 +239,17 @@ export function createCoopServer(options = {}) {
     }
 
     if (pathname === '/api/local-roms') {
-      const localDir = path.join(ROOT_DIR, 'local');
-      const files = fs.existsSync(localDir)
-        ? fs.readdirSync(localDir).filter(isSupportedRomFile).sort()
-        : [];
-      sendJson(res, 200, { files });
+      handleLocalRomsApi(res, ROOT_DIR, sendJson);
       return;
     }
 
     if (pathname === '/api/local-rom') {
-      const localDir = path.join(ROOT_DIR, 'local');
-      let romFile = null;
-      if (fs.existsSync(localDir)) {
-        const files = fs.readdirSync(localDir).filter(isSupportedRomFile);
-        const reqFile = urlObj.searchParams.get('file');
-        if (reqFile && files.includes(reqFile)) {
-          romFile = path.join(localDir, reqFile);
-        } else if (files.length > 0) {
-          romFile = path.join(localDir, files[0]);
-        }
-      }
-      if (!romFile || !fs.existsSync(romFile)) {
-        sendJson(res, 404, { available: false });
-        return;
-      }
-      res.writeHead(200, {
-        'Content-Type': 'application/octet-stream',
-        'X-Rom-Filename': encodeURIComponent(path.basename(romFile))
-      });
-      res.end(fs.readFileSync(romFile));
+      handleLocalRomDownloadApi(urlObj, res, ROOT_DIR, sendJson);
+      return;
+    }
+
+    if (pathname === '/api/extract-rom' && req.method === 'POST') {
+      handleExtractRomPostApi(req, urlObj, res, sendJson);
       return;
     }
 

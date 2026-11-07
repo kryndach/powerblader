@@ -6,6 +6,9 @@ import { createNetTransport } from './webrtc_p2p.mjs';
 import { createTelemetryReporter } from './telemetry_reporter.mjs';
 import { createProtocolHandlers } from './net_protocol_handlers.mjs';
 import { createSaveSlotsManager } from './save_slots.mjs';
+import { createKeyBindingsManager } from './key_bindings.mjs';
+import { createViewportAndSpeedController } from './viewport_and_speed.mjs';
+import { setupRomDropAndPicker } from './rom_archive.mjs';
 import { startConsoleFrameLoop } from './frame_loop.mjs';
 
 const state = {
@@ -73,7 +76,16 @@ const transport = createNetTransport(state, ui, (msg, src) => {
 });
 const romSync = createRomSyncManager(state, ui, audio);
 const saveSlots = createSaveSlotsManager(state, ui, romSync);
-state.onRomLoaded = () => saveSlots.updateSlotSelectLabels();
+const keyBindings = createKeyBindingsManager(state, ui);
+const viewportCtrl = createViewportAndSpeedController(state, ui);
+state.onRomLoaded = () => {
+  saveSlots.updateSlotSelectLabels();
+  if (!state.isAutoDefaultRom) viewportCtrl.centerGameScreen({ smooth: true });
+};
+state.onGameStarted = () => viewportCtrl.centerGameScreen({ smooth: true });
+state.onRemoteSpeedCtrl = (mult) => {
+  viewportCtrl.setSpeedMultiplier(mult, { broadcast: false, showBanner: true });
+};
 const telemetry = createTelemetryReporter(state, ui, romSync);
 protocol = createProtocolHandlers(state, ui, romSync, transport, telemetry);
 
@@ -296,29 +308,7 @@ ui.localRomSelect.addEventListener('change', () => {
   }
 });
 
-ui.romFileInput.addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  const buf = await file.arrayBuffer();
-  e.target.value = '';
-  romSync.loadRomFromUint8(new Uint8Array(buf), file.name, {
-    broadcastToPeer: true,
-    isAutoDefault: false
-  });
-});
-
-window.addEventListener('dragover', (e) => e.preventDefault());
-window.addEventListener('drop', async (e) => {
-  e.preventDefault();
-  const file = e.dataTransfer?.files?.[0];
-  if (file && file.name.toLowerCase().endsWith('.nes')) {
-    const buf = await file.arrayBuffer();
-    romSync.loadRomFromUint8(new Uint8Array(buf), file.name, {
-      broadcastToPeer: true,
-      isAutoDefault: false
-    });
-  }
-});
+setupRomDropAndPicker(state, ui, romSync);
 
 if (ui.saveSlotSelect) {
   ui.saveSlotSelect.addEventListener('change', () => {
@@ -336,7 +326,9 @@ if (ui.quickLoadBtn) {
   });
 }
 
-startConsoleFrameLoop(state, ui, transport, telemetry, saveSlots);
+startConsoleFrameLoop(
+  state, ui, transport, telemetry, saveSlots, keyBindings, viewportCtrl
+);
 await romSync.discoverLocalRoms();
 if (params.get('room')) {
   connectToRoom();

@@ -70,14 +70,17 @@ rules before committing:
   - `src/crc32.mjs` — Precomputed CRC32, hex formatting, and RAM/VRAM hashing.
 - **`public/` (Browser Frontend):**
   - `public/index.html`, `public/css/`, `public/js/` — Main NES Netplay Console,
-    5-slot fast save/load (`save_slots.mjs`), 48kHz DRC fractional resampler,
-    Dual-WSS + WebRTC transport, Lobby.
+    5-slot fast save/load (`save_slots.mjs`), custom keybinds & Z/X swap
+    (`key_bindings.mjs`), fullscreen/auto-center & 1x..8x turbo speed
+    (`viewport_and_speed.mjs`), drag-drop & `.zip`/`.rar`/`.7z` loader
+    (`rom_archive.mjs`), 48kHz DRC audio, Dual-WSS + WebRTC, Lobby.
   - `public/autotest.html` & `public/net_debug.html` — Zero-click 6-stage
     2-PC benchmark (`/autotest`) and interactive network workbench (`/nettest`).
 - **`server/` (FIFO WebSocket & HTTP Relay Server):**
   - `server/relay_server.mjs`, `server/room_manager.mjs`,
-    `server/report_formatters.mjs` — Express-free Node HTTP/WSS server, Dual-WS
-    downlink striping (`ws + wsAux`), uplink deduplication, telemetry auto-save.
+    `server/archive_extractor.mjs`, `server/report_formatters.mjs` — Node
+    HTTP/WSS server, `.zip`/`.rar`/`.7z` ROM unpacker, Dual-WS striping, and
+    telemetry auto-save.
 - **`tools/` (Automated QA & Style Verification):**
   - `npm test` — Runs `test_coop_qa.mjs`, `test_net_diagnostics.mjs`, and
     `test_real_roms.mjs`.

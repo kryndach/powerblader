@@ -62,6 +62,8 @@ export const CONSOLE_PROFILES = {
 export const SUPPORTED_ROM_EXTENSIONS = Object.values(CONSOLE_PROFILES)
   .flatMap((p) => p.extensions);
 
+export const ARCHIVE_EXTENSIONS = ['.zip', '.rar', '.7z'];
+
 export function detectSystemFromRomName(romName = '') {
   const lower = String(romName).trim().toLowerCase();
   for (const prof of Object.values(CONSOLE_PROFILES)) {
@@ -75,6 +77,15 @@ export function detectSystemFromRomName(romName = '') {
 export function isSupportedRomFile(fileName = '') {
   const lower = String(fileName).trim().toLowerCase();
   return SUPPORTED_ROM_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+export function isArchiveFile(fileName = '') {
+  const lower = String(fileName).trim().toLowerCase();
+  return ARCHIVE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+export function isSupportedRomOrArchiveFile(fileName = '') {
+  return isSupportedRomFile(fileName) || isArchiveFile(fileName);
 }
 
 export class NesCoreAdapter {
