@@ -92,3 +92,4 @@ rules before committing:
 
 - [Netplay & Emulator Architecture](docs/NETPLAY_ARCHITECTURE.md)
 - [Singapore-Russia Network & Tunnel Findings](docs/NETWORK_AND_TUNNELS.md)
+- [SG-RU Netplay & Factorio Guide](docs/SINGAPORE_RUSSIA_NETPLAY_GUIDE.md)
