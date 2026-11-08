@@ -158,23 +158,17 @@ async function runRealRomsSuite() {
       const p1Mask =
         (tick % 50 === 12 ? INPUT_BITS.START : 0) |
         (tick > 80 && Math.floor(tick / 7) % 2 === 0
-          ? INPUT_BITS.RIGHT | INPUT_BITS.B
-          : 0) |
+          ? INPUT_BITS.RIGHT | INPUT_BITS.B : 0) |
         (tick > 160 && Math.floor(tick / 11) % 3 === 0
-          ? INPUT_BITS.A | INPUT_BITS.UP
-          : 0);
+          ? INPUT_BITS.A | INPUT_BITS.UP : 0);
       const p2Mask =
         (tick % 50 === 28 ? INPUT_BITS.START : 0) |
         (tick > 80 && Math.floor(tick / 6) % 2 === 0
-          ? INPUT_BITS.LEFT | INPUT_BITS.A
-          : 0) |
+          ? INPUT_BITS.LEFT | INPUT_BITS.A : 0) |
         (tick > 160 && Math.floor(tick / 9) % 3 === 0
-          ? INPUT_BITS.B | INPUT_BITS.DOWN
-          : 0);
-
+          ? INPUT_BITS.B | INPUT_BITS.DOWN : 0);
       const r1 = eng1.stepNetplayFrame(p1Mask);
       const r2 = eng2.stepNetplayFrame(p2Mask);
-
       if (r1.packetToSend) {
         if (nowMs + 125 > nextFlush12) {
           nextFlush12 = nowMs + 125 + (tick % 4 === 0 ? 55 : 0);
@@ -193,36 +187,26 @@ async function runRealRomsSuite() {
     while (q12.length) eng2.receiveRemoteInputPacket(q12.shift().pkt, drainNow);
     while (q21.length) eng1.receiveRemoteInputPacket(q21.shift().pkt, drainNow);
 
-    const targetFinalFrame =
-      Math.max(eng1.currentFrame, eng2.currentFrame) + 12;
-    while (eng1.currentFrame < targetFinalFrame ||
-           eng2.currentFrame < targetFinalFrame) {
+    const targetFinal = Math.max(eng1.currentFrame, eng2.currentFrame) + 12;
+    while (eng1.currentFrame < targetFinal || eng2.currentFrame < targetFinal) {
       drainNow += 16.667;
-      if (eng1.currentFrame < targetFinalFrame) {
-        const r1 = eng1.stepNetplayFrame(0);
-        if (r1.packetToSend) {
-          eng2.receiveRemoteInputPacket(r1.packetToSend, drainNow);
-        }
+      if (eng1.currentFrame < targetFinal) {
+        const p = eng1.stepNetplayFrame(0).packetToSend;
+        if (p) eng2.receiveRemoteInputPacket(p, drainNow);
       }
-      if (eng2.currentFrame < targetFinalFrame) {
-        const r2 = eng2.stepNetplayFrame(0);
-        if (r2.packetToSend) {
-          eng1.receiveRemoteInputPacket(r2.packetToSend, drainNow);
-        }
+      if (eng2.currentFrame < targetFinal) {
+        const p = eng2.stepNetplayFrame(0).packetToSend;
+        if (p) eng1.receiveRemoteInputPacket(p, drainNow);
       }
     }
     const fin1 = eng1._buildInputPacket(eng1.lastLocalScheduledFrame);
     const fin2 = eng2._buildInputPacket(eng2.lastLocalScheduledFrame);
     eng2.receiveRemoteInputPacket(fin1, drainNow + 20);
     eng1.receiveRemoteInputPacket(fin2, drainNow + 20);
-    const s1 = eng1.stepNetplayFrame(0);
-    const s2 = eng2.stepNetplayFrame(0);
-    if (s1.packetToSend) {
-      eng2.receiveRemoteInputPacket(s1.packetToSend, drainNow + 30);
-    }
-    if (s2.packetToSend) {
-      eng1.receiveRemoteInputPacket(s2.packetToSend, drainNow + 30);
-    }
+    const s1 = eng1.stepNetplayFrame(0).packetToSend;
+    const s2 = eng2.stepNetplayFrame(0).packetToSend;
+    if (s1) eng2.receiveRemoteInputPacket(s1, drainNow + 30);
+    if (s2) eng1.receiveRemoteInputPacket(s2, drainNow + 30);
 
     const t1 = eng1.getTelemetry();
     const t2 = eng2.getTelemetry();
@@ -283,17 +267,27 @@ async function runRealRomsSuite() {
     assert.strictEqual(
       computeDeterministicHash(nes1), computeDeterministicHash(nes2)
     );
-    for (let f = 0; f < 60; f++) {
-      const r1 = eng1.stepNetplayFrame(INPUT_BITS.RIGHT | INPUT_BITS.B);
-      const r2 = eng2.stepNetplayFrame(INPUT_BITS.LEFT | INPUT_BITS.A);
-      if (r1.packetToSend) eng2.receiveRemoteInputPacket(r1.packetToSend);
-      if (r2.packetToSend) eng1.receiveRemoteInputPacket(r2.packetToSend);
+    let turboPkts = 0;
+    for (let tick = 0; tick < 15; tick++) {
+      let p1Out = null;
+      let p2Out = null;
+      for (let s = 0; s < 4; s++) {
+        const opts = { turboSpeed: 4, skipRollback: s > 0, skipPacket: s < 3 };
+        const r1 = eng1.stepNetplayFrame(INPUT_BITS.RIGHT, 0, opts);
+        const r2 = eng2.stepNetplayFrame(INPUT_BITS.LEFT, 0, opts);
+        if (r1.packetToSend) { turboPkts++; p1Out = r1.packetToSend; }
+        if (r2.packetToSend) p2Out = r2.packetToSend;
+      }
+      if (p1Out) eng2.receiveRemoteInputPacket(p1Out);
+      if (p2Out) eng1.receiveRemoteInputPacket(p2Out);
     }
+    assert.strictEqual(turboPkts, 15);
+    assert.strictEqual(eng1.stallFrames, 0);
     const h1 = formatHex32(computeDeterministicHash(nes1));
     assert.strictEqual(h1, formatHex32(computeDeterministicHash(nes2)));
     console.log(
-      `[PASS] Stage 6 (${cndFile}): Anti-Lag Post-Render Overclock, ` +
-        `16-Sprite Limit & Save-Slot Fast Load Sync Verified (Hash=${h1})`
+      `[PASS] Stage 6 (${cndFile}): Anti-Lag Overclock, Online 4x Turbo ` +
+        `(${turboPkts} pkts/15 ticks, 0 stalls) & Save-Slot Sync (Hash=${h1})`
     );
   }
 
@@ -315,26 +309,34 @@ async function runRealRomsSuite() {
       globalThis.process = origProc;
       const e1 = new NesNetplayEngine(s1, { localPlayer: 1, online: true });
       const e2 = new NesNetplayEngine(s2, { localPlayer: 2, online: true });
-      const q1 = [];
-      for (let f = 0; f < 90; f++) {
-        const r1 = e1.stepNetplayFrame(f % 15 === 5 ? INPUT_BITS.START : 0);
-        const r2 = e2.stepNetplayFrame(INPUT_BITS.RIGHT | INPUT_BITS.C);
-        if (r1.packetToSend) e2.receiveRemoteInputPacket(r1.packetToSend);
-        if (r2.packetToSend) q1.push(r2.packetToSend);
-        if (f % 4 === 3) {
-          while (q1.length) e1.receiveRemoteInputPacket(q1.shift());
+      const q12 = [];
+      const q21 = [];
+      for (let f = 0; f < 135; f++) {
+        while (q12.length && q12[0].d <= f) {
+          e2.receiveRemoteInputPacket(q12.shift().p);
         }
+        while (q21.length && q21[0].d <= f) {
+          e1.receiveRemoteInputPacket(q21.shift().p);
+        }
+        const r1 = e1.stepNetplayFrame(f % 45 < 5 ? INPUT_BITS.START : 0);
+        const r2 = e2.stepNetplayFrame(f % 53 < 5 ? INPUT_BITS.A : 0);
+        if (r1.packetToSend) q12.push({ d: f + 4, p: r1.packetToSend });
+        if (r2.packetToSend) q21.push({ d: f + 4, p: r2.packetToSend });
       }
-      while (q1.length) e1.receiveRemoteInputPacket(q1.shift());
+      while (q12.length) e2.receiveRemoteInputPacket(q12.shift().p);
+      while (q21.length) e1.receiveRemoteInputPacket(q21.shift().p);
       e1.stepNetplayFrame(0);
       e2.stepNetplayFrame(0);
-      const syncSnap = e1.exportSyncState();
-      e2.importSyncState(syncSnap);
+      assert.strictEqual(e1.desyncCount, 0);
+      assert.strictEqual(e2.desyncCount, 0);
       assert.strictEqual(s1.computeHash(), s2.computeHash());
-      assert.ok(s1Frames > 80);
+      e2.importSyncState(e1.exportSyncState());
+      assert.strictEqual(s1.computeHash(), s2.computeHash());
+      assert.ok(s1Frames > 120);
+      const sHash = formatHex32(s1.computeHash());
       console.log(
         `[PASS] Stage 7 (${romName}): 320x224 Sega Genesis Rollback ` +
-          `& State Sync Verified (Hash=${formatHex32(s1.computeHash())})`
+          `Determinism (0 Desyncs) & State Sync (Hash=${sHash})`
       );
     }
   }

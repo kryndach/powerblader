@@ -19,11 +19,22 @@ export function createViewportAndSpeedController(state, ui) {
   floatingBtn.title = 'Scroll back to center the NES screen';
   document.body.appendChild(floatingBtn);
 
-  function getEffectiveSpeed() {
+  let speedSyncTimer = null;
+
+  function computeRawSpeed() {
     if (state.holdTurboActive) {
       return Math.max(4, state.turboMultiplier || 1);
     }
     return state.turboMultiplier || 1;
+  }
+
+  function getEffectiveSpeed() {
+    const raw = computeRawSpeed();
+    if (raw > 1 && state.peerConnected && state.engine?.online) {
+      const maxOnline = state.engine.systemId === 'nes' ? 4 : 2;
+      return Math.min(raw, maxOnline);
+    }
+    return raw;
   }
 
   function updateSpeedButtonsUI() {
@@ -40,13 +51,35 @@ export function createViewportAndSpeedController(state, ui) {
     }
   }
 
+  function applyLocalSpeedChange(applyFn) {
+    if (speedSyncTimer) {
+      clearTimeout(speedSyncTimer);
+      speedSyncTimer = null;
+    }
+    if (state.peerConnected && state.engine?.online && state.rttMs > 20) {
+      const transitMs = Math.min(160, Math.round(state.rttMs * 0.45));
+      speedSyncTimer = setTimeout(() => {
+        speedSyncTimer = null;
+        applyFn();
+        updateSpeedButtonsUI();
+      }, transitMs);
+      return;
+    }
+    applyFn();
+    updateSpeedButtonsUI();
+  }
+
   function setSpeedMultiplier(mult, options = {}) {
     const clean = VALID_SPEEDS.includes(Number(mult)) ? Number(mult) : 1;
-    state.turboMultiplier = clean;
-    updateSpeedButtonsUI();
-
     if (options.broadcast !== false) {
-      broadcastSpeedIfOnline(getEffectiveSpeed());
+      const targetEff = state.holdTurboActive ? Math.max(4, clean) : clean;
+      broadcastSpeedIfOnline(targetEff);
+      applyLocalSpeedChange(() => { state.turboMultiplier = clean; });
+    } else {
+      if (speedSyncTimer) clearTimeout(speedSyncTimer);
+      state.holdTurboActive = false;
+      state.turboMultiplier = clean;
+      updateSpeedButtonsUI();
     }
     if (options.showBanner !== false) {
       const msg =
@@ -61,9 +94,11 @@ export function createViewportAndSpeedController(state, ui) {
   function setHoldTurbo(active) {
     const next = Boolean(active);
     if (state.holdTurboActive === next) return;
-    state.holdTurboActive = next;
-    updateSpeedButtonsUI();
-    broadcastSpeedIfOnline(getEffectiveSpeed());
+    const targetEff = next
+      ? Math.max(4, state.turboMultiplier || 1)
+      : state.turboMultiplier || 1;
+    broadcastSpeedIfOnline(targetEff);
+    applyLocalSpeedChange(() => { state.holdTurboActive = next; });
   }
 
   for (const btn of speedBtns) {

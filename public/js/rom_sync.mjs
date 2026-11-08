@@ -5,7 +5,7 @@ import {
 import {
   uint8ToBinaryString, uint8ToBase64, base64ToUint8
 } from '/src/crc32.mjs';
-import { createSegaGpgxCore, ensureGpgxRuntime } from '/src/sega_gpgx_core.mjs';
+import { createSegaGpgxCore } from '/src/sega_gpgx_core.mjs';
 import { createFbneoArcadeCore } from '/src/fbneo_arcade_core.mjs';
 import {
   fetchRomBytesWithProgress, streamRomToPeer
@@ -13,7 +13,6 @@ import {
 
 export { base64ToUint8 };
 const jsnes = window.jsnes;
-ensureGpgxRuntime().catch(() => {});
 
 export function createRomSyncManager(state, ui, audio) {
   function resolveDesiredInputDelay() {
@@ -165,8 +164,8 @@ export function createRomSyncManager(state, ui, audio) {
       online: isOnline,
       enableRiftPacing: true,
       inputDelayFrames: resolveDesiredInputDelay(),
-      maxRollbackFrames: 36,
-      saveBufferSize: sysId === 'nes' ? 96 : 48
+      maxRollbackFrames: 20,
+      saveBufferSize: sysId === 'nes' ? 64 : 48
     });
 
     if (isOnline) state.engine.syncPaused = true;

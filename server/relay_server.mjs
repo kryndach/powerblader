@@ -2,6 +2,7 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import zlib from 'zlib';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import { createSessionTrackers } from './report_formatters.mjs';
@@ -254,7 +255,7 @@ export function createCoopServer(options = {}) {
     }
 
     if (pathname === '/api/local-rom') {
-      handleLocalRomDownloadApi(urlObj, res, ROOT_DIR, sendJson);
+      handleLocalRomDownloadApi(req, urlObj, res, ROOT_DIR, sendJson);
       return;
     }
 
@@ -269,29 +270,35 @@ export function createCoopServer(options = {}) {
       );
       if (!fs.existsSync(jsnesPath)) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Not found');
-        return;
+        return res.end('Not found');
       }
       const patchedJsnes = fs
         .readFileSync(jsnesPath, 'utf8')
         .replace('topTileNum - 1 + 256', 'topTileNum + 256');
       res.writeHead(200, { 'Content-Type': MIME_TYPES['.js'] });
-      res.end(patchedJsnes);
-      return;
+      return res.end(patchedJsnes);
     }
 
     const filePath = resolveStaticAsset(pathname, req, recordAccess);
     if (!filePath || !fs.existsSync(filePath)) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Not found');
-      return;
+      return res.end('Not found');
     }
 
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, {
+    const isVendor = pathname.startsWith('/vendor/');
+    const gzOk = /\bgzip\b/i.test(req.headers['accept-encoding'] || '');
+    const hdrs = {
       'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-      'Cache-Control': 'no-cache'
-    });
+      'Cache-Control': isVendor ? 'public, max-age=86400' : 'no-cache'
+    };
+    if (isVendor && gzOk) {
+      hdrs['Content-Encoding'] = 'gzip';
+      res.writeHead(200, hdrs);
+      fs.createReadStream(filePath).pipe(zlib.createGzip()).pipe(res);
+      return;
+    }
+    res.writeHead(200, hdrs);
     fs.createReadStream(filePath).pipe(res);
   });
 

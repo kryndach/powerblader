@@ -60,20 +60,22 @@ export function createTelemetryReporter(state, ui, romSync) {
       txPerSec: state.txPerSec,
       rxPerSec: state.rxPerSec,
       maxRxGapMs: state.maxRxGapMs,
-      samples: state.telemetrySamples.slice(-25),
-      events: state.telemetryEvents.slice(-25)
+      samples: state.telemetrySamples.slice(-12),
+      events: state.telemetryEvents.slice(-15)
     };
   }
 
   function pushGameplayTelemetryToServer() {
-    if (!state.ws || state.ws.readyState !== 1) return;
+    const sock =
+      state.ws2 && state.ws2.readyState === 1 ? state.ws2 : state.ws;
+    if (!sock || sock.readyState !== 1) return;
     try {
       const telemetry = buildGameplayTelemetryPayload();
       const payload = JSON.stringify({
         type: 'gameplay_telemetry_ws',
         telemetry
       });
-      state.ws.send(payload);
+      sock.send(payload);
     } catch {}
   }
 
@@ -96,7 +98,8 @@ export function createTelemetryReporter(state, ui, romSync) {
       const recDelay = NesNetplayEngine.computeRecommendedInputDelay(
         state.rttMs,
         state.jitterMs,
-        state.engine.rxClumpFrames
+        state.engine.rxClumpFrames,
+        state.engine.inputDelayFrames
       );
       const autoOpt = ui.inputDelaySelect.querySelector('option[value="auto"]');
       if (autoOpt) {
@@ -117,8 +120,8 @@ export function createTelemetryReporter(state, ui, romSync) {
         }
         const nowMs = performance.now();
         if (
-          state.autoDelayStreak >= 2 &&
-          nowMs - state.lastAutoDelayChangeAt > 5000
+          state.autoDelayStreak >= 3 &&
+          nowMs - state.lastAutoDelayChangeAt > 12000
         ) {
           state.lastAutoDelayChangeAt = nowMs;
           state.autoDelayStreak = 0;

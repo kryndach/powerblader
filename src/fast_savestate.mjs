@@ -220,6 +220,7 @@ export function serializeCompactNesState(
   delete nesState.ppu.bgbuffer;
   delete nesState.ppu.pixrendered;
   delete nesState.ppu.scantile;
+  nesState.ppu._hasTightWaitLoop = Boolean(nes.ppu._hasTightWaitLoop);
 
   return {
     sessionId,
@@ -236,6 +237,12 @@ export function restoreCompactNesState(nes, syncObj) {
   if (!syncObj || !syncObj.nesState) return false;
   patchJsnes8x16Sprites(nes);
   const s = syncObj.nesState;
+  if (nes.mmap) {
+    nes.mmap._bankAt8000 = -1;
+    nes.mmap._bankAtC000 = -1;
+    nes.mmap._vromAt0000 = -1;
+    nes.mmap._vromAt1000 = -1;
+  }
   nes.mmap.fromJSON(s.mmap);
   nes.cpu.fromJSON(s.cpu);
 
@@ -250,6 +257,9 @@ export function restoreCompactNesState(nes, syncObj) {
 
   if (useRefMap) ppu.ptTile = [];
   ppu.fromJSON(s.ppu);
+  ppu._hasTightWaitLoop = Boolean(s.ppu._hasTightWaitLoop);
+  ppu._overclockScanlines = 0;
+  ppu._inOverclock = false;
 
   ppu.buffer = origBuffer;
   ppu.bgbuffer = origBgBuffer;

@@ -1,7 +1,6 @@
 // Universal Deterministic Rollback Netplay Engine (NES, Sega, Multi-Console)
 import {
-  INPUT_BITS, crc32Bytes, computeRomCrc32,
-  formatHex32, computeDeterministicHash
+  INPUT_BITS, crc32Bytes, computeRomCrc32, formatHex32, computeDeterministicHash
 } from './crc32.mjs';
 import { patchJsnes8x16Sprites } from './jsnes_ppu_patches.mjs';
 import {
@@ -56,13 +55,22 @@ export class RollbackNetplayEngine {
   resetTimeline(startFrame = 0, newSessionId = null) {
     resetEngineTimeline(this, startFrame, newSessionId);
   }
-  static computeRecommendedInputDelay(rttMs, jitterMs = 0, rxClumpFrames = 0) {
+  static computeRecommendedInputDelay(
+    rttMs, jitterMs = 0, rxClumpFrames = 0, currentDelay = null
+  ) {
     if (!Number.isFinite(rttMs) || rttMs <= 0) return 2;
     const clumpMs = Math.min(25, Math.max(0, (rxClumpFrames || 0) - 1) * 5);
-    const effRtt = rttMs + Math.min(35, Math.max(0, jitterMs) * 0.5) + clumpMs;
-    if (effRtt <= 85) return 2;
-    if (effRtt <= 165) return 3;
-    return effRtt <= 295 ? 4 : 5;
+    const eff = rttMs + Math.min(35, Math.max(0, jitterMs) * 0.5) + clumpMs;
+    const base = eff <= 85 ? 2 : eff <= 165 ? 3 : eff <= 310 ? 4 : 5;
+    if (!Number.isFinite(currentDelay) || base === currentDelay) return base;
+    const b = [0, 0, 85, 165, 310, 9999];
+    if (base > currentDelay && currentDelay >= 2 && currentDelay <= 4) {
+      return eff > b[currentDelay] + 15 ? base : currentDelay;
+    }
+    if (base < currentDelay && currentDelay >= 3 && currentDelay <= 5) {
+      return eff < b[currentDelay - 1] - 20 ? base : currentDelay;
+    }
+    return base;
   }
   setInputDelay(frames) {
     const nextDelay = Math.max(0, Math.min(8, Math.floor(frames)));
@@ -80,7 +88,6 @@ export class RollbackNetplayEngine {
     }
     this.inputDelayFrames = nextDelay;
   }
-
   _setPlayerInput(playerNum, frame, mask, confirmed) {
     const idx = frame % this.historySize;
     const val = mask >>> 0;
@@ -92,7 +99,6 @@ export class RollbackNetplayEngine {
       if (confirmed) this.p2Confirmed[idx] = frame;
     }
   }
-
   getPlayerInput(playerNum, frame) {
     if (frame < 0) return 0;
     const idx = frame % this.historySize;
@@ -107,19 +113,15 @@ export class RollbackNetplayEngine {
     if (hasRem && this.localPlayer === 1) return this.p2Inputs[remIdx];
     return 0;
   }
-
   getLocalInputAt(frame) {
     return this.getPlayerInput(this.localPlayer, frame);
   }
-
   receiveRemoteInputPacket(packet, nowMs = performance.now()) {
     processRemoteInputPacket(this, packet, nowMs);
   }
-
   _buildInputPacket(latestScheduledFrame) {
     return buildNetplayInputPacket(this, latestScheduledFrame);
   }
-
   _cleanupOldHashes() {
     while (this.localHashes.size > 40) {
       this.localHashes.delete(this.localHashes.keys().next().value);
@@ -128,7 +130,6 @@ export class RollbackNetplayEngine {
       this.remoteHashes.delete(this.remoteHashes.keys().next().value);
     }
   }
-
   _verifyConfirmedHashes() {
     if (this.earliestMispredictedFrame !== null) return;
     for (const [frame, remoteHash] of this.remoteHashes.entries()) {
@@ -215,7 +216,7 @@ export class RollbackNetplayEngine {
     this.suppressCallbacks = false;
   }
 
-  stepNetplayFrame(localButtonsMask, p2LocalButtonsMask = 0) {
+  stepNetplayFrame(localButtonsMask, p2LocalButtonsMask = 0, options = null) {
     const t0 = performance.now();
     const now = Date.now();
     if (now - this.lastRollbackSecTick >= 1000) {
@@ -223,14 +224,12 @@ export class RollbackNetplayEngine {
       this.rollbacksThisSec = 0;
       this.lastRollbackSecTick = now;
     }
-
     if (this.syncPaused) {
       return {
         stepped: false, stalled: true, syncPaused: true,
         packetToSend: null, p1Mask: 0, p2Mask: 0
       };
     }
-
     if (!this.online) {
       const f = this.currentFrame;
       const idx = f % this.historySize;
@@ -256,14 +255,17 @@ export class RollbackNetplayEngine {
       };
     }
 
-    this._executeRollbackIfNeeded();
-
+    if (!options?.skipRollback) this._executeRollbackIfNeeded();
+    const turbo = Math.max(1, options?.turboSpeed || 1);
+    const maxAhead = Math.min(
+      this.saveBufferSize - 6, this.maxRollbackFrames * turbo
+    );
     const prevF = Math.max(this.timelineStartFrame, this.currentFrame - 1);
-    const framesAhead = this.currentFrame - this.lastConfirmedRemoteFrame;
-    if (framesAhead > this.maxRollbackFrames) {
+    if (this.currentFrame - this.lastConfirmedRemoteFrame > maxAhead) {
       this.stallFrames++;
       this._verifyConfirmedHashes();
-      const packetToSend = this._buildInputPacket(this.lastLocalScheduledFrame);
+      const packetToSend = options?.skipPacket
+        ? null : this._buildInputPacket(this.lastLocalScheduledFrame);
       this.lastStepMs = performance.now() - t0;
       return {
         stepped: false, stalled: true, packetToSend,
@@ -271,14 +273,14 @@ export class RollbackNetplayEngine {
         p2Mask: this.getPlayerInput(2, prevF)
       };
     }
-
     if (this.enableRiftPacing && this.riftFrames > 1.75) {
       const cooldownTarget = this.riftFrames > 5 ? 4 : 10;
       if (this._riftCooldown >= cooldownTarget) {
         this._riftCooldown = 0;
         this.riftWaitFrames++;
         this._verifyConfirmedHashes();
-        const pkt = this._buildInputPacket(this.lastLocalScheduledFrame);
+        const pkt = options?.skipPacket
+          ? null : this._buildInputPacket(this.lastLocalScheduledFrame);
         this.lastStepMs = performance.now() - t0;
         return {
           stepped: false, stalled: false, riftPaced: true, packetToSend: pkt,
@@ -291,7 +293,7 @@ export class RollbackNetplayEngine {
       this._riftCooldown = 0;
     }
 
-    const targetInputFrame = this.currentFrame + this.inputDelayFrames;
+    const targetInputFrame = this.currentFrame + this.inputDelayFrames * turbo;
     while (this.lastLocalScheduledFrame < targetInputFrame) {
       this.lastLocalScheduledFrame++;
       this._setPlayerInput(
@@ -302,7 +304,6 @@ export class RollbackNetplayEngine {
     const f = this.currentFrame;
     const idx = f % this.historySize;
     this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
-
     const p1Mask = this.getPlayerInput(1, f);
     const p2Mask = this.getPlayerInput(2, f);
     this.p1Simulated[idx] = p1Mask;
@@ -311,16 +312,14 @@ export class RollbackNetplayEngine {
     this.suppressCallbacks = false;
     this.core.stepFrame(p1Mask, p2Mask, false);
     this.currentFrame++;
-
     if (this.currentFrame % 30 === 0) {
       this.localHashes.set(this.currentFrame, this.core.computeHash());
       this._cleanupOldHashes();
     }
     this._verifyConfirmedHashes();
-
-    const packetToSend = this._buildInputPacket(this.lastLocalScheduledFrame);
+    const packetToSend = options?.skipPacket
+      ? null : this._buildInputPacket(this.lastLocalScheduledFrame);
     this.lastStepMs = performance.now() - t0;
-
     return { stepped: true, stalled: false, packetToSend, p1Mask, p2Mask };
   }
 

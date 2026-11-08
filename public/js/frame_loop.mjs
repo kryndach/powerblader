@@ -132,15 +132,20 @@ export function startConsoleFrameLoop(
         const effSpeed = viewportCtrl ? viewportCtrl.getEffectiveSpeed() : 1;
         const combinedMask = localButtonsMask | pollGamepadMask();
         for (let s = 0; s < effSpeed; s++) {
-          if (state.nes.ppu) state.nes.ppu._headlessFrame = s < effSpeed - 1;
-          const res = state.engine.stepNetplayFrame(combinedMask, 0);
+          const isLast = s === effSpeed - 1;
+          if (state.nes.ppu) state.nes.ppu._headlessFrame = !isLast;
+          const res = state.engine.stepNetplayFrame(combinedMask, 0, {
+            turboSpeed: effSpeed,
+            skipRollback: s > 0,
+            skipPacket: !isLast
+          });
           if (state.nes.ppu) state.nes.ppu._headlessFrame = false;
-          if (res.packetToSend && state.peerConnected) {
+          if (isLast && res.packetToSend && state.peerConnected) {
             transport.sendFastNetplayPacket(res.packetToSend);
           }
           if (res.stepped) framesThisSec++;
           if (
-            s === effSpeed - 1 &&
+            isLast &&
             (state.engine.currentFrame % 4 === 0 || !res.stepped)
           ) {
             telemetry.updateDebugTelemetry(res.p1Mask, res.p2Mask);
@@ -168,7 +173,7 @@ export function startConsoleFrameLoop(
       }
     }
 
-    if (now - lastTelemetryTick >= 2000) {
+    if (now - lastTelemetryTick >= 4000) {
       lastTelemetryTick = now;
       if (state.ws && state.ws.readyState === 1) {
         const t = state.engine ? state.engine.getTelemetry() : {};

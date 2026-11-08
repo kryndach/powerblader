@@ -319,11 +319,17 @@ export function runStage5PowerBladeHudAndAudio(romFiles, localRomsDir) {
 
   assert.strictEqual(hudJitterFrames, 0);
   assert.strictEqual(hudStableFrames, 140);
+  assert.strictEqual(nesPb.ppu._hasTightWaitLoop, true);
   assert.ok(maxPostRollbackBoundaryJump < 0.02);
+
+  let curDel = 4;
+  for (const rtt of [282, 294, 302, 290, 308, 286, 300, 295]) {
+    curDel = NesNetplayEngine.computeRecommendedInputDelay(rtt, 16, 2, curDel);
+    assert.strictEqual(curDel, 4);
+  }
   console.log(
     '[PASS] Stage 5: Power Blade 2 HUD Split Stability ' +
-      `(${hudStableFrames}/140 frames locked at y=184, 0 jitter) & ` +
-      `Audio De-Click (maxJump=${maxPostRollbackBoundaryJump.toFixed(4)}) ` +
-      'Verified'
+      `(${hudStableFrames}/140 frames locked at y=184, 0 jitter), ` +
+      'Anti-Lag & Auto-Delay Hysteresis Verified'
   );
 }

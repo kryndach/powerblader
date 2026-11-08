@@ -6,22 +6,19 @@ for (let p = 0; p < 65536; p++) {
   const r5 = (p >>> 11) & 0x1f;
   const g6 = (p >>> 5) & 0x3f;
   const b5 = p & 0x1f;
-  const r = (r5 << 3) | (r5 >>> 2);
-  const g = (g6 << 2) | (g6 >>> 4);
-  const b = (b5 << 3) | (b5 >>> 2);
-  RGB565_TO_BGR24[p] = (b << 16) | (g << 8) | r;
+  RGB565_TO_BGR24[p] = (((b5 << 3) | (b5 >>> 2)) << 16) |
+    (((g6 << 2) | (g6 >>> 4)) << 8) | ((r5 << 3) | (r5 >>> 2));
 }
 
 const RUNTIMES = {
-  gpgx: {
-    file: 'genesis_plus_gx_libretro',
-    factory: null, wasmBinary: null, promise: null
-  },
-  snes9x: {
-    file: 'snes9x_libretro',
-    factory: null, wasmBinary: null, promise: null
-  }
+  gpgx: { file: 'genesis_plus_gx_libretro', factory: null, wasmBinary: null },
+  snes9x: { file: 'snes9x_libretro', factory: null, wasmBinary: null }
 };
+const GPGX_EXT = [
+  [0xfe530, 0xfe538], [0x2f75a4, 0x2f75a8],
+  [0x328608, 0x328610], [0x524c60, 0x524d40]
+];
+const GPGX_EXT_LEN = 248;
 
 export async function ensureLibretroRuntime(coreKey = 'gpgx') {
   const rt = RUNTIMES[coreKey] || RUNTIMES.gpgx;
@@ -41,20 +38,19 @@ export async function ensureLibretroRuntime(coreKey = 'gpgx') {
       const fs = await import('node:fs');
       const path = await import('node:path');
       const url = await import('node:url');
-      const dir = path.dirname(url.fileURLToPath(import.meta.url));
-      const vDir = path.resolve(dir, '..', 'public', 'vendor');
-      const jsUrl = url.pathToFileURL(path.join(vDir, `${rt.file}.js`)).href;
-      const ns = await import(jsUrl);
+      const vDir = path.resolve(
+        path.dirname(url.fileURLToPath(import.meta.url)), '..', 'public/vendor'
+      );
+      const ns = await import(url.pathToFileURL(
+        path.join(vDir, `${rt.file}.js`)
+      ).href);
       rt.factory = ns.default;
       rt.wasmBinary = new Uint8Array(
         fs.readFileSync(path.join(vDir, `${rt.file}.wasm`))
       );
     }
     return { factory: rt.factory, wasmBinary: rt.wasmBinary };
-  })().catch((err) => {
-    rt.promise = null;
-    throw err;
-  });
+  })().catch((err) => { rt.promise = null; throw err; });
   return rt.promise;
 }
 
@@ -70,19 +66,11 @@ export function toRetroPadMask(mask, systemId = 'sega_md') {
   if (mask & INPUT_BITS.DOWN) r |= 1 << 5;
   if (mask & INPUT_BITS.LEFT) r |= 1 << 6;
   if (mask & INPUT_BITS.RIGHT) r |= 1 << 7;
-  if (systemId === 'snes') {
-    if (mask & INPUT_BITS.Y) r |= 1 << 1;
-    if (mask & INPUT_BITS.A) r |= 1 << 8;
-    if (mask & INPUT_BITS.X) r |= 1 << 9;
-    if (mask & INPUT_BITS.C) r |= 1 << 10;
-    if (mask & INPUT_BITS.Z) r |= 1 << 11;
-  } else {
-    if (mask & INPUT_BITS.A) r |= 1 << 1;
-    if (mask & INPUT_BITS.C) r |= 1 << 8;
-    if (mask & INPUT_BITS.Y) r |= 1 << 9;
-    if (mask & INPUT_BITS.X) r |= 1 << 10;
-    if (mask & INPUT_BITS.Z) r |= 1 << 11;
-  }
+  if (mask & INPUT_BITS.X) r |= 1 << (systemId === 'snes' ? 9 : 10);
+  if (mask & INPUT_BITS.Y) r |= 1 << (systemId === 'snes' ? 1 : 9);
+  if (mask & INPUT_BITS.A) r |= 1 << (systemId === 'snes' ? 8 : 1);
+  if (mask & INPUT_BITS.C) r |= 1 << (systemId === 'snes' ? 10 : 8);
+  if (mask & INPUT_BITS.Z) r |= 1 << 11;
   return r;
 }
 
@@ -99,37 +87,26 @@ function wireLibretroEnv(mod, coreState) {
     const cmd = rawCmd & ~0x10000;
     if (cmd === 3) { mod.setValue(dataPtr, 1, 'i8'); return 1; }
     if (cmd === 2 || cmd === 17 || cmd === 49) {
-      mod.setValue(dataPtr, 0, 'i8');
-      return 1;
+      mod.setValue(dataPtr, 0, 'i8'); return 1;
     }
     if (cmd === 10) {
       const fmt = mod.getValue(dataPtr, 'i32');
-      if (fmt === 0 || fmt === 1 || fmt === 2) {
-        coreState.pixelFormat = fmt;
-        return 1;
-      }
+      if (fmt >= 0 && fmt <= 2) { coreState.pixelFormat = fmt; return 1; }
       return 0;
     }
     if (cmd === 9 || cmd === 30 || cmd === 31 || cmd === 19) {
-      const sysPtr = allocCString(mod, coreState.ptrs, '/system');
-      mod.setValue(dataPtr, sysPtr, 'i32');
+      const p = allocCString(mod, coreState.ptrs, '/system');
+      mod.setValue(dataPtr, p, 'i32');
       return 1;
     }
     if (cmd === 27) {
-      if (!coreState.logCbPtr) {
-        coreState.logCbPtr = mod.addFunction(() => {}, 'viii');
-      }
+      coreState.logCbPtr ||= mod.addFunction(() => {}, 'viii');
       mod.setValue(dataPtr, coreState.logCbPtr, 'i32');
       return 1;
     }
     if (cmd === 15) { mod.setValue(dataPtr + 4, 0, 'i32'); return 0; }
     if (cmd === 24) { mod.setValue(dataPtr, 2, 'i32'); return 1; }
-    if (cmd === 51 || cmd === 16 || cmd === 53 || cmd === 54 ||
-        cmd === 67 || cmd === 68 || cmd === 11 || cmd === 35 ||
-        cmd === 36 || cmd === 37 || cmd === 8 || cmd === 6) {
-      return 1;
-    }
-    return 0;
+    return [6, 8, 11, 16, 35, 36, 37, 51, 53, 54, 67, 68].includes(cmd) ? 1 : 0;
   }, 'iii');
   mod._retro_set_environment(envCb);
 }
@@ -279,43 +256,62 @@ export async function createSegaGpgxCore({
   };
 
   core.saveStateInto = function (slot, frame) {
-    const used = core._serializeTrimmedLen();
+    const rawUsed = core._serializeTrimmedLen();
+    const ext = coreKey === 'gpgx' ? GPGX_EXT_LEN : 0;
+    const total = rawUsed + ext;
     slot.frame = frame;
-    slot.usedLen = used;
-    if (!slot.stateBytes || slot.stateBytes.length < used) {
-      slot.stateBytes = new Uint8Array(Math.max(used, core._stateSize));
+    slot.usedLen = total;
+    if (!slot.stateBytes || slot.stateBytes.length < total) {
+      slot.stateBytes = new Uint8Array(Math.max(total, core._stateSize + ext));
     }
     slot.stateBytes.set(
-      mod.HEAPU8.subarray(core._statePtr, core._statePtr + used)
+      mod.HEAPU8.subarray(core._statePtr, core._statePtr + rawUsed)
     );
+    if (ext) {
+      let p = rawUsed;
+      slot.stateBytes.set([0x47, 0x50, 0x58, 0x54], p);
+      p += 4;
+      for (const [s, e] of GPGX_EXT) {
+        slot.stateBytes.set(mod.HEAPU8.subarray(s, e), p);
+        p += e - s;
+      }
+    }
   };
 
   core.loadStateFromSlot = function (slot) {
     if (!slot || slot.frame < 0 || !slot.stateBytes) return false;
-    const used = slot.usedLen || slot.stateBytes.length;
-    mod.HEAPU8.set(slot.stateBytes.subarray(0, used), core._statePtr);
-    const clearEnd = Math.max(used, core._lastUsedLen);
-    if (clearEnd > used) {
-      mod.HEAPU8.fill(0, core._statePtr + used, core._statePtr + clearEnd);
+    const total = slot.usedLen || slot.stateBytes.length;
+    const b = slot.stateBytes;
+    const tOff = total - GPGX_EXT_LEN;
+    const hasExt = coreKey === 'gpgx' && tOff > 0 && b[tOff] === 0x47 &&
+      b[tOff + 1] === 0x50 && b[tOff + 2] === 0x58 && b[tOff + 3] === 0x54;
+    const rawUsed = Math.min(hasExt ? tOff : total, core._stateSize);
+    mod.HEAPU8.set(b.subarray(0, rawUsed), core._statePtr);
+    const clearEnd = Math.max(rawUsed, core._lastUsedLen);
+    if (clearEnd > rawUsed) {
+      mod.HEAPU8.fill(0, core._statePtr + rawUsed, core._statePtr + clearEnd);
     }
-    core._lastUsedLen = used;
-    return Boolean(mod._retro_unserialize(core._statePtr, core._stateSize));
+    core._lastUsedLen = rawUsed;
+    const ok = Boolean(mod._retro_unserialize(core._statePtr, core._stateSize));
+    if (hasExt) {
+      let p = tOff + 4;
+      for (const [s, e] of GPGX_EXT) {
+        mod.HEAPU8.set(b.subarray(p, p + (e - s)), s);
+        p += e - s;
+      }
+    }
+    return ok;
   };
 
+  const tmpSlot = { frame: 0, usedLen: 0, stateBytes: null };
   core.saveStateBytes = function () {
-    const used = core._serializeTrimmedLen();
-    return mod.HEAPU8.slice(core._statePtr, core._statePtr + used);
+    core.saveStateInto(tmpSlot, 0);
+    return tmpSlot.stateBytes.slice(0, tmpSlot.usedLen);
   };
-
   core.loadStateBytes = function (bytes) {
-    const used = Math.min(bytes.length, core._stateSize);
-    const endPtr = core._statePtr + core._stateSize;
-    mod.HEAPU8.set(bytes.subarray(0, used), core._statePtr);
-    if (used < core._stateSize) {
-      mod.HEAPU8.fill(0, core._statePtr + used, endPtr);
-    }
-    core._lastUsedLen = used;
-    mod._retro_unserialize(core._statePtr, core._stateSize);
+    core.loadStateFromSlot({
+      frame: 0, usedLen: bytes.length, stateBytes: bytes
+    });
   };
 
   core.computeHash = function () {

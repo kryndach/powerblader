@@ -90,39 +90,27 @@ function findRomRecursive(dir) {
   return null;
 }
 
-function extractArchiveToDir(archivePath, outDir) {
-  const lower = archivePath.toLowerCase();
+function extractArchiveToDir(arc, outDir) {
+  const lower = arc.toLowerCase();
   const winrar = findFirstExisting(WINRAR_PATHS);
   const unrar = findFirstExisting(UNRAR_PATHS);
   const sevenZip = findFirstExisting(SEVENZIP_PATHS);
-
-  const outSlash = outDir + path.sep;
+  const outS = outDir + path.sep;
   const attempts = [];
   if (lower.endsWith('.rar')) {
-    if (unrar) {
-      attempts.push([unrar, ['x', '-y', '-inul', archivePath, outSlash]]);
-    }
-    if (winrar) {
-      attempts.push([winrar, ['x', '-ibck', '-y', archivePath, outSlash]]);
-    }
+    if (unrar) attempts.push([unrar, ['x', '-y', '-inul', arc, outS]]);
+    if (winrar) attempts.push([winrar, ['x', '-ibck', '-y', arc, outS]]);
   }
-  if (sevenZip) {
-    attempts.push([sevenZip, ['x', '-y', `-o${outDir}`, archivePath]]);
-  }
-  if (winrar) {
-    attempts.push([winrar, ['x', '-ibck', '-y', archivePath, outSlash]]);
-  }
-  attempts.push(['tar.exe', ['-xf', archivePath, '-C', outDir]]);
+  if (sevenZip) attempts.push([sevenZip, ['x', '-y', `-o${outDir}`, arc]]);
+  if (winrar) attempts.push([winrar, ['x', '-ibck', '-y', arc, outS]]);
+  attempts.push(['tar.exe', ['-xf', arc, '-C', outDir]]);
 
   for (const [cmd, args] of attempts) {
     try {
       execFileSync(cmd, args, { stdio: 'ignore', timeout: 15000 });
-      const found = findRomRecursive(outDir);
-      if (found) {
-        return {
-          romName: path.basename(found),
-          romBuffer: fs.readFileSync(found)
-        };
+      const f = findRomRecursive(outDir);
+      if (f) {
+        return { romName: path.basename(f), romBuffer: fs.readFileSync(f) };
       }
     } catch {}
   }
@@ -291,11 +279,29 @@ export function listLocalRomFiles(localDir) {
   return out.sort();
 }
 
+function sendRomBuffer(req, res, romName, romBuffer) {
+  const gzOk = /\bgzip\b/i.test(req?.headers?.['accept-encoding'] || '');
+  const useGz = gzOk && !romName.toLowerCase().endsWith('.zip') &&
+    romBuffer.length > 16384;
+  const body = useGz ? zlib.gzipSync(romBuffer) : romBuffer;
+  const hdrs = {
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': String(body.length),
+    'X-Raw-Length': String(romBuffer.length),
+    'X-Rom-Filename': encodeURIComponent(romName)
+  };
+  if (useGz) hdrs['Content-Encoding'] = 'gzip';
+  res.writeHead(200, hdrs);
+  res.end(body);
+}
+
 export function handleLocalRomsApi(res, rootDir, sendJson) {
   sendJson(res, 200, { files: listLocalRomFiles(path.join(rootDir, 'local')) });
 }
 
-export function handleLocalRomDownloadApi(urlObj, res, rootDir, sendJson) {
+export function handleLocalRomDownloadApi(
+  req, urlObj, res, rootDir, sendJson
+) {
   const localDir = path.join(rootDir, 'local');
   const files = listLocalRomFiles(localDir);
   const reqFile = (urlObj.searchParams.get('file') || '').replace(/\\/g, '/');
@@ -308,12 +314,7 @@ export function handleLocalRomDownloadApi(urlObj, res, rootDir, sendJson) {
   }
   try {
     const { romName, romBuffer } = extractRomFromFile(romFile);
-    res.writeHead(200, {
-      'Content-Type': 'application/octet-stream',
-      'Content-Length': String(romBuffer.length),
-      'X-Rom-Filename': encodeURIComponent(romName)
-    });
-    res.end(romBuffer);
+    sendRomBuffer(req, res, romName, romBuffer);
   } catch (e) {
     sendJson(res, 400, { ok: false, error: e.message });
   }
@@ -333,12 +334,7 @@ export function handleExtractRomPostApi(req, urlObj, res, sendJson) {
       const { romName, romBuffer } = extractRomFromBuffer(
         Buffer.concat(chunks), fileName
       );
-      res.writeHead(200, {
-        'Content-Type': 'application/octet-stream',
-        'Content-Length': String(romBuffer.length),
-        'X-Rom-Filename': encodeURIComponent(romName)
-      });
-      res.end(romBuffer);
+      sendRomBuffer(req, res, romName, romBuffer);
     } catch (e) {
       sendJson(res, 400, { ok: false, error: e.message });
     }
