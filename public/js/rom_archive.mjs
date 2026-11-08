@@ -9,7 +9,6 @@ function isRomEntryName(name = '') {
   const lower = String(name).trim().toLowerCase();
   return ROM_EXTS.some((ext) => lower.endsWith(ext));
 }
-
 function isArchiveNameOrMagic(name = '', u8 = null) {
   const lower = String(name).trim().toLowerCase();
   if (ARCHIVE_EXTS.some((ext) => lower.endsWith(ext))) return true;
@@ -18,7 +17,6 @@ function isArchiveNameOrMagic(name = '', u8 = null) {
     (u8[0] === 0x52 && u8[1] === 0x61 && u8[2] === 0x72) ||
     (u8[0] === 0x37 && u8[1] === 0x7a && u8[2] === 0xbc);
 }
-
 function baseName(entryPath) {
   const parts = String(entryPath).replace(/\\/g, '/').split('/');
   return parts[parts.length - 1] || 'Game.nes';
@@ -52,8 +50,8 @@ export async function extractRomFromZipBrowser(u8) {
     const cleanName = baseName(rawName);
     if (!isRomEntryName(cleanName)) continue;
     if (cleanName.toLowerCase().endsWith('.bin') && totalEntries > 1) continue;
-    if (localOff + 30 > u8.byteLength) continue;
-    if (dv.getUint32(localOff, true) !== 0x04034b50) continue;
+    if (localOff + 30 > u8.byteLength ||
+        dv.getUint32(localOff, true) !== 0x04034b50) continue;
     const start = localOff + 30 + dv.getUint16(localOff + 26, true) +
       dv.getUint16(localOff + 28, true);
     const compSlice = u8.subarray(start, start + compSize);
@@ -64,19 +62,22 @@ export async function extractRomFromZipBrowser(u8) {
       if (typeof DecompressionStream === 'function') {
         const ds = new DecompressionStream('deflate-raw');
         const stream = new Blob([compSlice]).stream().pipeThrough(ds);
-        const ab = await new Response(stream).arrayBuffer();
-        return { romName: cleanName, romUint8: new Uint8Array(ab) };
+        return {
+          romName: cleanName,
+          romUint8: new Uint8Array(await new Response(stream).arrayBuffer())
+        };
       }
       if (typeof process !== 'undefined' && process.versions?.node) {
         const zlib = await import('node:zlib');
-        const out = zlib.inflateRawSync(compSlice);
-        return { romName: cleanName, romUint8: new Uint8Array(out) };
+        return {
+          romName: cleanName,
+          romUint8: new Uint8Array(zlib.inflateRawSync(compSlice))
+        };
       }
     }
   }
   return null;
 }
-
 export async function extractArchiveViaServer(u8, fileName) {
   const url = `/api/extract-rom?name=${encodeURIComponent(fileName)}`;
   const res = await fetch(url, {
@@ -92,13 +93,12 @@ export async function extractArchiveViaServer(u8, fileName) {
   const romName = hdrName ? decodeURIComponent(hdrName) : 'Game.nes';
   return { romName, romUint8: new Uint8Array(await res.arrayBuffer()) };
 }
-
 export async function unpackRomIfNeeded(u8, fileName) {
   if (!isArchiveNameOrMagic(fileName, u8)) {
     return { romName: fileName, romUint8: u8 };
   }
-  const lower = String(fileName).toLowerCase();
-  if (lower.endsWith('.zip') || (u8[0] === 0x50 && u8[1] === 0x4b)) {
+  if (String(fileName).toLowerCase().endsWith('.zip') ||
+      (u8[0] === 0x50 && u8[1] === 0x4b)) {
     try {
       const zipRes = await extractRomFromZipBrowser(u8);
       if (zipRes) return zipRes;
@@ -125,11 +125,10 @@ export async function fetchRomBytesWithProgress(
   const total = Number(
     res.headers.get('X-Raw-Length') || res.headers.get('Content-Length')
   ) || 0;
-  if (total > 65536 && res.body && typeof res.body.getReader === 'function') {
+  if (total > 65536 && res.body?.getReader) {
     const reader = res.body.getReader();
     const parts = [];
-    let loaded = 0;
-    let lastPct = 0;
+    let loaded = 0, lastPct = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -147,57 +146,71 @@ export async function fetchRomBytesWithProgress(
     for (const p of parts) { out.set(p, off); off += p.length; }
     return { romName: rName, u8: out };
   }
-  const buf = await res.arrayBuffer();
-  return { romName: rName, u8: new Uint8Array(buf) };
+  return { romName: rName, u8: new Uint8Array(await res.arrayBuffer()) };
 }
 
 export async function streamRomToPeer(
   state, ui, sessionId, syncState, uint8ToBase64
 ) {
-  const chunkSize = 64 * 1024;
-  const totalBytes = state.romUint8.length;
+  const chunkSize = 64 * 1024, totalBytes = state.romUint8.length;
   const totalChunks = Math.ceil(totalBytes / chunkSize);
   const kb = Math.round(totalBytes / 1024);
-  const localRomKey =
-    typeof window !== 'undefined' ? state.localServerRomKey || null : null;
+  const inBrw = typeof window !== 'undefined' && typeof fetch === 'function';
+  const localRomKey = inBrw ? state.localServerRomKey || null : null;
   const setBtn = (txt, dis = true) => {
-    if (!ui.sendRomManualBtn) return;
-    ui.sendRomManualBtn.textContent = txt;
-    ui.sendRomManualBtn.disabled = dis;
+    if (ui.sendRomManualBtn) {
+      ui.sendRomManualBtn.textContent = txt;
+      ui.sendRomManualBtn.disabled = dis;
+    }
+    if (ui.topSendRomBtn) {
+      ui.topSendRomBtn.textContent = dis ? txt : 'Send ROM';
+      ui.topSendRomBtn.disabled = dis;
+    }
   };
   setBtn('Sending... 0%', true);
   ui.logDebug(`Sending ROM "${state.romName}" (${kb} KB, ${totalChunks}ch)`);
   ui.showScreenBanner(`SENDING "${state.romName}" (0%)...`, 'warn', 0);
   ui.updateStatusStrip();
+  let roomRomKey = null;
+  if (!localRomKey && inBrw) {
+    try {
+      const rm = state.roomCode || 'NOVA';
+      const u = `/api/room-rom?room=${encodeURIComponent(
+        rm
+      )}&name=${encodeURIComponent(state.romName)}`;
+      const r = await fetch(u, { method: 'POST', body: state.romUint8 });
+      if (r.ok) roomRomKey = rm;
+    } catch {}
+  }
   state.ws.send(JSON.stringify({
-    type: 'rom_chunk_start', sessionId, localRomKey,
+    type: 'rom_chunk_start', sessionId, localRomKey, roomRomKey,
     romName: state.romName, romCrc32: state.romCrc32,
     isAutoDefaultRom: state.isAutoDefaultRom,
     totalBytes, totalChunks, syncState
   }));
-  if (localRomKey) return;
-  let lastPct = 0;
-  for (let i = 0; i < totalChunks; i++) {
-    if (!state.ws || state.ws.readyState !== 1) return;
+  if (localRomKey || roomRomKey) return;
+  for (let i = 0, lastPct = 0; i < totalChunks; i++) {
+    if (state.ws?.readyState !== 1) return;
     while (totalChunks > 4 && state.ws?.readyState === 1 &&
-           state.ws.bufferedAmount > 512 * 1024) {
-      await new Promise((r) => setTimeout(r, 4));
+           state.ws.bufferedAmount > 256 * 1024) {
+      await new Promise((r) => setTimeout(r, 6));
     }
-    const end = Math.min(totalBytes, (i + 1) * chunkSize);
-    const slice = state.romUint8.subarray(i * chunkSize, end);
+    const slice = state.romUint8.subarray(
+      i * chunkSize, Math.min(totalBytes, (i + 1) * chunkSize)
+    );
     state.ws.send(JSON.stringify({
       type: 'rom_chunk_data', sessionId, index: i,
       dataB64: uint8ToBase64(slice)
     }));
     const pct = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
-    if (totalChunks > 4 && pct >= lastPct + 4) {
+    if (totalChunks > 4 && (pct >= lastPct + 4 || i % 2 === 1)) {
       lastPct = pct;
       setBtn(`Sending... ${pct}%`, true);
       ui.showScreenBanner(`SENDING "${state.romName}" (${pct}%)...`, 'warn', 0);
-      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 4));
     }
   }
-  if (state.ws && state.ws.readyState === 1) {
+  if (state.ws?.readyState === 1) {
     state.ws.send(JSON.stringify({ type: 'rom_chunk_end', sessionId }));
     setBtn('Sent 100% (Syncing...)', false);
   }
@@ -210,30 +223,32 @@ export function handleRomTransferMessage(
     if (ui.sendRomManualBtn) {
       ui.sendRomManualBtn.textContent = `Sending... ${msg.pct}%`;
     }
+    if (ui.topSendRomBtn) ui.topSendRomBtn.textContent = `${msg.pct}%`;
     ui.showScreenBanner(`SENDING "${state.romName}" (${msg.pct}%)`, 'warn', 0);
     return true;
   }
+  const finishRomLoad = async (u8, rName, autoDef, dropKey, syncSt) => {
+    await romSync.loadRomFromUint8(u8, rName, {
+      broadcastToPeer: false, isAutoDefault: Boolean(autoDef),
+      dropdownKey: dropKey || rName
+    });
+    state.partnerRomName = rName;
+    state.partnerRomCrc32 = state.romCrc32;
+    applyImportedSyncState(syncSt, `ONLINE SYNCED - PLAYING "${rName}"`);
+  };
   if (msg.type === 'rom_chunk_start') {
     if (state.engine) state.engine.syncPaused = true;
     ui.showScreenBanner(`DOWNLOADING "${msg.romName}" (0%)...`, 'warn', 0);
     ui.updateStatusStrip();
-    if (msg.localRomKey && typeof window !== 'undefined') {
-      const url = `/api/local-rom?file=${encodeURIComponent(msg.localRomKey)}`;
-      fetchRomBytesWithProgress(url, 'DOWNLOADING', msg.romName, ui, (pct) => {
-        sendWs({ type: 'rom_transfer_progress', pct });
-      }).then(async (loaded) => {
-        if (!loaded) return;
-        state.localServerRomKey = msg.localRomKey;
-        await romSync.loadRomFromUint8(loaded.u8, msg.romName, {
-          broadcastToPeer: false, isAutoDefault: Boolean(msg.isAutoDefaultRom),
-          dropdownKey: msg.localRomKey
-        });
-        state.partnerRomName = msg.romName;
-        state.partnerRomCrc32 = state.romCrc32;
-        applyImportedSyncState(
-          msg.syncState, `ONLINE SYNCED - PLAYING "${state.romName}"`
-        );
-      });
+    if ((msg.localRomKey || msg.roomRomKey) && typeof window !== 'undefined') {
+      const url = msg.localRomKey
+        ? `/api/local-rom?file=${encodeURIComponent(msg.localRomKey)}`
+        : `/api/room-rom?room=${encodeURIComponent(msg.roomRomKey)}`;
+      fetchRomBytesWithProgress(url, 'DOWNLOADING', msg.romName, ui, (pct) =>
+        sendWs({ type: 'rom_transfer_progress', pct })
+      ).then((r) => r && finishRomLoad(
+        r.u8, msg.romName, msg.isAutoDefaultRom, msg.localRomKey, msg.syncState
+      ));
       return true;
     }
     state.incomingRomTransfer = {
@@ -245,46 +260,35 @@ export function handleRomTransferMessage(
     return true;
   }
   const xfer = state.incomingRomTransfer;
-  const finalize = async () => {
+  const finalize = () => {
     if (!xfer) return;
     state.incomingRomTransfer = null;
     const full = new Uint8Array(xfer.totalBytes);
-    let offset = 0;
-    for (let i = 0; i < xfer.totalChunks; i++) {
+    for (let i = 0, off = 0; i < xfer.totalChunks; i++) {
       const part = xfer.chunks.get(i);
       if (!part) return;
-      full.set(part, offset);
-      offset += part.length;
+      full.set(part, off);
+      off += part.length;
     }
-    await romSync.loadRomFromUint8(full, xfer.romName, {
-      broadcastToPeer: false, isAutoDefault: xfer.isAutoDefaultRom
-    });
-    state.partnerRomName = xfer.romName;
-    state.partnerRomCrc32 = state.romCrc32;
-    applyImportedSyncState(
-      xfer.syncState, `ONLINE SYNCED - PLAYING "${state.romName}"`
+    return finishRomLoad(
+      full, xfer.romName, xfer.isAutoDefaultRom, null, xfer.syncState
     );
   };
-  if (
-    msg.type === 'rom_chunk_data' && xfer && msg.sessionId === xfer.sessionId
-  ) {
+  if (msg.type === 'rom_chunk_data' && xfer &&
+      msg.sessionId === xfer.sessionId) {
     xfer.chunks.set(msg.index, base64ToUint8(msg.dataB64));
     const pct = Math.min(
       99, Math.round((xfer.chunks.size / xfer.totalChunks) * 100)
     );
     if (xfer.totalChunks > 8 && pct >= xfer.lastPct + 5) {
       xfer.lastPct = pct;
-      ui.showScreenBanner(
-        `DOWNLOADING "${xfer.romName}" (${pct}%)...`, 'warn', 0
-      );
+      ui.showScreenBanner(`DOWNLOADING "${xfer.romName}" (${pct}%)`, 'warn', 0);
       sendWs({ type: 'rom_transfer_progress', pct });
     }
     if (xfer.chunks.size >= xfer.totalChunks && xfer.endSeen) finalize();
     return true;
   }
-  if (
-    msg.type === 'rom_chunk_end' && xfer && msg.sessionId === xfer.sessionId
-  ) {
+  if (msg.type === 'rom_chunk_end' && xfer?.sessionId === msg.sessionId) {
     xfer.endSeen = true;
     if (xfer.chunks.size >= xfer.totalChunks) finalize();
     return true;
@@ -294,14 +298,12 @@ export function handleRomTransferMessage(
 
 export function setupRomDropAndPicker(state, ui, romSync) {
   const dropZone = document.getElementById('dropTarget');
-
   async function handleFileObject(file) {
     if (!file) return;
     try {
       const kb = Math.max(1, Math.round(file.size / 1024));
       ui.showScreenBanner(`LOADING "${file.name}" (${kb} KB)...`, 'warn', 0);
-      const buf = await file.arrayBuffer();
-      const rawU8 = new Uint8Array(buf);
+      const rawU8 = new Uint8Array(await file.arrayBuffer());
       if (isArchiveNameOrMagic(file.name, rawU8)) {
         ui.showScreenBanner(`EXTRACTING "${file.name}"...`, 'warn', 0);
       }
@@ -315,19 +317,17 @@ export function setupRomDropAndPicker(state, ui, romSync) {
       ui.showScreenBanner(`LOAD FAILED: ${err.message}`, 'err', 4000);
     }
   }
-  if (ui.romFileInput) {
-    ui.romFileInput.addEventListener('change', async (e) => {
-      const file = e.target.files?.[0];
-      e.target.value = '';
-      if (file) await handleFileObject(file);
-    });
-  }
+  ui.romFileInput?.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) handleFileObject(file);
+  });
   let dragDepth = 0;
   window.addEventListener('dragenter', (e) => {
     if (!e.dataTransfer?.types?.includes('Files')) return;
     e.preventDefault();
     dragDepth++;
-    if (dropZone) dropZone.classList.add('drag-over');
+    dropZone?.classList.add('drag-over');
   });
   window.addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -337,14 +337,13 @@ export function setupRomDropAndPicker(state, ui, romSync) {
     e.preventDefault();
     if (--dragDepth <= 0) {
       dragDepth = 0;
-      if (dropZone) dropZone.classList.remove('drag-over');
+      dropZone?.classList.remove('drag-over');
     }
   });
-  window.addEventListener('drop', async (e) => {
+  window.addEventListener('drop', (e) => {
     e.preventDefault();
     dragDepth = 0;
-    if (dropZone) dropZone.classList.remove('drag-over');
-    const f = e.dataTransfer?.files?.[0];
-    if (f) await handleFileObject(f);
+    dropZone?.classList.remove('drag-over');
+    if (e.dataTransfer?.files?.[0]) handleFileObject(e.dataTransfer.files[0]);
   });
 }

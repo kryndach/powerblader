@@ -155,9 +155,30 @@ function testRingWrapAndTurboTransitions(nesBin) {
   assert.strictEqual(
     computeDeterministicHash(nes1), computeDeterministicHash(nes2)
   );
+  // Verify HBlank triggerRendering ($2001=0 at curX>=256) flushes current row
+  const ppu = nes1.ppu;
+  ppu.f_bgVisibility = 1;
+  ppu.scanline = 250;
+  ppu.curX = 339;
+  ppu.lastRenderedScanline = 229;
+  ppu.scanlineAlreadyRendered = false;
+  ppu.validTileData = true;
+  ppu.scantile = new Array(32).fill({
+    opaque: new Array(8).fill(false),
+    pix: new Array(64).fill(3)
+  });
+  ppu.attrib = new Array(32).fill(0);
+  ppu.imgPalette = new Array(16).fill(0x224466);
+  ppu.buffer.fill(0);
+  ppu.firstWrite = true;
+  ppu.triggerRendering();
+  assert.strictEqual(
+    ppu.buffer[230 * 256 + 10], 0x224466,
+    'HBlank triggerRendering must composite current scanline (TMNT3 HUD y=230)'
+  );
   console.log(
-    '[PASS] Edge Case 2: 64-Slot SaveRing Wraparound + Dynamic Turbo ' +
-      `(1x->4x->2x->1x, ${eng1.currentFrame}f, 0 Stalls, 0 Desyncs)`
+    '[PASS] Edge Case 2: 64-Slot SaveRing Wraparound, Dynamic Turbo & ' +
+      `TMNT3 HBlank HUD Flush (${eng1.currentFrame}f, 0 Stalls, 0 Desyncs)`
   );
 }
 

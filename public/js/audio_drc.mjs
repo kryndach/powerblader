@@ -1,7 +1,7 @@
 // Dynamic Rate Control (DRC) Fractional Audio Resampler & Volume Controller
 const AUDIO_BUFFER_MASK = 8191;
 const AUDIO_PREBUFFER_SAMPLES = 1800;
-const AUDIO_TARGET_SAMPLES = 2200;
+const AUDIO_TARGET_SAMPLES = 2400;
 const AUDIO_MAX_QUEUED_SAMPLES = 5200;
 
 export function createAudioDrcEngine(
@@ -47,7 +47,7 @@ export function createAudioDrcEngine(
     } catch {
       audioCtx = new AudioContextClass();
     }
-    audioScriptNode = audioCtx.createScriptProcessor(1024, 0, 2);
+    audioScriptNode = audioCtx.createScriptProcessor(2048, 0, 2);
     audioScriptNode.onaudioprocess = (e) => {
       const outL = e.outputBuffer.getChannelData(0);
       const outR = e.outputBuffer.getChannelData(1);

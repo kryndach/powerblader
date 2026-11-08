@@ -8,10 +8,11 @@ import { WebSocketServer } from 'ws';
 import { createSessionTrackers } from './report_formatters.mjs';
 import { createRoomManager } from './room_manager.mjs';
 import {
-  handleLocalRomsApi,
-  handleLocalRomDownloadApi,
-  handleExtractRomPostApi
+  handleLocalRomsApi, handleLocalRomDownloadApi, handleExtractRomPostApi
 } from './archive_extractor.mjs';
+import {
+  handleRoomRomApi, handleSaveSlotApi
+} from './room_rom_and_save_api.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -250,18 +251,19 @@ export function createCoopServer(options = {}) {
     }
 
     if (pathname === '/api/local-roms') {
-      handleLocalRomsApi(res, ROOT_DIR, sendJson);
-      return;
+      return handleLocalRomsApi(res, ROOT_DIR, sendJson);
     }
-
     if (pathname === '/api/local-rom') {
-      handleLocalRomDownloadApi(req, urlObj, res, ROOT_DIR, sendJson);
-      return;
+      return handleLocalRomDownloadApi(req, urlObj, res, ROOT_DIR, sendJson);
     }
-
     if (pathname === '/api/extract-rom' && req.method === 'POST') {
-      handleExtractRomPostApi(req, urlObj, res, sendJson);
-      return;
+      return handleExtractRomPostApi(req, urlObj, res, sendJson);
+    }
+    if (pathname === '/api/room-rom') {
+      return handleRoomRomApi(req, urlObj, res, sendJson);
+    }
+    if (pathname === '/api/save-slot') {
+      return handleSaveSlotApi(req, urlObj, res, ROOT_DIR, sendJson);
     }
 
     if (pathname === '/vendor/jsnes.js') {

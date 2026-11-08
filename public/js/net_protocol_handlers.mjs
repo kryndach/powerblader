@@ -231,6 +231,10 @@ export function createProtocolHandlers(
           ui.sendRomManualBtn.textContent = 'Send My ROM File to Partner';
           ui.sendRomManualBtn.disabled = false;
         }
+        if (ui.topSendRomBtn) {
+          ui.topSendRomBtn.textContent = 'Send ROM';
+          ui.topSendRomBtn.disabled = false;
+        }
         state.engine.syncPaused = false;
         state.matchStarted = true;
         state.lastRxInputAt = 0;

@@ -144,6 +144,22 @@ export function patchJsnes8x16Sprites(nes) {
     return origUpdateControlReg1(value);
   };
 
+  ppu.triggerRendering = function () {
+    if (this._inRendering) return;
+    if (this.scanline >= 21 && this.scanline <= 260) {
+      flushCurrentScanlineIfHblank();
+      const targetScan =
+        this.curX >= 256 ? this.scanline + 1 - 21 : this.scanline - 21;
+      if (targetScan > this.lastRenderedScanline) {
+        this.renderFramePartially(
+          this.lastRenderedScanline + 1,
+          targetScan - this.lastRenderedScanline
+        );
+        this.lastRenderedScanline = targetScan;
+      }
+    }
+  };
+
   ppu._nextTileEpoch = 1;
   const origPatternWrite = ppu.patternWrite.bind(ppu);
   ppu.patternWrite = function (address, value) {

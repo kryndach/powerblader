@@ -128,9 +128,11 @@ export function startConsoleFrameLoop(
 
     while (accumulatorMs >= effectiveFrameMs) {
       accumulatorMs -= effectiveFrameMs;
+      const stepStartMs = performance.now();
       if (state.nes && state.engine) {
         const effSpeed = viewportCtrl ? viewportCtrl.getEffectiveSpeed() : 1;
-        const combinedMask = localButtonsMask | pollGamepadMask();
+        const combinedMask =
+          effSpeed > 1 ? 0 : localButtonsMask | pollGamepadMask();
         for (let s = 0; s < effSpeed; s++) {
           const isLast = s === effSpeed - 1;
           if (state.nes.ppu) state.nes.ppu._headlessFrame = !isLast;
@@ -151,6 +153,10 @@ export function startConsoleFrameLoop(
             telemetry.updateDebugTelemetry(res.p1Mask, res.p2Mask);
           }
         }
+      }
+      if (performance.now() - stepStartMs > 11) {
+        accumulatorMs = 0;
+        break;
       }
     }
 

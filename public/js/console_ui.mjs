@@ -16,8 +16,9 @@ function formatMaskShort(mask) {
 }
 
 const UI_IDS = [
-  'localRomSelect', 'romFileInput', 'nickInput', 'roomInput', 'connectBtn',
-  'copyLinkBtn', 'resetBtn', 'saveSlotSelect', 'quickSaveBtn', 'quickLoadBtn',
+  'localRomSelect', 'romFileInput', 'topSendRomBtn', 'nickInput', 'roomInput',
+  'connectBtn', 'copyLinkBtn', 'resetBtn', 'saveSlotSelect', 'quickSaveBtn',
+  'quickLoadBtn', 'exportSaveFileBtn', 'importSaveFileBtn', 'saveFileInput',
   'topInputDelaySelect', 'muteBtn', 'volumeSlider',
   'volumeValLabel', 'crtToggleBtn', 'scanlinesOverlay', 'debugToggleBtn',
   'debugDrawer', 'autoBenchLink', 'netBenchLink', 'lobbyOverlay',

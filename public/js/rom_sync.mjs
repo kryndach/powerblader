@@ -190,6 +190,10 @@ export function createRomSyncManager(state, ui, audio) {
       ui.sendRomManualBtn.textContent = 'Send My ROM File to Partner';
       ui.sendRomManualBtn.disabled = false;
     }
+    if (ui.topSendRomBtn) {
+      ui.topSendRomBtn.textContent = 'Send ROM';
+      ui.topSendRomBtn.disabled = false;
+    }
 
     if (state.ws && state.ws.readyState === 1) {
       state.ws.send(JSON.stringify({
@@ -270,6 +274,8 @@ export function createRomSyncManager(state, ui, audio) {
     ui.updateStatusStrip();
   }
 
+  const serverRomsSet = new Set();
+
   async function discoverLocalRoms() {
     try {
       const res = await fetch('/api/local-roms');
@@ -279,6 +285,7 @@ export function createRomSyncManager(state, ui, audio) {
           '<option value="">-- Select Game --</option>';
         if (Array.isArray(data.files) && data.files.length > 0) {
           for (const f of data.files) {
+            serverRomsSet.add(f);
             const opt = document.createElement('option');
             opt.value = f;
             const slash = f.indexOf('/');
@@ -298,8 +305,8 @@ export function createRomSyncManager(state, ui, audio) {
 
   async function fetchLocalRomByName(fileName, options = {}) {
     try {
+      state.localServerRomKey = serverRomsSet.has(fileName) ? fileName : null;
       if (state.customRomsMap.has(fileName)) {
-        state.localServerRomKey = null;
         await loadRomFromUint8(
           state.customRomsMap.get(fileName), fileName, options
         );

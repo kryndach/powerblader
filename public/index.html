@@ -29,6 +29,9 @@
       <input type="file" id="romFileInput"
         accept=".nes,.sfc,.smc,.md,.gen,.smd,.bin,.sms,.gg,.zip,.rar,.7z"
         style="display:none" />
+      <button id="topSendRomBtn" title="Send Loaded ROM File to Partner">
+        Send ROM
+      </button>
     </div>
 
     <!-- Online Room Connection -->
@@ -47,7 +50,7 @@
     <!-- Console Controls -->
     <div class="deck-group">
       <button id="resetBtn" title="Reset NES console at Frame #0">Reset</button>
-      <div class="save-box" title="Fast Save &amp; Load Slots (F6 / F8)">
+      <div class="save-box" title="Save &amp; Load Slots (F6/F8) + Local File">
         <select id="saveSlotSelect" title="Select Save Slot (Keys 1-5)">
           <option value="1">Slot 1 [Empty]</option>
           <option value="2">Slot 2 [Empty]</option>
@@ -57,6 +60,12 @@
         </select>
         <button id="quickSaveBtn" title="Fast Save to Slot (F6)">Save</button>
         <button id="quickLoadBtn" title="Fast Load from Slot (F8)">Load</button>
+        <button id="exportSaveFileBtn"
+          title="Download Save State to Local File (.sav.json)">File↓</button>
+        <button id="importSaveFileBtn"
+          title="Load Save State from Local File (.sav.json)">File↑</button>
+        <input type="file" id="saveFileInput" accept=".json,.sav"
+          style="display:none" />
       </div>
       <div class="speed-box" title="Game Speed / Turbo Fast-Forward">
         <button class="speed-btn active-toggle" data-speed="1">1x</button>

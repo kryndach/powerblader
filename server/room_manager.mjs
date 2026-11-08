@@ -2,7 +2,8 @@
 const FORWARD_TYPES = new Set([
   'netplay_input', 'state_sync', 'sync_ack', 'resync_request', 'console_reset',
   'rom_info', 'rom_status', 'rom_request', 'rom_sync', 'webrtc_signal',
-  'peer_ping', 'peer_pong', 'state', 'event', 'warp_request', 'warp_snapshot'
+  'peer_ping', 'peer_pong', 'speed_ctrl', 'state', 'event', 'warp_request',
+  'warp_snapshot'
 ]);
 
 const normCode = (raw) =>

@@ -29,12 +29,7 @@ export function createViewportAndSpeedController(state, ui) {
   }
 
   function getEffectiveSpeed() {
-    const raw = computeRawSpeed();
-    if (raw > 1 && state.peerConnected && state.engine?.online) {
-      const maxOnline = state.engine.systemId === 'nes' ? 4 : 2;
-      return Math.min(raw, maxOnline);
-    }
-    return raw;
+    return computeRawSpeed();
   }
 
   function updateSpeedButtonsUI() {
@@ -84,8 +79,8 @@ export function createViewportAndSpeedController(state, ui) {
     if (options.showBanner !== false) {
       const msg =
         clean === 1
-          ? 'GAME SPEED: 1x (NORMAL)'
-          : `TURBO SPEED: ${clean}x FAST-FORWARD`;
+          ? 'GAME SPEED: 1x (CONTROLS ACTIVE)'
+          : `TURBO ${clean}x: FAST-FORWARD (CONTROLS LOCKED)`;
       ui.showScreenBanner(msg, clean === 1 ? 'ok' : 'warn', 1800);
       ui.logDebug(msg);
     }
@@ -99,6 +94,11 @@ export function createViewportAndSpeedController(state, ui) {
       : state.turboMultiplier || 1;
     broadcastSpeedIfOnline(targetEff);
     applyLocalSpeedChange(() => { state.holdTurboActive = next; });
+    const msg =
+      targetEff === 1
+        ? 'GAME SPEED: 1x (CONTROLS ACTIVE)'
+        : `TURBO ${targetEff}x: FAST-FORWARD (CONTROLS LOCKED)`;
+    ui.showScreenBanner(msg, targetEff === 1 ? 'ok' : 'warn', 1600);
   }
 
   for (const btn of speedBtns) {

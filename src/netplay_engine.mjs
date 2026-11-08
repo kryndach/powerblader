@@ -133,52 +133,44 @@ export class RollbackNetplayEngine {
   _verifyConfirmedHashes() {
     if (this.earliestMispredictedFrame !== null) return;
     for (const [frame, remoteHash] of this.remoteHashes.entries()) {
-      if (
-        frame <= this.lastConfirmedRemoteFrame &&
-        frame <= this.currentFrame &&
-        this.localHashes.has(frame) &&
-        frame > this.lastVerifiedFrame
-      ) {
+      if (frame <= this.lastConfirmedRemoteFrame &&
+          frame <= this.currentFrame &&
+          this.localHashes.has(frame) && frame > this.lastVerifiedFrame) {
         const localHash = this.localHashes.get(frame);
         this.lastVerifiedFrame = frame;
         this.lastLocalHash = localHash;
         this.lastRemoteHash = remoteHash;
-        if (localHash === remoteHash) this.syncStatus = 'SYNC_OK';
-        else {
-          this.syncStatus = 'DESYNC';
-          this.desyncCount++;
-        }
+        this.syncStatus = localHash === remoteHash ? 'SYNC_OK' : 'DESYNC';
+        if (localHash !== remoteHash) this.desyncCount++;
       }
     }
   }
 
   _executeRollbackIfNeeded() {
     const minRb = Math.max(
-      this.timelineStartFrame,
-      this.currentFrame - (this.saveBufferSize - 4)
+      this.timelineStartFrame, this.currentFrame - (this.saveBufferSize - 4)
     );
     let rbFrame =
       this.earliestMispredictedFrame !== null &&
       this.earliestMispredictedFrame < this.currentFrame
-        ? Math.max(minRb, this.earliestMispredictedFrame)
-        : null;
+        ? Math.max(minRb, this.earliestMispredictedFrame) : null;
     this.earliestMispredictedFrame = null;
 
     for (let f = minRb; f < this.currentFrame; f++) {
       if (rbFrame !== null && f >= rbFrame) break;
       const idx = f % this.historySize;
-      if (this.simulatedFrameTag[idx] === f) {
-        const want1 = this.getPlayerInput(1, f);
-        const want2 = this.getPlayerInput(2, f);
-        if (want1 !== this.p1Simulated[idx] ||
-            want2 !== this.p2Simulated[idx]) {
-          rbFrame = f;
-          break;
-        }
+      if (this.simulatedFrameTag[idx] === f &&
+          (this.getPlayerInput(1, f) !== this.p1Simulated[idx] ||
+           this.getPlayerInput(2, f) !== this.p2Simulated[idx])) {
+        rbFrame = f;
+        break;
       }
     }
-
     if (rbFrame === null || rbFrame >= this.currentFrame) return;
+    while (rbFrame > minRb &&
+           this.saveRing[rbFrame % this.saveBufferSize]?.frame !== rbFrame) {
+      rbFrame--;
+    }
     const slot = this.saveRing[rbFrame % this.saveBufferSize];
     if (!slot || slot.frame !== rbFrame) return;
 
@@ -198,9 +190,13 @@ export class RollbackNetplayEngine {
 
     this.core.loadState(slot);
     this.suppressCallbacks = true;
+    const sparseRb = this.systemId === 'arcade';
     for (let f = rbFrame; f < this.currentFrame; f++) {
       if (f > rbFrame && f >= this.lastConfirmedRemoteFrame) {
-        this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
+        const sSlot = this.saveRing[f % this.saveBufferSize];
+        if (!sparseRb || f === this.lastConfirmedRemoteFrame) {
+          this.core.saveState(sSlot, f);
+        } else if (sSlot) sSlot.frame = -1;
       }
       const m1 = this.getPlayerInput(1, f);
       const m2 = this.getPlayerInput(2, f);
@@ -233,8 +229,7 @@ export class RollbackNetplayEngine {
     if (!this.online) {
       const f = this.currentFrame;
       const idx = f % this.historySize;
-      const m1 = localButtonsMask >>> 0;
-      const m2 = p2LocalButtonsMask >>> 0;
+      const m1 = localButtonsMask >>> 0, m2 = p2LocalButtonsMask >>> 0;
       this._setPlayerInput(1, f, m1, true);
       this._setPlayerInput(2, f, m2, true);
       this.p1Simulated[idx] = m1;
@@ -257,9 +252,9 @@ export class RollbackNetplayEngine {
 
     if (!options?.skipRollback) this._executeRollbackIfNeeded();
     const turbo = Math.max(1, options?.turboSpeed || 1);
-    const maxAhead = Math.min(
-      this.saveBufferSize - 6, this.maxRollbackFrames * turbo
-    );
+    const maxAhead = turbo > 1 && localButtonsMask === 0
+      ? Math.max(this.saveBufferSize - 6, 90 * turbo)
+      : Math.min(this.saveBufferSize - 6, this.maxRollbackFrames * turbo);
     const prevF = Math.max(this.timelineStartFrame, this.currentFrame - 1);
     if (this.currentFrame - this.lastConfirmedRemoteFrame > maxAhead) {
       this.stallFrames++;
@@ -273,8 +268,8 @@ export class RollbackNetplayEngine {
         p2Mask: this.getPlayerInput(2, prevF)
       };
     }
-    if (this.enableRiftPacing && this.riftFrames > 1.75) {
-      const cooldownTarget = this.riftFrames > 5 ? 4 : 10;
+    if (this.enableRiftPacing && this.riftFrames > 1.75 * turbo) {
+      const cooldownTarget = this.riftFrames > 5 * turbo ? 4 : 10;
       if (this._riftCooldown >= cooldownTarget) {
         this._riftCooldown = 0;
         this.riftWaitFrames++;
@@ -289,9 +284,7 @@ export class RollbackNetplayEngine {
         };
       }
       this._riftCooldown++;
-    } else {
-      this._riftCooldown = 0;
-    }
+    } else this._riftCooldown = 0;
 
     const targetInputFrame = this.currentFrame + this.inputDelayFrames * turbo;
     while (this.lastLocalScheduledFrame < targetInputFrame) {
@@ -300,17 +293,22 @@ export class RollbackNetplayEngine {
         this.localPlayer, this.lastLocalScheduledFrame, localButtonsMask, true
       );
     }
-
     const f = this.currentFrame;
     const idx = f % this.historySize;
-    this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
+    const fSlot = this.saveRing[f % this.saveBufferSize];
+    const skipSave =
+      (turbo > 1 && options?.skipPacket && localButtonsMask === 0) ||
+      (this.systemId === 'arcade' && f % 2 === 1 &&
+       f > this.lastConfirmedRemoteFrame + 1);
+    if (!skipSave) this.core.saveState(fSlot, f);
+    else if (fSlot) fSlot.frame = -1;
     const p1Mask = this.getPlayerInput(1, f);
     const p2Mask = this.getPlayerInput(2, f);
     this.p1Simulated[idx] = p1Mask;
     this.p2Simulated[idx] = p2Mask;
     this.simulatedFrameTag[idx] = f;
     this.suppressCallbacks = false;
-    this.core.stepFrame(p1Mask, p2Mask, false);
+    this.core.stepFrame(p1Mask, p2Mask, Boolean(options?.skipPacket));
     this.currentFrame++;
     if (this.currentFrame % 30 === 0) {
       this.localHashes.set(this.currentFrame, this.core.computeHash());

@@ -1,11 +1,33 @@
 // Reconnect/F5 Takeover, 48kHz Audio DRC Stress & Multi-Console Zero-GC Bench
 import assert from 'assert';
+import fs from 'fs';
+import http from 'http';
+import path from 'path';
 import WebSocket from 'ws';
 import {
   NesNetplayEngine, INPUT_BITS, saveFastState, loadFastState
 } from '../src/netplay_engine.mjs';
 import { createCoopServer } from '../server/relay_server.mjs';
 import { createAudioDrcEngine } from '../public/js/audio_drc.mjs';
+
+function httpRequest(urlStr, method = 'GET', bodyBuf = null) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const req = http.request({
+      hostname: u.hostname, port: u.port,
+      path: u.pathname + u.search, method
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({
+        status: res.statusCode, body: Buffer.concat(chunks)
+      }));
+    });
+    req.on('error', reject);
+    if (bodyBuf) req.write(bodyBuf);
+    req.end();
+  });
+}
 
 export async function runTest5ReconnectAndZombieEviction() {
   const app = createCoopServer({ logAccess: false });
@@ -74,11 +96,55 @@ export async function runTest5ReconnectAndZombieEviction() {
     assert.strictEqual(joinedB.playerIndex, 2);
     assert.strictEqual(joinedB.peers.length, 2);
 
+    // Scenario C: Verify speed_ctrl forwarding for Online Turbo Fast-Forward
+    const speedPromise = new Promise((resolve) => {
+      ws2F5.on('message', (d) => {
+        const msg = JSON.parse(d.toString());
+        if (msg.type === 'speed_ctrl') resolve(msg);
+      });
+    });
+    ws1.send(JSON.stringify({ type: 'speed_ctrl', speed: 4 }));
+    const speedMsg = await speedPromise;
+    assert.strictEqual(speedMsg.speed, 4);
+
+    // Scenario D: Verify Custom Room ROM HTTP Cache & Disk Save Slot API
+    const base = `http://127.0.0.1:${port}`;
+    const fakeRom = Buffer.alloc(4096, 0x5a);
+    const postRomRes = await httpRequest(
+      `${base}/api/room-rom?room=F5ROOM&crc=DEADBEEF&name=Test.sfc`,
+      'POST', fakeRom
+    );
+    assert.strictEqual(postRomRes.status, 200);
+    const getRomRes = await httpRequest(
+      `${base}/api/room-rom?room=F5ROOM&crc=DEADBEEF`
+    );
+    assert.strictEqual(getRomRes.status, 200);
+    assert.strictEqual(getRomRes.body.length, 4096);
+    assert.strictEqual(getRomRes.body[0], 0x5a);
+
+    const savePayload = Buffer.from(JSON.stringify({
+      romCrc32: 'TESTCRC1', slot: 1,
+      entry: { frame: 300, syncState: { f: 300, rawStateB64: 'AA==' } }
+    }));
+    const postSave = await httpRequest(
+      `${base}/api/save-slot`, 'POST', savePayload
+    );
+    assert.strictEqual(postSave.status, 200);
+    const getSave = await httpRequest(
+      `${base}/api/save-slot?crc=TESTCRC1&slot=1`
+    );
+    const gotSaveJson = JSON.parse(getSave.body.toString('utf8'));
+    assert.strictEqual(gotSaveJson.ok, true);
+    assert.strictEqual(gotSaveJson.entry.frame, 300);
+    try {
+      fs.unlinkSync(path.resolve('local', 'saves', 'TESTCRC1_slot_1.json'));
+    } catch {}
+
     ws1.close();
     ws2F5.close();
     console.log(
-      '[PASS] Edge Case 5: Mid-Match Reconnect Outbox Flush & Browser F5 ' +
-        'Zombie Socket Takeover Verified'
+      '[PASS] Edge Case 5: Mid-Match Reconnect, F5 Zombie Eviction, ' +
+        'Turbo speed_ctrl, Room ROM HTTP Cache & Disk Save API Verified'
     );
   } finally {
     await app.close();
@@ -116,12 +182,12 @@ export function runTest6AudioDrcAndDeclick() {
       });
     };
 
-    // 1. Pre-buffer silence (< 1800 samples) then smooth fade-in (>= 1800)
+    // 1. Pre-buffer silence (< 2400 samples) then smooth fade-in (>= 2400)
     for (let i = 0; i < 1000; i++) drc.pushSample(0.5, -0.5);
     pullBlock();
     assert.strictEqual(outL[512], 0);
 
-    for (let i = 0; i < 1200; i++) drc.pushSample(0.5, -0.5);
+    for (let i = 0; i < 1600; i++) drc.pushSample(0.5, -0.5);
     pullBlock();
     assert.ok(Math.abs(outL[0]) < Math.abs(outL[63]), '64-sample fade-in');
 
@@ -183,10 +249,10 @@ export function benchmarkAndVerifyZeroGc(
   const slot = eng.saveRing[0];
   for (let w = 0; w < warmupFrames; w++) eng.stepNetplayFrame(0);
 
-  // Record pre-allocated buffer references in saveRing[0] & saveRing[1]
+  // Record pre-allocated buffer references in saveRing[0] & saveRing[2]
   const ref0 = isNes ? eng.saveRing[0].cpuMem : eng.saveRing[0].stateBytes;
-  const ref1 = isNes ? eng.saveRing[1].cpuMem : eng.saveRing[1].stateBytes;
-  assert.ok(ref0 && ref1, `${label} saveRing buffers should be allocated`);
+  const ref2 = isNes ? eng.saveRing[2].cpuMem : eng.saveRing[2].stateBytes;
+  assert.ok(ref0 && ref2, `${label} saveRing buffers should be allocated`);
 
   const N = 30;
   const v0 = performance.now();
@@ -224,9 +290,9 @@ export function benchmarkAndVerifyZeroGc(
   // Run 65 more frames to wrap saveRing and verify Zero-GC buffer identity
   for (let f = 0; f < 65; f++) eng.stepNetplayFrame(f & 1);
   const after0 = isNes ? eng.saveRing[0].cpuMem : eng.saveRing[0].stateBytes;
-  const after1 = isNes ? eng.saveRing[1].cpuMem : eng.saveRing[1].stateBytes;
+  const after2 = isNes ? eng.saveRing[2].cpuMem : eng.saveRing[2].stateBytes;
   assert.strictEqual(after0, ref0, `${label} reallocated saveRing[0]!`);
-  assert.strictEqual(after1, ref1, `${label} reallocated saveRing[1]!`);
+  assert.strictEqual(after2, ref2, `${label} reallocated saveRing[2]!`);
 
   const saveMs = tSave / 10, loadMs = tLoad / 10;
   const rb5Ms = loadMs + 4 * headMs + saveMs + visMs;

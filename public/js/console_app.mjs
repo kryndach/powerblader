@@ -209,17 +209,20 @@ ui.startMatchNowBtn.addEventListener('click', () => {
   }
 });
 
-ui.sendRomManualBtn.addEventListener('click', () => {
+function handleSendRomClick() {
   if (
-    state.ws &&
-    state.ws.readyState === 1 &&
-    state.peerConnected &&
-    state.romUint8 &&
-    state.engine
+    state.ws && state.ws.readyState === 1 &&
+    state.peerConnected && state.romUint8 && state.engine
   ) {
     romSync.sendRomAndStateToPeer({ resetToZero: true });
+  } else {
+    ui.showScreenBanner('CONNECT TO PARTNER & LOAD ROM FIRST', 'warn', 2200);
   }
-});
+}
+ui.sendRomManualBtn.addEventListener('click', handleSendRomClick);
+if (ui.topSendRomBtn) {
+  ui.topSendRomBtn.addEventListener('click', handleSendRomClick);
+}
 
 function applyInputDelaySelection(newValue) {
   if (ui.topInputDelaySelect && ui.topInputDelaySelect.value !== newValue) {
@@ -310,21 +313,26 @@ ui.localRomSelect.addEventListener('change', () => {
 
 setupRomDropAndPicker(state, ui, romSync);
 
-if (ui.saveSlotSelect) {
-  ui.saveSlotSelect.addEventListener('change', () => {
-    saveSlots.selectSlot(Number(ui.saveSlotSelect.value), true);
-  });
-}
-if (ui.quickSaveBtn) {
-  ui.quickSaveBtn.addEventListener('click', () => {
-    saveSlots.saveToCurrentSlot();
-  });
-}
-if (ui.quickLoadBtn) {
-  ui.quickLoadBtn.addEventListener('click', () => {
-    saveSlots.loadFromCurrentSlot();
-  });
-}
+ui.saveSlotSelect?.addEventListener('change', () =>
+  saveSlots.selectSlot(Number(ui.saveSlotSelect.value), true)
+);
+ui.quickSaveBtn?.addEventListener('click', () =>
+  saveSlots.saveToCurrentSlot()
+);
+ui.quickLoadBtn?.addEventListener('click', () =>
+  saveSlots.loadFromCurrentSlot()
+);
+ui.exportSaveFileBtn?.addEventListener('click', () =>
+  saveSlots.exportSaveToFile()
+);
+ui.importSaveFileBtn?.addEventListener('click', () =>
+  ui.saveFileInput?.click()
+);
+ui.saveFileInput?.addEventListener('change', () => {
+  const f = ui.saveFileInput.files?.[0];
+  if (f) saveSlots.importSaveFromFile(f);
+  ui.saveFileInput.value = '';
+});
 
 startConsoleFrameLoop(
   state, ui, transport, telemetry, saveSlots, keyBindings, viewportCtrl

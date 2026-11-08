@@ -1,10 +1,11 @@
-// Fast Save & Load Slot Manager (Slots 1-5) with LocalStorage & Online Sync
+// Fast Save & Load Slot Manager (Slots 1-5), Disk Persistence & Local Save File
 const SAVE_PREFIX = 'nes_save_v1_';
 const ACTIVE_SLOT_KEY = 'nes_active_save_slot';
 const TOTAL_SLOTS = 5;
 
 export function createSaveSlotsManager(state, ui, romSync) {
   const memorySlots = new Map();
+  const diskSavedKeys = new Set();
 
   function makeStorageKey(romCrc32, slot) {
     return `${SAVE_PREFIX}${romCrc32}_slot_${slot}`;
@@ -29,6 +30,14 @@ export function createSaveSlotsManager(state, ui, romSync) {
   function writeSlotEntry(romCrc32, slot, entry) {
     const key = makeStorageKey(romCrc32, slot);
     memorySlots.set(key, entry);
+    diskSavedKeys.add(key);
+    if (typeof fetch === 'function') {
+      fetch('/api/save-slot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ romCrc32, slot, entry })
+      }).catch(() => {});
+    }
     try {
       const json = JSON.stringify(entry);
       if (json.length > 512 * 1024) return;
@@ -64,14 +73,34 @@ export function createSaveSlotsManager(state, ui, romSync) {
     return val >= 1 && val <= TOTAL_SLOTS ? val : 1;
   }
 
-  function updateSlotSelectLabels() {
+  function renderSlotOptions() {
     if (!ui.saveSlotSelect) return;
     for (let s = 1; s <= TOTAL_SLOTS; s++) {
       const opt = ui.saveSlotSelect.querySelector(`option[value="${s}"]`);
       if (!opt) continue;
-      const entry = state.romCrc32 ? readSlotEntry(state.romCrc32, s) : null;
-      opt.textContent = entry ? `Slot ${s} [Saved]` : `Slot ${s} [Empty]`;
+      const key = state.romCrc32 ? makeStorageKey(state.romCrc32, s) : '';
+      const has = Boolean(
+        state.romCrc32 &&
+          (readSlotEntry(state.romCrc32, s) || diskSavedKeys.has(key))
+      );
+      opt.textContent = has ? `Slot ${s} [Saved]` : `Slot ${s} [Empty]`;
     }
+  }
+
+  function updateSlotSelectLabels() {
+    renderSlotOptions();
+    if (!state.romCrc32 || typeof fetch !== 'function') return;
+    const crc = state.romCrc32;
+    fetch(`/api/save-slot?crc=${encodeURIComponent(crc)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data || !Array.isArray(data.savedSlots)) return;
+        for (const s of data.savedSlots) {
+          diskSavedKeys.add(makeStorageKey(crc, s));
+        }
+        renderSlotOptions();
+      })
+      .catch(() => {});
   }
 
   function selectSlot(slotNum, showBanner = true) {
@@ -80,24 +109,21 @@ export function createSaveSlotsManager(state, ui, romSync) {
     try {
       localStorage.setItem(ACTIVE_SLOT_KEY, String(clamped));
     } catch {}
-    updateSlotSelectLabels();
+    renderSlotOptions();
     if (showBanner) {
+      const key = state.romCrc32 ? makeStorageKey(state.romCrc32, clamped) : '';
       const hasSave = Boolean(
-        state.romCrc32 && readSlotEntry(state.romCrc32, clamped)
+        state.romCrc32 &&
+          (readSlotEntry(state.romCrc32, clamped) || diskSavedKeys.has(key))
       );
       const tag = hasSave ? 'SAVED' : 'EMPTY';
       ui.showScreenBanner(`SAVE SLOT #${clamped} [${tag}]`, 'ok', 1600);
     }
   }
 
-  function saveToCurrentSlot() {
-    if (!state.nes || !state.engine || !state.romCrc32) {
-      ui.showScreenBanner('LOAD A .NES ROM BEFORE SAVING', 'warn', 2000);
-      return false;
-    }
-    const slot = getCurrentSlot();
+  function buildCurrentSaveEntry(slot) {
     const syncState = state.engine.exportSyncState();
-    const entry = {
+    return {
       slot,
       frame: syncState.frame,
       savedAt: Date.now(),
@@ -105,77 +131,162 @@ export function createSaveSlotsManager(state, ui, romSync) {
       romCrc32: state.romCrc32,
       syncState
     };
+  }
+
+  function saveToCurrentSlot() {
+    if (!state.nes || !state.engine || !state.romCrc32) {
+      ui.showScreenBanner('LOAD A ROM BEFORE SAVING', 'warn', 2000);
+      return false;
+    }
+    const slot = getCurrentSlot();
+    const entry = buildCurrentSaveEntry(slot);
     writeSlotEntry(state.romCrc32, slot, entry);
-    updateSlotSelectLabels();
-    ui.logDebug(
-      `Saved state to Slot #${slot} at frame #${syncState.frame}`
-    );
+    renderSlotOptions();
+    ui.logDebug(`Saved state to Slot #${slot} at frame #${entry.frame}`);
     ui.showScreenBanner(
-      `SAVED SLOT #${slot} (Frame #${syncState.frame})`,
-      'ok',
-      2200
+      `SAVED SLOT #${slot} (Frame #${entry.frame})`, 'ok', 2200
     );
     return true;
   }
 
-  function loadFromCurrentSlot() {
-    if (!state.nes || !state.engine || !state.romCrc32) {
-      ui.showScreenBanner('LOAD A .NES ROM BEFORE LOADING', 'warn', 2000);
-      return false;
-    }
-    const slot = getCurrentSlot();
-    const entry = readSlotEntry(state.romCrc32, slot);
-    if (!entry || !entry.syncState) {
-      ui.showScreenBanner(`SLOT #${slot} IS EMPTY`, 'warn', 2000);
-      return false;
-    }
-
+  function applyLoadedEntry(entry, labelPrefix) {
     const rand = Math.random().toString(36).slice(2, 7);
     const newSessionId = `${Date.now().toString(36)}_${rand}`;
     const syncState = { ...entry.syncState, sessionId: newSessionId };
     const isOnline = Boolean(
       state.ws && state.ws.readyState === 1 && state.peerConnected
     );
-
     state.engine.localPlayer = state.localPlayerIndex;
     state.engine.online = isOnline;
     state.engine.inputDelayFrames = romSync.resolveDesiredInputDelay();
     state.engine.importSyncState(syncState, { preserveLocalInputDelay: true });
 
-    if (state.nes.ppu && state.nes.ppu.buffer) {
-      ui.renderFrameToCanvas(state.nes.ppu.buffer);
-    }
+    const fb = state.nes.getFrameBuffer
+      ? state.nes.getFrameBuffer()
+      : state.nes.ppu?.buffer;
+    if (fb) ui.renderFrameToCanvas(fb);
 
     if (isOnline) {
       state.engine.syncPaused = true;
       romSync.armSyncAckWatchdog(newSessionId, 15000);
-      state.ws.send(
-        JSON.stringify({
-          type: 'state_sync',
-          romName: state.romName,
-          romCrc32: state.romCrc32,
-          syncState
-        })
-      );
+      state.ws.send(JSON.stringify({
+        type: 'state_sync',
+        romName: state.romName,
+        romCrc32: state.romCrc32,
+        syncState
+      }));
       ui.logDebug(
-        `Loaded Slot #${slot} (frame #${syncState.frame}) & synced to peer`
+        `Loaded ${labelPrefix} (frame #${syncState.frame}) & synced to peer`
       );
       ui.showScreenBanner(
-        `LOADED SLOT #${slot} (Frame #${syncState.frame}) - SYNCING...`,
+        `LOADED ${labelPrefix} (Frame #${syncState.frame}) - SYNCING...`,
         'ok',
         2500
       );
     } else {
       state.engine.syncPaused = false;
-      ui.logDebug(`Loaded Slot #${slot} at frame #${syncState.frame}`);
+      ui.logDebug(`Loaded ${labelPrefix} at frame #${syncState.frame}`);
       ui.showScreenBanner(
-        `LOADED SLOT #${slot} (Frame #${syncState.frame})`,
-        'ok',
-        2200
+        `LOADED ${labelPrefix} (Frame #${syncState.frame})`, 'ok', 2200
       );
     }
     ui.updateStatusStrip();
     return true;
+  }
+
+  async function loadFromCurrentSlot() {
+    if (!state.nes || !state.engine || !state.romCrc32) {
+      ui.showScreenBanner('LOAD A ROM BEFORE LOADING', 'warn', 2000);
+      return false;
+    }
+    const slot = getCurrentSlot();
+    let entry = readSlotEntry(state.romCrc32, slot);
+    if (!entry && typeof fetch === 'function') {
+      try {
+        const q = `crc=${encodeURIComponent(state.romCrc32)}&slot=${slot}`;
+        const res = await fetch(`/api/save-slot?${q}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.entry?.syncState) {
+            entry = data.entry;
+            memorySlots.set(makeStorageKey(state.romCrc32, slot), entry);
+          }
+        }
+      } catch {}
+    }
+    if (!entry || !entry.syncState) {
+      ui.showScreenBanner(`SLOT #${slot} IS EMPTY`, 'warn', 2000);
+      return false;
+    }
+    return applyLoadedEntry(entry, `SLOT #${slot}`);
+  }
+
+  function exportSaveToFile() {
+    if (!state.nes || !state.engine || !state.romCrc32) {
+      ui.showScreenBanner('LOAD A ROM BEFORE EXPORTING SAVE', 'warn', 2000);
+      return false;
+    }
+    const slot = getCurrentSlot();
+    const entry = buildCurrentSaveEntry(slot);
+    writeSlotEntry(state.romCrc32, slot, entry);
+    renderSlotOptions();
+    const cleanRom = String(state.romName || 'Game')
+      .replace(/\.[^.]+$/, '')
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+      .slice(0, 32);
+    const fileName = `${cleanRom}_${state.romCrc32}_slot${slot}.sav.json`;
+    const blob = new Blob([JSON.stringify(entry)], {
+      type: 'application/json'
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    ui.logDebug(`Exported save file "${fileName}" (frame #${entry.frame})`);
+    ui.showScreenBanner(`DOWNLOADED "${fileName}"`, 'ok', 2600);
+    return true;
+  }
+
+  async function importSaveFromFile(file) {
+    if (!file) return false;
+    if (!state.nes || !state.engine || !state.romCrc32) {
+      ui.showScreenBanner('LOAD THE GAME ROM FIRST', 'warn', 2500);
+      return false;
+    }
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const syncState = parsed?.syncState || (parsed?.frame !== undefined
+        ? parsed : null);
+      if (!syncState) throw new Error('Invalid save state file');
+      if (parsed.romCrc32 && parsed.romCrc32 !== state.romCrc32) {
+        ui.showScreenBanner(
+          `SAVE FILE CRC (${parsed.romCrc32}) != ROM (${state.romCrc32})`,
+          'warn',
+          3500
+        );
+      }
+      const slot = getCurrentSlot();
+      const entry = {
+        slot,
+        frame: syncState.frame || 0,
+        savedAt: Date.now(),
+        romName: state.romName,
+        romCrc32: state.romCrc32,
+        syncState
+      };
+      writeSlotEntry(state.romCrc32, slot, entry);
+      renderSlotOptions();
+      return applyLoadedEntry(entry, `FILE "${file.name}"`);
+    } catch (e) {
+      ui.logDebug(`Save file import failed: ${e.message}`);
+      ui.showScreenBanner(`SAVE LOAD FAILED: ${e.message}`, 'err', 3500);
+      return false;
+    }
   }
 
   try {
@@ -184,13 +295,15 @@ export function createSaveSlotsManager(state, ui, romSync) {
       ui.saveSlotSelect.value = savedSlot;
     }
   } catch {}
-  updateSlotSelectLabels();
+  renderSlotOptions();
 
   return {
     getCurrentSlot,
     updateSlotSelectLabels,
     selectSlot,
     saveToCurrentSlot,
-    loadFromCurrentSlot
+    loadFromCurrentSlot,
+    exportSaveToFile,
+    importSaveFromFile
   };
 }
