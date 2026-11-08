@@ -19,8 +19,6 @@ export function createViewportAndSpeedController(state, ui) {
   floatingBtn.title = 'Scroll back to center the NES screen';
   document.body.appendChild(floatingBtn);
 
-  let speedSyncTimer = null;
-
   function computeRawSpeed() {
     if (state.holdTurboActive) {
       return Math.max(4, state.turboMultiplier || 1);
@@ -46,35 +44,13 @@ export function createViewportAndSpeedController(state, ui) {
     }
   }
 
-  function applyLocalSpeedChange(applyFn) {
-    if (speedSyncTimer) {
-      clearTimeout(speedSyncTimer);
-      speedSyncTimer = null;
-    }
-    if (state.peerConnected && state.engine?.online && state.rttMs > 20) {
-      const transitMs = Math.min(160, Math.round(state.rttMs * 0.45));
-      speedSyncTimer = setTimeout(() => {
-        speedSyncTimer = null;
-        applyFn();
-        updateSpeedButtonsUI();
-      }, transitMs);
-      return;
-    }
-    applyFn();
-    updateSpeedButtonsUI();
-  }
-
   function setSpeedMultiplier(mult, options = {}) {
     const clean = VALID_SPEEDS.includes(Number(mult)) ? Number(mult) : 1;
+    state.holdTurboActive = false;
+    state.turboMultiplier = clean;
+    updateSpeedButtonsUI();
     if (options.broadcast !== false) {
-      const targetEff = state.holdTurboActive ? Math.max(4, clean) : clean;
-      broadcastSpeedIfOnline(targetEff);
-      applyLocalSpeedChange(() => { state.turboMultiplier = clean; });
-    } else {
-      if (speedSyncTimer) clearTimeout(speedSyncTimer);
-      state.holdTurboActive = false;
-      state.turboMultiplier = clean;
-      updateSpeedButtonsUI();
+      broadcastSpeedIfOnline(clean);
     }
     if (options.showBanner !== false) {
       const msg =
@@ -89,11 +65,10 @@ export function createViewportAndSpeedController(state, ui) {
   function setHoldTurbo(active) {
     const next = Boolean(active);
     if (state.holdTurboActive === next) return;
-    const targetEff = next
-      ? Math.max(4, state.turboMultiplier || 1)
-      : state.turboMultiplier || 1;
+    state.holdTurboActive = next;
+    const targetEff = getEffectiveSpeed();
+    updateSpeedButtonsUI();
     broadcastSpeedIfOnline(targetEff);
-    applyLocalSpeedChange(() => { state.holdTurboActive = next; });
     const msg =
       targetEff === 1
         ? 'GAME SPEED: 1x (CONTROLS ACTIVE)'

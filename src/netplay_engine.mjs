@@ -34,7 +34,8 @@ export class RollbackNetplayEngine {
     this.inputDelayFrames = options.inputDelayFrames ?? 2;
     this.maxRollbackFrames = options.maxRollbackFrames ?? 20;
     this.enableRiftPacing = Boolean(options.enableRiftPacing);
-    this.enableVisualSmoothing = options.enableVisualSmoothing !== false;
+    this.enableVisualSmoothing =
+      options.enableVisualSmoothing ?? (this.systemId !== 'arcade');
     this.historySize = 256;
     this.saveBufferSize = options.saveBufferSize ?? 64;
     this.sessionId = options.sessionId || 'default';
@@ -196,6 +197,9 @@ export class RollbackNetplayEngine {
         const sSlot = this.saveRing[f % this.saveBufferSize];
         if (!sparseRb || f === this.lastConfirmedRemoteFrame) {
           this.core.saveState(sSlot, f);
+          if (sparseRb && f > 0 && f % 60 === 0) {
+            this.localHashes.set(f, this.core.computeHash());
+          }
         } else if (sSlot) sSlot.frame = -1;
       }
       const m1 = this.getPlayerInput(1, f);
@@ -205,7 +209,7 @@ export class RollbackNetplayEngine {
       this.p2Simulated[idx] = m2;
       this.simulatedFrameTag[idx] = f;
       this.core.stepFrame(m1, m2, true);
-      if ((f + 1) % 30 === 0) {
+      if (!sparseRb && (f + 1) % 30 === 0) {
         this.localHashes.set(f + 1, this.core.computeHash());
       }
     }
@@ -252,9 +256,9 @@ export class RollbackNetplayEngine {
 
     if (!options?.skipRollback) this._executeRollbackIfNeeded();
     const turbo = Math.max(1, options?.turboSpeed || 1);
-    const maxAhead = turbo > 1 && localButtonsMask === 0
-      ? Math.max(this.saveBufferSize - 6, 90 * turbo)
-      : Math.min(this.saveBufferSize - 6, this.maxRollbackFrames * turbo);
+    const maxAhead = turbo > 1
+      ? this.saveBufferSize - 6
+      : Math.min(this.saveBufferSize - 6, this.maxRollbackFrames);
     const prevF = Math.max(this.timelineStartFrame, this.currentFrame - 1);
     if (this.currentFrame - this.lastConfirmedRemoteFrame > maxAhead) {
       this.stallFrames++;
@@ -286,22 +290,25 @@ export class RollbackNetplayEngine {
       this._riftCooldown++;
     } else this._riftCooldown = 0;
 
-    const targetInputFrame = this.currentFrame + this.inputDelayFrames * turbo;
+    const targetInputFrame = this.currentFrame + this.inputDelayFrames;
     while (this.lastLocalScheduledFrame < targetInputFrame) {
       this.lastLocalScheduledFrame++;
       this._setPlayerInput(
         this.localPlayer, this.lastLocalScheduledFrame, localButtonsMask, true
       );
     }
-    const f = this.currentFrame;
+    const f = this.currentFrame, isArc = this.systemId === 'arcade';
     const idx = f % this.historySize;
     const fSlot = this.saveRing[f % this.saveBufferSize];
     const skipSave =
-      (turbo > 1 && options?.skipPacket && localButtonsMask === 0) ||
-      (this.systemId === 'arcade' && f % 2 === 1 &&
-       f > this.lastConfirmedRemoteFrame + 1);
-    if (!skipSave) this.core.saveState(fSlot, f);
-    else if (fSlot) fSlot.frame = -1;
+      isArc && f % 2 === 1 && f > this.lastConfirmedRemoteFrame + 1;
+    if (!skipSave) {
+      this.core.saveState(fSlot, f);
+      if (isArc && f > 0 && f % 60 === 0) {
+        this.localHashes.set(f, this.core.computeHash());
+        this._cleanupOldHashes();
+      }
+    } else if (fSlot) fSlot.frame = -1;
     const p1Mask = this.getPlayerInput(1, f);
     const p2Mask = this.getPlayerInput(2, f);
     this.p1Simulated[idx] = p1Mask;
@@ -310,7 +317,7 @@ export class RollbackNetplayEngine {
     this.suppressCallbacks = false;
     this.core.stepFrame(p1Mask, p2Mask, Boolean(options?.skipPacket));
     this.currentFrame++;
-    if (this.currentFrame % 30 === 0) {
+    if (!isArc && this.currentFrame % 30 === 0) {
       this.localHashes.set(this.currentFrame, this.core.computeHash());
       this._cleanupOldHashes();
     }
@@ -320,13 +327,11 @@ export class RollbackNetplayEngine {
     this.lastStepMs = performance.now() - t0;
     return { stepped: true, stalled: false, packetToSend, p1Mask, p2Mask };
   }
-
   exportSyncState() {
     return this.core.exportSyncState(
       this.sessionId, this.currentFrame, this.inputDelayFrames
     );
   }
-
   importSyncState(syncObj, options = {}) {
     if (!this.core.importSyncState(syncObj)) return false;
     if (!options?.preserveLocalInputDelay &&
@@ -337,10 +342,6 @@ export class RollbackNetplayEngine {
     this.resetTimeline(syncObj.frame || 0);
     return true;
   }
-
-  getTelemetry() {
-    return buildNetplayTelemetry(this);
-  }
+  getTelemetry() { return buildNetplayTelemetry(this); }
 }
-
 export { RollbackNetplayEngine as NesNetplayEngine };

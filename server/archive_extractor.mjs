@@ -7,6 +7,8 @@ import { execFileSync } from 'child_process';
 import {
   isSupportedRomFile, isArchiveFile, isSupportedRomOrArchiveFile
 } from '../src/core_adapter.mjs';
+import { computeRomCrc32 } from '../src/crc32.mjs';
+import { cacheRoomRom } from './room_rom_and_save_api.mjs';
 
 const WINRAR_PATHS = [
   'C:\\Program Files\\WinRAR\\WinRAR.exe',
@@ -334,6 +336,8 @@ export function handleExtractRomPostApi(req, urlObj, res, sendJson) {
       const { romName, romBuffer } = extractRomFromBuffer(
         Buffer.concat(chunks), fileName
       );
+      const crc = computeRomCrc32(romBuffer);
+      cacheRoomRom(urlObj.searchParams.get('room'), crc, romName, romBuffer);
       sendRomBuffer(req, res, romName, romBuffer);
     } catch (e) {
       sendJson(res, 400, { ok: false, error: e.message });

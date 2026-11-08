@@ -11,12 +11,38 @@ const cleanCrc = (raw) =>
 const cleanRoom = (raw) =>
   String(raw || 'NOVA').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
 
+export function cacheRoomRom(
+  roomCodeRaw, crcRaw, romName, romBuffer, preGzipBuf = null
+) {
+  const roomCode = cleanRoom(roomCodeRaw);
+  const crc = cleanCrc(crcRaw);
+  const isZip = String(romName).toLowerCase().endsWith('.zip');
+  const gzipBuffer =
+    preGzipBuf ||
+    (!isZip && romBuffer.length > 16384
+      ? zlib.gzipSync(romBuffer, { level: 1 })
+      : null);
+  const entry = {
+    romName, crc, romBuffer, gzipBuffer, updatedAt: Date.now()
+  };
+  if (roomCode) roomRomCache.set(roomCode, entry);
+  if (crc) roomRomCache.set(`CRC:${crc}`, entry);
+  return entry;
+}
+
 export function handleRoomRomApi(req, urlObj, res, sendJson) {
   const roomCode = cleanRoom(urlObj.searchParams.get('room'));
-  if (req.method === 'GET') {
-    const cached = roomRomCache.get(roomCode);
+  const crc = cleanCrc(urlObj.searchParams.get('crc'));
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    const cached =
+      (crc && roomRomCache.get(`CRC:${crc}`)) || roomRomCache.get(roomCode);
     if (!cached || !cached.romBuffer) {
       return sendJson(res, 404, { ok: false, error: 'No room ROM cached' });
+    }
+    if (req.method === 'HEAD') {
+      res.writeHead(200, { 'X-Raw-Length': String(cached.romBuffer.length) });
+      res.end();
+      return;
     }
     const gzOk = /\bgzip\b/i.test(req.headers['accept-encoding'] || '');
     const useGz = Boolean(gzOk && cached.gzipBuffer);
@@ -38,6 +64,9 @@ export function handleRoomRomApi(req, urlObj, res, sendJson) {
     const romName = path.basename(
       urlObj.searchParams.get('name') || 'Game.nes'
     );
+    const isGzipBody =
+      req.headers['x-rom-encoding'] === 'gzip' ||
+      /\bgzip\b/i.test(req.headers['content-encoding'] || '');
     const chunks = [];
     let total = 0;
     req.on('data', (chunk) => {
@@ -46,27 +75,23 @@ export function handleRoomRomApi(req, urlObj, res, sendJson) {
       chunks.push(chunk);
     });
     req.on('end', () => {
-      const romBuffer = Buffer.concat(chunks);
-      if (!romBuffer.length) {
-        return sendJson(res, 400, { ok: false, error: 'Empty ROM payload' });
+      try {
+        const rawBody = Buffer.concat(chunks);
+        if (!rawBody.length) {
+          return sendJson(res, 400, { ok: false, error: 'Empty ROM payload' });
+        }
+        const romBuffer = isGzipBody ? zlib.gunzipSync(rawBody) : rawBody;
+        const gzBuf = isGzipBody ? rawBody : null;
+        cacheRoomRom(roomCode, crc, romName, romBuffer, gzBuf);
+        sendJson(
+          res,
+          200,
+          { ok: true, roomCode, crc, romName, size: romBuffer.length },
+          true
+        );
+      } catch (e) {
+        sendJson(res, 400, { ok: false, error: e.message });
       }
-      const isZip = romName.toLowerCase().endsWith('.zip');
-      const gzipBuffer =
-        !isZip && romBuffer.length > 16384
-          ? zlib.gzipSync(romBuffer, { level: 1 })
-          : null;
-      roomRomCache.set(roomCode, {
-        romName,
-        romBuffer,
-        gzipBuffer,
-        updatedAt: Date.now()
-      });
-      sendJson(
-        res,
-        200,
-        { ok: true, roomCode, romName, size: romBuffer.length },
-        true
-      );
     });
     return;
   }

@@ -13,12 +13,29 @@ export function createProtocolHandlers(
     }
   }
 
+  function clearActiveRomTransfers() {
+    state.activeRomAbortCtrl?.abort();
+    state.activeRomAbortCtrl = null;
+    state.incomingRomTransfer = null;
+    state.sendingRomSessionId = null;
+    ui.resetSendRomButtons?.();
+  }
+
   function applyImportedSyncState(syncState, bannerText) {
     if (!syncState || !state.engine) return;
+    clearActiveRomTransfers();
     state.engine.localPlayer = state.localPlayerIndex;
     state.engine.online = true;
+    state.engine.enableRiftPacing = true;
     state.engine.inputDelayFrames = romSync.resolveDesiredInputDelay();
-    state.engine.importSyncState(syncState, { preserveLocalInputDelay: true });
+    if (syncState.resetToZero && state.nes && state.romBinaryString) {
+      state.nes.loadROM(state.romBinaryString);
+      state.engine.resetTimeline(0, syncState.sessionId);
+    } else {
+      state.engine.importSyncState(
+        syncState, { preserveLocalInputDelay: true }
+      );
+    }
     state.engine.syncPaused = false;
     state.matchStarted = true;
     sendWs({
@@ -192,6 +209,7 @@ export function createProtocolHandlers(
         state.romBinaryString &&
         (!msg.romCrc32 || msg.romCrc32 === state.romCrc32)
       ) {
+        clearActiveRomTransfers();
         state.partnerRomName = msg.romName || state.romName;
         state.partnerRomCrc32 = msg.romCrc32 || state.romCrc32;
         state.nes.loadROM(state.romBinaryString);
@@ -214,6 +232,8 @@ export function createProtocolHandlers(
         if (typeof state.onGameStarted === 'function') state.onGameStarted();
         ui.updateStatusStrip();
         pushGameplayTelemetryToServer();
+      } else if (msg.romCrc32 && msg.romCrc32 !== state.romCrc32) {
+        sendWs({ type: 'rom_request', haveCrc32: state.romCrc32 });
       }
       return;
     }
@@ -227,14 +247,7 @@ export function createProtocolHandlers(
           clearTimeout(state.syncAckTimeout);
           state.syncAckTimeout = null;
         }
-        if (ui.sendRomManualBtn) {
-          ui.sendRomManualBtn.textContent = 'Send My ROM File to Partner';
-          ui.sendRomManualBtn.disabled = false;
-        }
-        if (ui.topSendRomBtn) {
-          ui.topSendRomBtn.textContent = 'Send ROM';
-          ui.topSendRomBtn.disabled = false;
-        }
+        clearActiveRomTransfers();
         state.engine.syncPaused = false;
         state.matchStarted = true;
         state.lastRxInputAt = 0;
@@ -250,10 +263,13 @@ export function createProtocolHandlers(
     }
 
     if (msg.type === 'rom_request' && state.romUint8) {
-      if (msg.haveCrc32 === state.romCrc32) {
+      if (msg.haveCrc32 && msg.haveCrc32 === state.romCrc32 &&
+          !msg.forceChunks) {
         romSync.sendStateSyncToPeer({ resetToZero: false });
       } else {
-        romSync.sendRomAndStateToPeer({ resetToZero: true });
+        romSync.sendRomAndStateToPeer({
+          resetToZero: true, forceChunks: Boolean(msg.forceChunks)
+        });
       }
       return;
     }

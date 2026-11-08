@@ -55,7 +55,7 @@ export function startConsoleFrameLoop(
     }
     if (keyBindings && keyBindings.isTurboHoldCode(e.code)) {
       e.preventDefault();
-      if (viewportCtrl) viewportCtrl.setHoldTurbo(true);
+      if (!e.repeat && viewportCtrl) viewportCtrl.setHoldTurbo(true);
       return;
     }
     if (saveSlots && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -96,6 +96,13 @@ export function startConsoleFrameLoop(
     if (bit !== undefined) {
       e.preventDefault();
       localButtonsMask &= ~bit;
+    }
+  });
+
+  window.addEventListener('blur', () => {
+    localButtonsMask = 0;
+    if (viewportCtrl && state.holdTurboActive) {
+      viewportCtrl.setHoldTurbo(false);
     }
   });
 

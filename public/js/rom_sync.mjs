@@ -8,25 +8,29 @@ import {
 import { createSegaGpgxCore } from '/src/sega_gpgx_core.mjs';
 import { createFbneoArcadeCore } from '/src/fbneo_arcade_core.mjs';
 import {
-  fetchRomBytesWithProgress, streamRomToPeer
+  fetchRomBytesWithProgress, streamRomToPeer, uploadRomToServerCache
 } from './rom_archive.mjs';
 
 export { base64ToUint8 };
 const jsnes = window.jsnes;
 
 export function createRomSyncManager(state, ui, audio) {
-  function resolveDesiredInputDelay() {
+  function resolveDesiredInputDelay(sysIdOverride = null) {
     const sel = ui.topInputDelaySelect || ui.inputDelaySelect;
     const val = (sel ? sel.value : '2') || '2';
+    const sysId = sysIdOverride || state.engine?.core?.systemId || 'nes';
     if (val === 'auto') {
-      return NesNetplayEngine.computeRecommendedInputDelay(
+      const rec = NesNetplayEngine.computeRecommendedInputDelay(
         state.rttMs,
         state.jitterMs,
         state.engine ? state.engine.rxClumpFrames : 0
       );
+      return sysId === 'arcade' && state.peerConnected ? Math.max(4, rec) : rec;
     }
     const parsed = Number(val);
-    return Number.isFinite(parsed) ? parsed : 2;
+    const delay = Number.isFinite(parsed) ? parsed : 2;
+    if (sysId === 'arcade' && state.peerConnected && delay === 2) return 4;
+    return delay;
   }
 
   function ensureRomInDropdown(name, u8) {
@@ -75,6 +79,11 @@ export function createRomSyncManager(state, ui, audio) {
       return;
     }
     if (!force && state.syncAckTimeout) return;
+    state.activeRomAbortCtrl?.abort();
+    state.activeRomAbortCtrl = null;
+    state.incomingRomTransfer = null;
+    state.sendingRomSessionId = null;
+    ui.resetSendRomButtons?.();
 
     const rand = Math.random().toString(36).slice(2, 7);
     const newSessionId = `${Date.now().toString(36)}_${rand}`;
@@ -88,22 +97,17 @@ export function createRomSyncManager(state, ui, audio) {
     state.matchStarted = false;
     armSyncAckWatchdog(newSessionId, 12000);
 
-    state.ws.send(
-      JSON.stringify({
-        type: 'match_start_req',
-        sessionId: newSessionId,
-        romCrc32: state.romCrc32,
-        romName: state.romName,
-        inputDelayFrames: state.engine.inputDelayFrames,
-        reason
-      })
-    );
+    state.ws.send(JSON.stringify({
+      type: 'match_start_req', sessionId: newSessionId,
+      romCrc32: state.romCrc32, romName: state.romName,
+      inputDelayFrames: state.engine.inputDelayFrames, reason
+    }));
     ui.logDebug(
       `Initiated Frame #0 lockstep (${reason}) for "${state.romName}" ` +
         `[CRC=${state.romCrc32}, delay=${state.engine.inputDelayFrames}f]`
     );
     ui.showScreenBanner(
-      `STARTING "${state.romName}" AT FRAME #0...`, 'warn', 0
+      `STARTING "${state.romName}" AT FRAME #0...`, 'warn', 8000
     );
     ui.updateStatusStrip();
   }
@@ -121,8 +125,12 @@ export function createRomSyncManager(state, ui, audio) {
     state.romCrc32 = computeRomCrc32(u8);
     state.isAutoDefaultRom = isAutoDefault;
     state.matchStarted = false;
+    state.sendingRomSessionId = null;
 
     ensureRomInDropdown(options.dropdownKey || state.romName, u8);
+    if (!state.localServerRomKey && !isAutoDefault) {
+      uploadRomToServerCache(state);
+    }
 
     const w = sysId === 'sega_md' || sysId === 'arcade' ? 320 : 256;
     const h = sysId === 'sega_md' || sysId === 'snes'
@@ -163,7 +171,7 @@ export function createRomSyncManager(state, ui, audio) {
       localPlayer: state.localPlayerIndex,
       online: isOnline,
       enableRiftPacing: true,
-      inputDelayFrames: resolveDesiredInputDelay(),
+      inputDelayFrames: resolveDesiredInputDelay(sysId),
       maxRollbackFrames: 20,
       saveBufferSize: sysId === 'nes' ? 64 : 48
     });
@@ -186,14 +194,7 @@ export function createRomSyncManager(state, ui, audio) {
         `LOADED "${state.romName}" [${state.romCrc32}]`, 'ok', 2800
       );
     }
-    if (ui.sendRomManualBtn) {
-      ui.sendRomManualBtn.textContent = 'Send My ROM File to Partner';
-      ui.sendRomManualBtn.disabled = false;
-    }
-    if (ui.topSendRomBtn) {
-      ui.topSendRomBtn.textContent = 'Send ROM';
-      ui.topSendRomBtn.disabled = false;
-    }
+    ui.resetSendRomButtons?.();
 
     if (state.ws && state.ws.readyState === 1) {
       state.ws.send(JSON.stringify({
@@ -210,7 +211,9 @@ export function createRomSyncManager(state, ui, audio) {
     ui.updateStatusStrip();
   }
 
-  async function sendRomAndStateToPeer({ resetToZero = false } = {}) {
+  async function sendRomAndStateToPeer({
+    resetToZero = false, forceChunks = false
+  } = {}) {
     if (!state.romUint8 || !state.engine) {
       ui.showScreenBanner('LOAD A ROM FIRST BEFORE SENDING', 'warn', 3000);
       return;
@@ -225,20 +228,27 @@ export function createRomSyncManager(state, ui, audio) {
     }
     const rand = Math.random().toString(36).slice(2, 7);
     const newSessionId = `${Date.now().toString(36)}_${rand}`;
+    state.engine.localPlayer = state.localPlayerIndex;
+    state.engine.online = true;
+    state.engine.inputDelayFrames = resolveDesiredInputDelay();
+    let syncState = null;
     if (resetToZero && state.nes && state.romBinaryString) {
       state.nes.loadROM(state.romBinaryString);
       state.engine.resetTimeline(0, newSessionId);
+      syncState = {
+        resetToZero: true, sessionId: newSessionId, frame: 0,
+        inputDelayFrames: state.engine.inputDelayFrames
+      };
     } else {
       state.engine.sessionId = newSessionId;
+      syncState = state.engine.exportSyncState();
+      state.engine.importSyncState(syncState);
     }
-
-    const syncState = state.engine.exportSyncState();
-    state.engine.localPlayer = state.localPlayerIndex;
-    state.engine.online = true;
-    state.engine.importSyncState(syncState);
     state.engine.syncPaused = true;
     armSyncAckWatchdog(newSessionId, 180000);
-    await streamRomToPeer(state, ui, newSessionId, syncState, uint8ToBase64);
+    await streamRomToPeer(
+      state, ui, newSessionId, syncState, uint8ToBase64, forceChunks
+    );
   }
 
   function sendStateSyncToPeer({ resetToZero = false } = {}) {
@@ -329,13 +339,8 @@ export function createRomSyncManager(state, ui, audio) {
   }
 
   return {
-    resolveDesiredInputDelay,
-    armSyncAckWatchdog,
-    loadRomFromUint8,
-    startLockstepMatchAtFrameZero,
-    sendRomAndStateToPeer,
-    sendStateSyncToPeer,
-    discoverLocalRoms,
-    fetchLocalRomByName
+    resolveDesiredInputDelay, armSyncAckWatchdog, loadRomFromUint8,
+    startLockstepMatchAtFrameZero, sendRomAndStateToPeer, sendStateSyncToPeer,
+    discoverLocalRoms, fetchLocalRomByName
   };
 }

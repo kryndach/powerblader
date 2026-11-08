@@ -81,6 +81,9 @@ export function createTelemetryReporter(state, ui, romSync) {
 
   function handlePongAndAutoDelay(msg) {
     const sampleRtt = Math.max(1, Date.now() - msg.t);
+    if (sampleRtt > 1500 || (state.engine?.syncPaused && sampleRtt > 500)) {
+      return;
+    }
     state.jitterMs = Math.round(
       state.jitterMs * 0.7 + Math.abs(sampleRtt - state.rttMs) * 0.3
     );

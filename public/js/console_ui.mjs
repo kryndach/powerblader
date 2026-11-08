@@ -55,6 +55,17 @@ export function createConsoleUI(state) {
   let lastMiniPadP1 = -1;
   let lastMiniPadP2 = -1;
 
+  ui.resetSendRomButtons = function () {
+    if (ui.sendRomManualBtn) {
+      ui.sendRomManualBtn.textContent = 'Send My ROM File to Partner';
+      ui.sendRomManualBtn.disabled = false;
+    }
+    if (ui.topSendRomBtn) {
+      ui.topSendRomBtn.textContent = 'Send ROM';
+      ui.topSendRomBtn.disabled = false;
+    }
+  };
+
   ui.showScreenBanner = function (text, level = 'ok', autoHideMs = 3500) {
     if (!ui.screenBanner) return;
     if (bannerTimer) {

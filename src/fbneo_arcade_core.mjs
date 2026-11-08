@@ -3,18 +3,14 @@ import { INPUT_BITS, crc32Bytes } from './crc32.mjs';
 
 const RGB565_TO_BGR24 = new Uint32Array(65536);
 for (let p = 0; p < 65536; p++) {
-  const r5 = (p >>> 11) & 0x1f;
-  const g6 = (p >>> 5) & 0x3f;
-  const b5 = p & 0x1f;
-  const r = (r5 << 3) | (r5 >>> 2);
-  const g = (g6 << 2) | (g6 >>> 4);
-  const b = (b5 << 3) | (b5 >>> 2);
-  RGB565_TO_BGR24[p] = (b << 16) | (g << 8) | r;
+  const r5 = (p >>> 11) & 31, g6 = (p >>> 5) & 63, b5 = p & 31;
+  RGB565_TO_BGR24[p] =
+    (((b5 << 3) | (b5 >>> 2)) << 16) |
+    (((g6 << 2) | (g6 >>> 4)) << 8) |
+    ((r5 << 3) | (r5 >>> 2));
 }
 
-let fbneoFactory = null;
-let fbneoWasmModule = null;
-let fbneoLoadPromise = null;
+let fbneoFactory = null, fbneoWasmModule = null, fbneoLoadPromise = null;
 
 export async function ensureFbneoRuntime() {
   if (fbneoFactory && fbneoWasmModule) {
@@ -31,13 +27,14 @@ export async function ensureFbneoRuntime() {
       fbneoFactory = ns.default;
       wasmBytes = new Uint8Array(await res.arrayBuffer());
     } else {
-      const fs = await import('node:fs');
-      const path = await import('node:path');
-      const url = await import('node:url');
+      const [fs, path, url] = await Promise.all([
+        import('node:fs'), import('node:path'), import('node:url')
+      ]);
       const dir = path.dirname(url.fileURLToPath(import.meta.url));
       const vDir = path.resolve(dir, '..', 'public', 'vendor');
-      const jsUrl = url.pathToFileURL(path.join(vDir, 'fbneo_arcade.js')).href;
-      const ns = await import(jsUrl);
+      const ns = await import(
+        url.pathToFileURL(path.join(vDir, 'fbneo_arcade.js')).href
+      );
       fbneoFactory = ns.default;
       wasmBytes = new Uint8Array(
         fs.readFileSync(path.join(vDir, 'fbneo_arcade.wasm'))
@@ -45,27 +42,21 @@ export async function ensureFbneoRuntime() {
     }
     fbneoWasmModule = await WebAssembly.compile(wasmBytes);
     return { factory: fbneoFactory, wasmModule: fbneoWasmModule };
-  })().catch((err) => {
-    fbneoLoadPromise = null;
-    throw err;
-  });
+  })().catch((err) => { fbneoLoadPromise = null; throw err; });
   return fbneoLoadPromise;
 }
 
+const FBNEO_BIT_MAP = [
+  [INPUT_BITS.LEFT, 0x001], [INPUT_BITS.RIGHT, 0x002],
+  [INPUT_BITS.UP, 0x004], [INPUT_BITS.DOWN, 0x008],
+  [INPUT_BITS.START, 0x010], [INPUT_BITS.SELECT, 0x020],
+  [INPUT_BITS.A, 0x040], [INPUT_BITS.B, 0x080],
+  [INPUT_BITS.C, 0x100], [INPUT_BITS.X, 0x200],
+  [INPUT_BITS.Y, 0x400], [INPUT_BITS.Z, 0x800]
+];
 export function toFbneoInputMask(mask) {
   let b = 0;
-  if (mask & INPUT_BITS.LEFT) b |= 0x001;
-  if (mask & INPUT_BITS.RIGHT) b |= 0x002;
-  if (mask & INPUT_BITS.UP) b |= 0x004;
-  if (mask & INPUT_BITS.DOWN) b |= 0x008;
-  if (mask & INPUT_BITS.START) b |= 0x010;
-  if (mask & INPUT_BITS.SELECT) b |= 0x020;
-  if (mask & INPUT_BITS.A) b |= 0x040;
-  if (mask & INPUT_BITS.B) b |= 0x080;
-  if (mask & INPUT_BITS.C) b |= 0x100;
-  if (mask & INPUT_BITS.X) b |= 0x200;
-  if (mask & INPUT_BITS.Y) b |= 0x400;
-  if (mask & INPUT_BITS.Z) b |= 0x800;
+  for (const [k, v] of FBNEO_BIT_MAP) if (mask & k) b |= v;
   return b;
 }
 function listZipEntryNames(u8) {
@@ -74,8 +65,8 @@ function listZipEntryNames(u8) {
   const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
   if (dv.getUint32(0, true) !== 0x04034b50) return names;
   let eocd = -1;
-  const minPos = Math.max(0, u8.byteLength - 65557);
-  for (let i = u8.byteLength - 22; i >= minPos; i--) {
+  for (let i = u8.byteLength - 22; i >= Math.max(0, u8.byteLength - 65557);
+       i--) {
     if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
   }
   if (eocd < 0) return names;
@@ -105,7 +96,6 @@ export function detectFbneoDriver(romBytes, romName = 'tgm2p.zip') {
     .replace(/^.*[\\/]/, '').replace(/\.(zip|7z|rar|fbneo)$/i, '');
   return base.split(/[\s([[]/)[0].trim().toLowerCase() || 'tgm2p';
 }
-
 export async function createFbneoArcadeCore({
   romBytes, romName = 'tgm2p.zip', onFrame = null, onAudioSample = null
 }) {
@@ -114,22 +104,18 @@ export async function createFbneoArcadeCore({
     ? romBytes : new Uint8Array(romBytes);
   const driver = detectFbneoDriver(u8, romName);
   const missingFiles = [];
-
   const coreState = {
     rawW: 320, rawH: 240, rot: 0, depth: 32, fps: 60,
     headless: false, audioRate: 44100
   };
   let frameBuffer = new Uint32Array(320 * 240);
-
   const core = {
     systemId: 'arcade', width: 320, height: 240, frameBuffer, mod: null,
     ppu: { _headlessFrame: false, buffer: frameBuffer },
     rom: { mapperType: `FBNEO:${driver.toUpperCase()}`, vromCount: 1 },
     opts: { onFrame, onAudioSample }, _initialBootState: null
   };
-
-  let romLoadedOk = false;
-  let mod = null;
+  let romLoadedOk = false, mod = null;
   mod = await factory({
     instantiateWasm(imports, successCallback) {
       if (imports?.a) {
@@ -137,13 +123,12 @@ export async function createFbneoArcadeCore({
         imports.a.i = () => 1700000000000;
         imports.a.o = () => 0;
       }
-      WebAssembly.instantiate(wasmModule, imports).then((inst) => {
-        successCallback(inst, wasmModule);
-      });
+      WebAssembly.instantiate(wasmModule, imports).then((inst) =>
+        successCallback(inst, wasmModule)
+      );
       return {};
     },
-    print: () => {},
-    printErr: () => {},
+    print: () => {}, printErr: () => {},
     setRomProps: (w, h, rot, _flip, depth, fps) => {
       romLoadedOk = true;
       Object.assign(coreState, { rawW: w, rawH: h, rot, depth });
@@ -154,33 +139,23 @@ export async function createFbneoArcadeCore({
       core.frameBuffer = frameBuffer;
       core.ppu.buffer = frameBuffer;
     },
-    setVisibleSize: () => {},
-    setAspectRatio: () => {},
+    setVisibleSize: () => {}, setAspectRatio: () => {},
     addFile: (ptr, _type, ret) => {
       if (ret !== 0 && mod) missingFiles.push(mod.UTF8ToString(ptr));
     },
-    addInput: () => {},
-    addArchive: () => {},
+    addInput: () => {}, addArchive: () => {},
     audioCallback: (soundPtr, length) => {
       if (!soundPtr || length <= 0 || coreState.headless ||
-          core.ppu._headlessFrame || !core.opts.onAudioSample) {
-        return;
-      }
-      const cb = core.opts.onAudioSample;
-      const s16 = mod.HEAP16;
-      const base = soundPtr >>> 1;
-      const frames = length >>> 1;
+          core.ppu._headlessFrame || !core.opts.onAudioSample) return;
+      const cb = core.opts.onAudioSample, s16 = mod.HEAP16;
+      const base = soundPtr >>> 1, frames = length >>> 1;
       const outCount = Math.round((frames * 48000) / coreState.audioRate);
-      const scale = 1 / 32768;
-      const maxIdx = Math.max(0, frames - 1);
+      const scale = 1 / 32768, maxIdx = Math.max(0, frames - 1);
       const step = frames / outCount;
       for (let i = 0; i < outCount; i++) {
-        const pos = i * step;
-        const i0 = Math.min(maxIdx, pos | 0);
-        const i1 = Math.min(maxIdx, i0 + 1);
-        const frac = pos - i0;
-        const b0 = base + i0 * 2;
-        const b1 = base + i1 * 2;
+        const pos = i * step, i0 = Math.min(maxIdx, pos | 0);
+        const i1 = Math.min(maxIdx, i0 + 1), frac = pos - i0;
+        const b0 = base + i0 * 2, b1 = base + i1 * 2;
         cb(
           (s16[b0] + (s16[b1] - s16[b0]) * frac) * scale,
           (s16[b0 + 1] + (s16[b1 + 1] - s16[b0 + 1]) * frac) * scale
@@ -217,22 +192,49 @@ export async function createFbneoArcadeCore({
     throw new Error(`FBNeo failed to boot arcade ROM "${driver}"${miss}`);
   }
   const statePath = `/libsdl/fbneo/states/${driver}.fs.all`;
-  let stateNode = null;
-  let stateDirty = true;
-
+  let stateNode = null, stateDirty = true;
+  function hookZeroGcStateNode(n) {
+    if (!n || n._zeroGcHooked) return n;
+    n._zeroGcHooked = true;
+    const origSetattr = n.node_ops.setattr, origWrite = n.stream_ops.write;
+    n.node_ops = {
+      ...n.node_ops,
+      setattr(node, attr) {
+        if (attr.size === 0 && node.contents?.length >= 4096) {
+          node.usedBytes = 0;
+          return;
+        }
+        return origSetattr(node, attr);
+      }
+    };
+    n.stream_ops = {
+      ...n.stream_ops,
+      write(stream, buf, off, len, pos, canOwn) {
+        const node = stream.node;
+        if (node.contents && pos + len <= node.contents.length) {
+          node.contents.set(buf.subarray(off, off + len), pos);
+          if (pos + len > node.usedBytes) node.usedBytes = pos + len;
+          return len;
+        }
+        return origWrite(stream, buf, off, len, pos, canOwn);
+      }
+    };
+    return n;
+  }
   function getMemfsStateView() {
     if (stateDirty) {
       mod._saveAllState(1);
       stateDirty = false;
-      if (!stateNode) stateNode = mod.FS.lookupPath(statePath).node;
+      if (!stateNode) {
+        stateNode = hookZeroGcStateNode(mod.FS.lookupPath(statePath).node);
+      }
       const rawLen = stateNode.usedBytes;
       if (stateNode.contents.length < rawLen + 100) {
-        const grown = new Uint8Array(rawLen + 1024);
+        const grown = new Uint8Array(rawLen + 16384);
         grown.set(stateNode.contents.subarray(0, rawLen));
         stateNode.contents = grown;
       }
-      const h8 = mod.HEAPU8;
-      const dst = stateNode.contents;
+      const h8 = mod.HEAPU8, dst = stateNode.contents;
       dst.set(h8.subarray(0x1002544, 0x100254c), rawLen);
       dst.set(h8.subarray(0x10029a8, 0x10029ac), rawLen + 8);
       dst.set(h8.subarray(0x1023920, 0x1023960), rawLen + 12);
@@ -254,21 +256,20 @@ export async function createFbneoArcadeCore({
   core.getFrameBuffer = () => frameBuffer;
   core.saveStateBytes = () => new Uint8Array(getMemfsStateView());
   core.loadStateBytes = function (bytes) {
-    if (!bytes || !bytes.length) return;
+    if (!bytes?.length) return;
     if (stateNode && stateNode.contents.length >= bytes.length) {
       stateNode.contents.set(bytes);
       stateNode.usedBytes = bytes.length;
     } else {
       mod.FS.writeFile(statePath, bytes);
-      stateNode = mod.FS.lookupPath(statePath).node;
+      stateNode = hookZeroGcStateNode(mod.FS.lookupPath(statePath).node);
     }
     stateDirty = false;
     mod._saveAllState(0);
     const n = bytes.length;
     if (n > 100 && bytes[n - 4] === 0x46 && bytes[n - 3] === 0x42 &&
         bytes[n - 2] === 0x58 && bytes[n - 1] === 0x54) {
-      const b = n - 100;
-      const h8 = mod.HEAPU8;
+      const b = n - 100, h8 = mod.HEAPU8;
       h8.set(bytes.subarray(b, b + 8), 0x1002544);
       h8.set(bytes.subarray(b + 8, b + 12), 0x10029a8);
       h8.set(bytes.subarray(b + 12, b + 76), 0x1023920);
@@ -291,7 +292,13 @@ export async function createFbneoArcadeCore({
     );
     return true;
   };
-  core.computeHash = () => crc32Bytes(getMemfsStateView()) >>> 0;
+  core.computeHash = () => {
+    const v = getMemfsStateView(), n = v.length;
+    if (n <= 4096) return crc32Bytes(v) >>> 0;
+    let h = crc32Bytes(v, 0, 2048, 0);
+    h = crc32Bytes(v, (n >>> 1) - 1024, 2048, h);
+    return crc32Bytes(v, n - 2048, 2048, h) >>> 0;
+  };
   core.stepFrame(0, 0, true);
   core._initialBootState = core.saveStateBytes();
   core.loadROM = () => {
@@ -307,8 +314,7 @@ export function createMinimalArcadeTestZip() {
     0x34, 0x86, 0x01, 0x00, 0x02, 0x11, 0x00, 0xa2, 0x12, 0x13, 0x3c, 0x0b,
     0x67, 0x78, 0xb1, 0x7c, 0x20, 0xf6, 0xfb, 0x76, 0xc3, 0x06, 0x00
   ], 0);
-  rom[0x38] = 0xfb;
-  rom[0x39] = 0xc9;
+  rom[0x38] = 0xfb; rom[0x39] = 0xc9;
   let target = ~2842460733 >>> 0;
   for (let i = 0; i < 32; i++) {
     target = (target & 0x80000000)
@@ -323,26 +329,17 @@ export function createMinimalArcadeTestZip() {
   const crc = crc32Bytes(rom) >>> 0;
   const out = new Uint8Array(30 + name.length + 8192 + 46 + name.length + 22);
   const dv = new DataView(out.buffer);
-  dv.setUint32(0, 0x04034b50, true);
-  dv.setUint16(4, 20, true);
-  dv.setUint32(14, crc, true);
-  dv.setUint32(18, 8192, true);
-  dv.setUint32(22, 8192, true);
-  dv.setUint16(26, name.length, true);
-  out.set(name, 30);
-  out.set(rom, 30 + name.length);
+  dv.setUint32(0, 0x04034b50, true); dv.setUint16(4, 20, true);
+  dv.setUint32(14, crc, true); dv.setUint32(18, 8192, true);
+  dv.setUint32(22, 8192, true); dv.setUint16(26, name.length, true);
+  out.set(name, 30); out.set(rom, 30 + name.length);
   const cd = 30 + name.length + 8192;
-  dv.setUint32(cd, 0x02014b50, true);
-  dv.setUint16(cd + 4, 20, true);
-  dv.setUint16(cd + 6, 20, true);
-  dv.setUint32(cd + 16, crc, true);
-  dv.setUint32(cd + 20, 8192, true);
-  dv.setUint32(cd + 24, 8192, true);
-  dv.setUint16(cd + 28, name.length, true);
-  out.set(name, cd + 46);
+  dv.setUint32(cd, 0x02014b50, true); dv.setUint16(cd + 4, 20, true);
+  dv.setUint16(cd + 6, 20, true); dv.setUint32(cd + 16, crc, true);
+  dv.setUint32(cd + 20, 8192, true); dv.setUint32(cd + 24, 8192, true);
+  dv.setUint16(cd + 28, name.length, true); out.set(name, cd + 46);
   const eocd = cd + 46 + name.length;
-  dv.setUint32(eocd, 0x06054b50, true);
-  dv.setUint16(eocd + 8, 1, true);
+  dv.setUint32(eocd, 0x06054b50, true); dv.setUint16(eocd + 8, 1, true);
   dv.setUint16(eocd + 10, 1, true);
   dv.setUint32(eocd + 12, 46 + name.length, true);
   dv.setUint32(eocd + 16, cd, true);
