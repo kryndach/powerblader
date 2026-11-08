@@ -200,7 +200,7 @@ export async function createFbneoArcadeCore({
     n.node_ops = {
       ...n.node_ops,
       setattr(node, attr) {
-        if (attr.size === 0 && node.contents?.length >= 4096) {
+        if (attr.size === 0 && node.contents?.length > 0) {
           node.usedBytes = 0;
           return;
         }
@@ -254,6 +254,7 @@ export async function createFbneoArcadeCore({
     coreState.headless = false;
   };
   core.getFrameBuffer = () => frameBuffer;
+  core.getMemfsStateView = getMemfsStateView;
   core.saveStateBytes = () => new Uint8Array(getMemfsStateView());
   core.loadStateBytes = function (bytes) {
     if (!bytes?.length) return;

@@ -155,6 +155,21 @@ function testRingWrapAndTurboTransitions(nesBin) {
   assert.strictEqual(
     computeDeterministicHash(nes1), computeDeterministicHash(nes2)
   );
+  // Verify post-Turbo input is scheduled at +inputDelayFrames (not *4)
+  const preBtnFrame = eng1.currentFrame;
+  eng1.stepNetplayFrame(INPUT_BITS.START, 0, { turboSpeed: 1 });
+  assert.strictEqual(
+    eng1.getLocalInputAt(preBtnFrame + eng1.inputDelayFrames), INPUT_BITS.START
+  );
+  // Verify Turbo maxAhead caps lead at saveBufferSize - 6 (no 360f overflow)
+  for (let i = 0; i < 80; i++) {
+    eng1.stepNetplayFrame(0, 0, { turboSpeed: 4, skipPacket: true });
+  }
+  const turboLead = eng1.currentFrame - eng1.lastConfirmedRemoteFrame;
+  assert.ok(
+    turboLead <= eng1.saveBufferSize - 5,
+    `Turbo lead (${turboLead}f) must not exceed saveRing capacity`
+  );
   // Verify HBlank triggerRendering ($2001=0 at curX>=256) flushes current row
   const ppu = nes1.ppu;
   ppu.f_bgVisibility = 1;
@@ -231,6 +246,13 @@ async function testSnesAndArcadePreSyncRollback() {
   }
   settleEngines(ae1, ae2);
   assert.strictEqual(arc1.computeHash(), arc2.computeHash());
+  const memfsBufBefore = arc1.getMemfsStateView().buffer;
+  arc1.stepFrame(INPUT_BITS.B, 0, true);
+  const memfsBufAfter = arc1.getMemfsStateView().buffer;
+  assert.strictEqual(
+    memfsBufAfter, memfsBufBefore,
+    'FBNeo MEMFS stateNode.contents must reuse same ArrayBuffer in-place (0-GC)'
+  );
   const syncObj = ae1.exportSyncState();
   assert.ok(syncObj.rawStateB64.length < arc1.saveStateBytes().length);
   ae2.importSyncState(syncObj);

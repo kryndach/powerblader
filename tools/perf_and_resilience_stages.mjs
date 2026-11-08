@@ -3,19 +3,21 @@ import assert from 'assert';
 import fs from 'fs';
 import http from 'http';
 import path from 'path';
+import zlib from 'zlib';
 import WebSocket from 'ws';
 import {
   NesNetplayEngine, INPUT_BITS, saveFastState, loadFastState
 } from '../src/netplay_engine.mjs';
 import { createCoopServer } from '../server/relay_server.mjs';
 import { createAudioDrcEngine } from '../public/js/audio_drc.mjs';
+import { handleRomTransferMessage } from '../public/js/rom_archive.mjs';
 
-function httpRequest(urlStr, method = 'GET', bodyBuf = null) {
+function httpRequest(urlStr, method = 'GET', bodyBuf = null, headers = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     const req = http.request({
       hostname: u.hostname, port: u.port,
-      path: u.pathname + u.search, method
+      path: u.pathname + u.search, method, headers
     }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
@@ -107,20 +109,39 @@ export async function runTest5ReconnectAndZombieEviction() {
     const speedMsg = await speedPromise;
     assert.strictEqual(speedMsg.speed, 4);
 
-    // Scenario D: Verify Custom Room ROM HTTP Cache & Disk Save Slot API
+    // Scenario D: Verify Gzip Room ROM HTTP Cache (CRC lookup) & Disk Save API
     const base = `http://127.0.0.1:${port}`;
-    const fakeRom = Buffer.alloc(4096, 0x5a);
+    const fakeRom = Buffer.alloc(32768, 0x5a);
+    const gzRom = zlib.gzipSync(fakeRom);
     const postRomRes = await httpRequest(
       `${base}/api/room-rom?room=F5ROOM&crc=DEADBEEF&name=Test.sfc`,
-      'POST', fakeRom
+      'POST', gzRom, { 'X-Rom-Encoding': 'gzip' }
     );
     assert.strictEqual(postRomRes.status, 200);
     const getRomRes = await httpRequest(
-      `${base}/api/room-rom?room=F5ROOM&crc=DEADBEEF`
+      `${base}/api/room-rom?room=OTHER_ROOM&crc=DEADBEEF`
     );
     assert.strictEqual(getRomRes.status, 200);
-    assert.strictEqual(getRomRes.body.length, 4096);
+    assert.strictEqual(getRomRes.body.length, 32768);
     assert.strictEqual(getRomRes.body[0], 0x5a);
+
+    // Verify late rom_transfer_progress is ignored during active gameplay
+    let bannerShown = false;
+    const mockUi = {
+      topSendRomBtn: { textContent: 'Send ROM' },
+      showScreenBanner: () => { bannerShown = true; }
+    };
+    handleRomTransferMessage(
+      { type: 'rom_transfer_progress', pct: 44 },
+      {
+        sendingRomSessionId: 's1',
+        matchStarted: true,
+        engine: { syncPaused: false }
+      },
+      mockUi
+    );
+    assert.strictEqual(bannerShown, false);
+    assert.strictEqual(mockUi.topSendRomBtn.textContent, 'Send ROM');
 
     const savePayload = Buffer.from(JSON.stringify({
       romCrc32: 'TESTCRC1', slot: 1,
