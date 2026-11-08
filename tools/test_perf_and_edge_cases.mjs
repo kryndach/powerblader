@@ -7,8 +7,7 @@ import zlib from 'zlib';
 import { fileURLToPath } from 'url';
 import * as jsnesModule from 'jsnes';
 import {
-  NesNetplayEngine, INPUT_BITS, computeDeterministicHash,
-  saveFastState, loadFastState
+  NesNetplayEngine, INPUT_BITS, computeDeterministicHash
 } from '../src/netplay_engine.mjs';
 import {
   createSegaGpgxCore, createSnes9xCore
@@ -18,6 +17,11 @@ import {
 } from '../src/fbneo_arcade_core.mjs';
 import { createCoopServer } from '../server/relay_server.mjs';
 import { extractRomFromFile } from '../server/archive_extractor.mjs';
+import {
+  runTest5ReconnectAndZombieEviction,
+  runTest6AudioDrcAndDeclick,
+  benchmarkAndVerifyZeroGc
+} from './perf_and_resilience_stages.mjs';
 
 const jsnes = jsnesModule.NES ? jsnesModule : jsnesModule.default;
 const LOCAL_DIR = path.resolve(
@@ -253,58 +257,6 @@ async function testHttpGzipRomAndWasmTransfer() {
   }
 }
 
-function benchmarkCore(label, core, isNes = false, warmupFrames = 30) {
-  const eng = new NesNetplayEngine(core, { localPlayer: 1, online: true });
-  const slot = eng.saveRing[0];
-  for (let w = 0; w < warmupFrames; w++) eng.stepNetplayFrame(0);
-
-  const N = 30;
-  const v0 = performance.now();
-  for (let i = 0; i < N; i++) {
-    if (isNes) { core.ppu._headlessFrame = false; core.frame(); }
-    else core.stepFrame(INPUT_BITS.RIGHT, 0, false);
-  }
-  const visMs = (performance.now() - v0) / N;
-
-  const h0 = performance.now();
-  for (let i = 0; i < N; i++) {
-    if (isNes) {
-      core.ppu._headlessFrame = true;
-      core.frame();
-      core.ppu._headlessFrame = false;
-    } else core.stepFrame(INPUT_BITS.RIGHT, 0, true);
-  }
-  const headMs = (performance.now() - h0) / N;
-
-  let tSave = 0, tLoad = 0;
-  for (let i = 0; i < 10; i++) {
-    if (isNes) { core.ppu._headlessFrame = true; core.frame(); }
-    else core.stepFrame(0, 0, true);
-    const s0 = performance.now();
-    if (isNes) saveFastState(core, slot, i);
-    else core.saveStateInto(slot, i);
-    tSave += performance.now() - s0;
-
-    const l0 = performance.now();
-    if (isNes) loadFastState(core, slot);
-    else core.loadStateFromSlot(slot);
-    tLoad += performance.now() - l0;
-  }
-
-  const saveMs = tSave / 10, loadMs = tLoad / 10;
-  const rb5Ms = loadMs + 4 * headMs + saveMs + visMs;
-  const rb10Ms = loadMs + 9 * headMs + 2 * saveMs + visMs;
-  const stateKb = isNes
-    ? 18.5 : (slot.usedLen || slot.stateBytes?.length || 0) / 1024;
-  console.log(
-    `[BENCH] ${label.padEnd(21)} | Vis=${visMs.toFixed(2)}ms | ` +
-      `Head=${headMs.toFixed(2)}ms | Save=${saveMs.toFixed(2)}ms ` +
-      `(${stateKb.toFixed(0)}KB) | Load=${loadMs.toFixed(2)}ms | ` +
-      `5f-RB=${rb5Ms.toFixed(2)}ms | 10f-RB=${rb10Ms.toFixed(2)}ms`
-  );
-  assert.ok(visMs + saveMs < 12 && rb5Ms < (label.includes('Arc') ? 25 : 16.7));
-}
-
 async function main() {
   console.log('=== Edge-Case Regression & Performance Benchmarks ===\n');
   const nesDir = fs.existsSync(path.join(LOCAL_DIR, 'nes'))
@@ -318,11 +270,15 @@ async function main() {
   testRingWrapAndTurboTransitions(nesBin);
   const { snesCore, arcMinCore } = await testSnesAndArcadePreSyncRollback();
   await testHttpGzipRomAndWasmTransfer();
+  await runTest5ReconnectAndZombieEviction();
+  runTest6AudioDrcAndDeclick();
 
-  console.log('\n--- 60 FPS (16.67ms Budget) Multi-Console Benchmarks ---');
+  console.log(
+    '\n--- Multi-Console Zero-GC & 60 FPS (16.67ms) Frame-Budget Benchmarks ---'
+  );
   const nesCore = new jsnes.NES({});
   nesCore.loadROM(nesBin);
-  benchmarkCore('NES (TMNT III)', nesCore, true, 240);
+  benchmarkAndVerifyZeroGc('NES (TMNT III)', nesCore, true, 240);
 
   const segaDir = path.join(LOCAL_DIR, 'sega');
   if (fs.existsSync(segaDir) && fs.readdirSync(segaDir).length > 0) {
@@ -331,17 +287,17 @@ async function main() {
     const segaCore = await createSegaGpgxCore({
       romBytes: new Uint8Array(romBuffer), romName
     });
-    benchmarkCore('Sega MD (Sonic 3&K)', segaCore, false, 180);
+    benchmarkAndVerifyZeroGc('Sega MD (Sonic 3&K)', segaCore, false, 180);
   }
-  benchmarkCore('SNES (Snes9x WASM)', snesCore, false, 20);
+  benchmarkAndVerifyZeroGc('SNES (Snes9x WASM)', snesCore, false, 20);
 
   const tgmPath = path.join(LOCAL_DIR, 'arcade', 'tgm2p.zip');
   const arcCore = fs.existsSync(tgmPath)
     ? await createFbneoArcadeCore({
         romBytes: new Uint8Array(fs.readFileSync(tgmPath)), romName: 'tgm2p.zip'
       }) : arcMinCore;
-  benchmarkCore('Arcade (FBNeo TGM2+)', arcCore, false, 75);
-  console.log('\nALL EDGE-CASE & PERFORMANCE BENCHMARK GATES PASSED!');
+  benchmarkAndVerifyZeroGc('Arcade (FBNeo TGM2+)', arcCore, false, 75);
+  console.log('\nALL 7 EDGE-CASE & ZERO-GC BENCHMARK GATES PASSED!');
 }
 
 main().catch((err) => {

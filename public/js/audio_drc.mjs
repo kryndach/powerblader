@@ -39,7 +39,8 @@ export function createAudioDrcEngine(
       if (audioCtx.state === 'suspended') audioCtx.resume();
       return;
     }
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    const win = typeof window !== 'undefined' ? window : globalThis;
+    const AudioContextClass = win.AudioContext || win.webkitAudioContext;
     if (!AudioContextClass) return;
     try {
       audioCtx = new AudioContextClass({ sampleRate: 48000 });
@@ -185,8 +186,10 @@ export function createAudioDrcEngine(
     });
   }
 
-  window.addEventListener('keydown', () => initAudio(), { once: true });
-  window.addEventListener('pointerdown', () => initAudio(), { once: true });
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('keydown', () => initAudio(), { once: true });
+    window.addEventListener('pointerdown', () => initAudio(), { once: true });
+  }
 
   return { initAudio, pushSample };
 }

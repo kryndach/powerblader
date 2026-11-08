@@ -132,6 +132,11 @@ export async function createFbneoArcadeCore({
   let mod = null;
   mod = await factory({
     instantiateWasm(imports, successCallback) {
+      if (imports?.a) {
+        if (imports.a.zd) imports.a.yd = imports.a.zd;
+        imports.a.i = () => 1700000000000;
+        imports.a.o = () => 0;
+      }
       WebAssembly.instantiate(wasmModule, imports).then((inst) => {
         successCallback(inst, wasmModule);
       });

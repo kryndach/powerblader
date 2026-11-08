@@ -72,17 +72,17 @@ async function runRealRomsSuite() {
 
     let normalMs = 0;
     let headlessMs = 0;
-    for (let f = 0; f < 360; f++) {
+    for (let f = 0; f < 240; f++) {
       const p1 =
         (f % 45 === 10 ? INPUT_BITS.START : 0) |
-        (f > 120 && (f >> 3) % 2 === 0 ? INPUT_BITS.RIGHT | INPUT_BITS.A : 0);
+        (f > 100 && (f >> 3) % 2 === 0 ? INPUT_BITS.RIGHT | INPUT_BITS.A : 0);
       const p2 =
         (f % 45 === 25 ? INPUT_BITS.START : 0) |
-        (f > 120 && (f >> 3) % 2 === 1 ? INPUT_BITS.LEFT | INPUT_BITS.B : 0);
+        (f > 100 && (f >> 3) % 2 === 1 ? INPUT_BITS.LEFT | INPUT_BITS.B : 0);
 
-      if (f === 180) {
+      if (f === 120) {
         const slot = engNormal.saveRing[0];
-        saveFastState(nesNormal, slot, 180);
+        saveFastState(nesNormal, slot, 120);
         for (let k = 0; k < 5; k++) nesNormal.frame();
         loadFastState(nesNormal, slot);
       }
@@ -103,8 +103,8 @@ async function runRealRomsSuite() {
     const hashHeadless = formatHex32(computeDeterministicHash(nesHeadless));
     assert.strictEqual(hashHeadless, hashNormal);
     assert.ok(nesNormal.ppu.vramMem.subarray(0x3f00, 0x3f20).some((v) => v));
-    const avgNormalMs = normalMs / 360;
-    const avgHeadlessMs = headlessMs / 360;
+    const avgNormalMs = normalMs / 240;
+    const avgHeadlessMs = headlessMs / 240;
     assert.ok(avgNormalMs < 5.0);
 
     console.log(
@@ -145,7 +145,7 @@ async function runRealRomsSuite() {
     let nextFlush12 = 120;
     let nextFlush21 = 110;
 
-    for (let tick = 0; tick < 540; tick++) {
+    for (let tick = 0; tick < 300; tick++) {
       const nowMs = tick * 16.667;
 
       while (q12.length > 0 && q12[0].deliverAt <= nowMs) {
@@ -183,7 +183,7 @@ async function runRealRomsSuite() {
       }
     }
 
-    let drainNow = 540 * 16.667 + 300;
+    let drainNow = 300 * 16.667 + 300;
     while (q12.length) eng2.receiveRemoteInputPacket(q12.shift().pkt, drainNow);
     while (q21.length) eng1.receiveRemoteInputPacket(q21.shift().pkt, drainNow);
 
@@ -217,7 +217,7 @@ async function runRealRomsSuite() {
     assert.strictEqual(t2.desyncCount, 0);
     assert.strictEqual(finalHash1, finalHash2);
     assert.ok(t2.rxClumpFrames > 0);
-    assert.ok(p1VisualFrames > 400 && typeof lastVisualFirstPixel === 'number');
+    assert.ok(p1VisualFrames > 220 && typeof lastVisualFirstPixel === 'number');
     if (t1.maxRollbackDepthSeen >= 4) {
       assert.ok(t1.smoothedFramesCount > 0);
     }

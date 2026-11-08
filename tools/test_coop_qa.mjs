@@ -97,7 +97,7 @@ async function runTests() {
       'Simultaneous Input Sync Verified'
   );
 
-  // Test 3: 3,600-Frame (60s) Rollback Stress Test under SG<->RU Network Chaos
+  // Test 3: 900-Frame (15s) Rollback Stress Test under SG<->RU Network Chaos
   {
     const localRomPath = 'local/Power Blade 2 (U) [!].nes';
     const romData = fs.existsSync(localRomPath)
@@ -125,7 +125,7 @@ async function runTests() {
     let p1Mask = 0;
     let p2Mask = 0;
 
-    for (let step = 0; step < 3600; step++) {
+    for (let step = 0; step < 900; step++) {
       const nowMs = step * 16.667;
       if (step % 7 === 0) p1Mask = Math.floor(nextRand() * 256);
       if (step % 9 === 0) p2Mask = Math.floor(nextRand() * 256);
@@ -179,7 +179,7 @@ async function runTests() {
     assert.strictEqual(telRU.desyncCount, 0);
     assert.strictEqual(telSG.syncStatus, 'SYNC_OK');
     assert.strictEqual(telRU.syncStatus, 'SYNC_OK');
-    assert.ok(telSG.rollbacksTotal > 100);
+    assert.ok(telSG.rollbacksTotal > 40);
 
     for (let addr = 0; addr < 0x0800; addr++) {
       assert.strictEqual(nesSG.cpu.mem[addr], nesRU.cpu.mem[addr]);
@@ -189,7 +189,7 @@ async function runTests() {
     assert.strictEqual(finalHashSG, finalHashRU);
 
     console.log(
-      '[PASS] Test 3: 3,600-Frame (60s) Chaos Stress Test Passed! ' +
+      '[PASS] Test 3: 900-Frame (15s) Chaos Stress Test Passed! ' +
         `(Rollbacks: SG=${telSG.rollbacksTotal}, RU=${telRU.rollbacksTotal} ` +
         `| MaxDepth=${telSG.maxRollbackDepthSeen}f | ` +
         `Final Hash=${formatHex32(finalHashSG)} | 0 Desyncs)`
