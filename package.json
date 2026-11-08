@@ -6,9 +6,10 @@
   "main": "server/relay_server.mjs",
   "scripts": {
     "start": "node server/relay_server.mjs",
-    "test": "node tools/test_coop_qa.mjs && node tools/test_net_diagnostics.mjs && node tools/test_real_roms.mjs",
+    "test": "node tools/test_coop_qa.mjs && node tools/test_net_diagnostics.mjs && node tools/test_real_roms.mjs && node tools/test_perf_and_edge_cases.mjs",
     "test:net": "node tools/test_net_diagnostics.mjs",
     "test:roms": "node tools/test_real_roms.mjs",
+    "bench": "node tools/test_perf_and_edge_cases.mjs",
     "check:style": "node tools/check_code_style.mjs"
   },
   "dependencies": {
