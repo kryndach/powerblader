@@ -88,7 +88,7 @@ export async function unpackRomIfNeeded(u8, fileName, roomCode = 'NOVA') {
       if (zipRes) return zipRes;
     } catch {}
     if (u8.byteLength >= 30 && u8[0] === 0x50 && u8[1] === 0x4b) {
-      if (typeof window !== 'undefined' && u8.byteLength < 2 * 1024 * 1024 &&
+      if (typeof window !== 'undefined' && u8.byteLength < 32 * 1024 * 1024 &&
           typeof fetch === 'function') {
         try { return await extractArchiveViaServer(u8, fileName, roomCode); }
         catch {}

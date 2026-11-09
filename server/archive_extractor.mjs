@@ -180,21 +180,24 @@ function mergeZipBuffers(childBuf, parentBuf) {
 }
 
 function mergeCompanionZipIfPresent(filePath, buf) {
-  const dir = path.dirname(filePath);
+  const dirs = new Set([
+    path.dirname(filePath), path.resolve('local/arcade'), path.resolve('local')
+  ]);
   const stem = path.basename(filePath, path.extname(filePath)).toLowerCase();
   let out = buf;
-  try {
-    for (const f of fs.readdirSync(dir)) {
-      if (!f.toLowerCase().endsWith('.zip')) continue;
-      const otherStem = path.basename(f, path.extname(f)).toLowerCase();
-      if (otherStem === stem) continue;
-      if (stem.startsWith(otherStem) || otherStem === 'neogeo' ||
-          otherStem === 'pgm' || otherStem === 'ym2608') {
-        const pBuf = fs.readFileSync(path.join(dir, f));
-        out = mergeZipBuffers(out, pBuf);
+  for (const dir of dirs) {
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.toLowerCase().endsWith('.zip')) continue;
+        const other = path.basename(f, path.extname(f)).toLowerCase();
+        if (other === stem) continue;
+        if (stem.startsWith(other) || other === 'neogeo' ||
+            other === 'pgm' || other === 'ym2608') {
+          out = mergeZipBuffers(out, fs.readFileSync(path.join(dir, f)));
+        }
       }
-    }
-  } catch {}
+    } catch {}
+  }
   return out;
 }
 

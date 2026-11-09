@@ -4,14 +4,10 @@ import { INPUT_BITS, crc32Bytes } from './crc32.mjs';
 const RGB565_TO_BGR24 = new Uint32Array(65536);
 for (let p = 0; p < 65536; p++) {
   const r5 = (p >>> 11) & 31, g6 = (p >>> 5) & 63, b5 = p & 31;
-  RGB565_TO_BGR24[p] =
-    (((b5 << 3) | (b5 >>> 2)) << 16) |
-    (((g6 << 2) | (g6 >>> 4)) << 8) |
-    ((r5 << 3) | (r5 >>> 2));
+  RGB565_TO_BGR24[p] = (((b5 << 3) | (b5 >>> 2)) << 16) |
+    (((g6 << 2) | (g6 >>> 4)) << 8) | ((r5 << 3) | (r5 >>> 2));
 }
-
 let fbneoFactory = null, fbneoWasmModule = null, fbneoLoadPromise = null;
-
 export async function ensureFbneoRuntime() {
   if (fbneoFactory && fbneoWasmModule) {
     return { factory: fbneoFactory, wasmModule: fbneoWasmModule };
@@ -87,9 +83,8 @@ function listZipEntryNames(u8) {
 }
 export function detectFbneoDriver(romBytes, romName = 'tgm2p.zip') {
   const entries = listZipEntryNames(romBytes);
-  if (entries.some((n) => n.endsWith('1b.u22') || n.includes('tgm2p.'))) {
+  if (entries.some((n) => n.endsWith('1b.u22') || n.includes('tgm2p.')))
     return 'tgm2p';
-  }
   if (entries.some((n) => n.includes('tgm2.default.nv'))) return 'tgm2';
   if (entries.some((n) => n.endsWith('d26-01.ic7'))) return 'minivadr';
   const base = String(romName)
@@ -103,7 +98,7 @@ export async function createFbneoArcadeCore({
   const u8 = romBytes instanceof Uint8Array
     ? romBytes : new Uint8Array(romBytes);
   const driver = detectFbneoDriver(u8, romName);
-  const missingFiles = [];
+  const missingFiles = [], archOk = new Map();
   const coreState = {
     rawW: 320, rawH: 240, rot: 0, depth: 32, fps: 60,
     headless: false, audioRate: 44100
@@ -143,7 +138,13 @@ export async function createFbneoArcadeCore({
     addFile: (ptr, _type, ret) => {
       if (ret !== 0 && mod) missingFiles.push(mod.UTF8ToString(ptr));
     },
-    addInput: () => {}, addArchive: () => {},
+    addInput: () => {},
+    addArchive: (ptr, _p, ok) => {
+      if (mod) {
+        const a = mod.UTF8ToString(ptr);
+        archOk.set(a, (archOk.get(a) || 0) | ok);
+      }
+    },
     audioCallback: (soundPtr, length) => {
       if (!soundPtr || length <= 0 || coreState.headless ||
           core.ppu._headlessFrame || !core.opts.onAudioSample) return;
@@ -166,14 +167,12 @@ export async function createFbneoArcadeCore({
       if (!vidPtr || coreState.headless || core.ppu._headlessFrame) return;
       const count = coreState.rawW * coreState.rawH;
       if (coreState.depth === 16) {
-        const u16 = mod.HEAPU16;
-        const base16 = vidPtr >>> 1;
+        const u16 = mod.HEAPU16, base16 = vidPtr >>> 1;
         for (let i = 0; i < count; i++) {
           frameBuffer[i] = RGB565_TO_BGR24[u16[base16 + i]];
         }
       } else {
-        const u32 = mod.HEAPU32;
-        const base32 = vidPtr >>> 2;
+        const u32 = mod.HEAPU32, base32 = vidPtr >>> 2;
         for (let i = 0; i < count; i++) {
           const px = u32[base32 + i];
           frameBuffer[i] =
@@ -187,9 +186,12 @@ export async function createFbneoArcadeCore({
   mod.FS.writeFile(`/roms/${driver}.zip`, u8);
   mod.cwrap('startMain', 'number', ['string'])(driver);
   if (!romLoadedOk) {
+    const need = [...archOk.entries()]
+      .filter(([, ok]) => !ok).map(([a]) => `${a}.zip`);
+    const pMsg = need.length ? ` [needs parent/BIOS: ${need.join(', ')}]` : '';
     const miss = missingFiles.length
       ? ` (missing: ${missingFiles.slice(0, 4).join(', ')})` : '';
-    throw new Error(`FBNeo failed to boot arcade ROM "${driver}"${miss}`);
+    throw new Error(`FBNeo failed to boot "${driver}"${pMsg}${miss}`);
   }
   const statePath = `/libsdl/fbneo/states/${driver}.fs.all`;
   let stateNode = null, stateDirty = true;
