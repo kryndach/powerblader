@@ -244,7 +244,7 @@ export function extractRomFromBuffer(buf, fileName = 'archive.zip') {
       const arcPath = path.resolve('local', 'arcade', base);
       return {
         romName: base,
-        romBuffer: Buffer.from(mergeCompanionZipIfPresent(buf, arcPath))
+        romBuffer: Buffer.from(mergeCompanionZipIfPresent(arcPath, buf))
       };
     }
   }
