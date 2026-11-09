@@ -7,6 +7,8 @@
 *.sav
 *.state
 *.fc0
+local/saves/
+saves/
 
 # Dependencies & build artifacts
 node_modules/
