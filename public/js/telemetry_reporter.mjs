@@ -1,5 +1,5 @@
 // Live Gameplay Telemetry Builder, Auto-Delay Hysteresis & Debug Inspector
-import { NesNetplayEngine } from '/src/netplay_engine.mjs';
+import { NesNetplayEngine } from '../../src/netplay_engine.mjs';
 
 export function createTelemetryReporter(state, ui, romSync) {
   function buildGameplayTelemetryPayload() {
@@ -98,12 +98,15 @@ export function createTelemetryReporter(state, ui, romSync) {
       ui.inputDelaySelect.value === 'auto' &&
       state.engine
     ) {
-      const recDelay = NesNetplayEngine.computeRecommendedInputDelay(
+      const rawRec = NesNetplayEngine.computeRecommendedInputDelay(
         state.rttMs,
         state.jitterMs,
         state.engine.rxClumpFrames,
         state.engine.inputDelayFrames
       );
+      const isArc = state.engine.core?.systemId === 'arcade';
+      const recDelay = isArc
+        ? Math.max(state.rttMs >= 160 ? 5 : 4, rawRec) : rawRec;
       const autoOpt = ui.inputDelaySelect.querySelector('option[value="auto"]');
       if (autoOpt) {
         autoOpt.textContent = `Auto (${recDelay}f @ ${state.rttMs}ms)`;

@@ -149,6 +149,7 @@ function connectToRoom() {
   };
 
   ws.onclose = () => {
+    if (state.ws !== ws) return;
     ui.dbgWssState.textContent = 'Disconnected';
     state.peerConnected = false;
     state.partnerRomName = null;

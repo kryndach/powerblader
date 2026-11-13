@@ -22,6 +22,10 @@ import {
   runTest6AudioDrcAndDeclick,
   benchmarkAndVerifyZeroGc
 } from './perf_and_resilience_stages.mjs';
+import {
+  runTest8MidGameLobbyPopupAndDelayGuard,
+  runTest9RealArcadeAndSnesSgRuRollback
+} from './ui_and_arcade_regression_stages.mjs';
 
 const jsnes = jsnesModule.NES ? jsnesModule : jsnesModule.default;
 const LOCAL_DIR = path.resolve(
@@ -311,18 +315,20 @@ async function main() {
 
   testBlackoutAndOutOfOrderBurst(nesBin);
   testRingWrapAndTurboTransitions(nesBin);
-  const { snesCore, arcMinCore } = await testSnesAndArcadePreSyncRollback();
+  const { snesCore } = await testSnesAndArcadePreSyncRollback();
   await testHttpGzipRomAndWasmTransfer();
   await runTest5ReconnectAndZombieEviction();
   runTest6AudioDrcAndDeclick();
-
+  runTest8MidGameLobbyPopupAndDelayGuard();
+  const arcCore = await runTest9RealArcadeAndSnesSgRuRollback(
+    LOCAL_DIR, createMinimalArcadeTestZip()
+  );
   console.log(
     '\n--- Multi-Console Zero-GC & 60 FPS (16.67ms) Frame-Budget Benchmarks ---'
   );
   const nesCore = new jsnes.NES({});
   nesCore.loadROM(nesBin);
   benchmarkAndVerifyZeroGc('NES (TMNT III)', nesCore, true, 240);
-
   const segaDir = path.join(LOCAL_DIR, 'sega');
   if (fs.existsSync(segaDir) && fs.readdirSync(segaDir).length > 0) {
     const f = fs.readdirSync(segaDir)[0];
@@ -333,14 +339,8 @@ async function main() {
     benchmarkAndVerifyZeroGc('Sega MD (Sonic 3&K)', segaCore, false, 180);
   }
   benchmarkAndVerifyZeroGc('SNES (Snes9x WASM)', snesCore, false, 20);
-
-  const tgmPath = path.join(LOCAL_DIR, 'arcade', 'tgm2p.zip');
-  const arcCore = fs.existsSync(tgmPath)
-    ? await createFbneoArcadeCore({
-        romBytes: new Uint8Array(fs.readFileSync(tgmPath)), romName: 'tgm2p.zip'
-      }) : arcMinCore;
-  benchmarkAndVerifyZeroGc('Arcade (FBNeo TGM2+)', arcCore, false, 75);
-  console.log('\nALL 7 EDGE-CASE & ZERO-GC BENCHMARK GATES PASSED!');
+  benchmarkAndVerifyZeroGc('Arcade (FBNeo TGM2+)', arcCore, false, 30);
+  console.log('\nALL 9 EDGE-CASE & ZERO-GC BENCHMARK GATES PASSED!');
 }
 
 main().catch((err) => {

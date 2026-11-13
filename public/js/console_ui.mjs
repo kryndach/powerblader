@@ -1,5 +1,5 @@
 // Console DOM Elements, Lobby Overlay, Status Strip & Debug Telemetry UI
-import { INPUT_BITS } from '/src/netplay_engine.mjs';
+import { INPUT_BITS } from '../../src/netplay_engine.mjs';
 
 function formatMaskShort(mask) {
   if (!mask) return 'Idle';
@@ -223,11 +223,7 @@ export function createConsoleUI(state) {
       bothHaveRoms && state.romCrc32 === state.partnerRomCrc32
     );
 
-    if (
-      crcMatched &&
-      state.matchStarted &&
-      (!state.engine || !state.engine.syncPaused)
-    ) {
+    if (crcMatched && state.matchStarted) {
       ui.lobbyOverlay.classList.add('hidden');
       return;
     }

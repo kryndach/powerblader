@@ -1,35 +1,37 @@
 // ROM Loader, Local Cartridge Discovery, Lockstep Barrier & Chunked Transfer
 import {
   NesNetplayEngine, computeRomCrc32, detectSystemFromRomBytes
-} from '/src/netplay_engine.mjs';
+} from '../../src/netplay_engine.mjs';
 import {
   uint8ToBinaryString, uint8ToBase64, base64ToUint8
-} from '/src/crc32.mjs';
-import { createSegaGpgxCore } from '/src/sega_gpgx_core.mjs';
-import { createFbneoArcadeCore } from '/src/fbneo_arcade_core.mjs';
+} from '../../src/crc32.mjs';
+import { createSegaGpgxCore } from '../../src/sega_gpgx_core.mjs';
+import { createFbneoArcadeCore } from '../../src/fbneo_arcade_core.mjs';
 import {
   fetchRomBytesWithProgress, streamRomToPeer, uploadRomToServerCache
 } from './rom_archive.mjs';
 
 export { base64ToUint8 };
-const jsnes = window.jsnes;
+const jsnes = globalThis.window?.jsnes;
 
 export function createRomSyncManager(state, ui, audio) {
   function resolveDesiredInputDelay(sysIdOverride = null) {
     const sel = ui.topInputDelaySelect || ui.inputDelaySelect;
     const val = (sel ? sel.value : '2') || '2';
     const sysId = sysIdOverride || state.engine?.core?.systemId || 'nes';
+    const arcMin = state.rttMs >= 160 ? 5 : 4;
     if (val === 'auto') {
       const rec = NesNetplayEngine.computeRecommendedInputDelay(
         state.rttMs,
         state.jitterMs,
         state.engine ? state.engine.rxClumpFrames : 0
       );
-      return sysId === 'arcade' && state.peerConnected ? Math.max(4, rec) : rec;
+      return sysId === 'arcade' && state.peerConnected
+        ? Math.max(arcMin, rec) : rec;
     }
     const parsed = Number(val);
     const delay = Number.isFinite(parsed) ? parsed : 2;
-    if (sysId === 'arcade' && state.peerConnected && delay === 2) return 4;
+    if (sysId === 'arcade' && state.peerConnected && delay === 2) return arcMin;
     return delay;
   }
 
@@ -94,7 +96,7 @@ export function createRomSyncManager(state, ui, audio) {
     state.engine.inputDelayFrames = resolveDesiredInputDelay();
     state.engine.resetTimeline(0, newSessionId);
     state.engine.syncPaused = true;
-    state.matchStarted = false;
+    if (state.partnerRomCrc32 !== state.romCrc32) state.matchStarted = false;
     armSyncAckWatchdog(newSessionId, 12000);
 
     state.ws.send(JSON.stringify({

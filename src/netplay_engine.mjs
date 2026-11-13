@@ -190,17 +190,13 @@ export class RollbackNetplayEngine {
     this._rollbackDeclickSamples = 48;
 
     this.core.loadState(slot);
+    for (const k of this.localHashes.keys()) {
+      if (k > rbFrame) this.localHashes.delete(k);
+    }
     this.suppressCallbacks = true;
-    const sparseRb = this.systemId === 'arcade';
     for (let f = rbFrame; f < this.currentFrame; f++) {
       if (f > rbFrame && f >= this.lastConfirmedRemoteFrame) {
-        const sSlot = this.saveRing[f % this.saveBufferSize];
-        if (!sparseRb || f === this.lastConfirmedRemoteFrame) {
-          this.core.saveState(sSlot, f);
-          if (sparseRb && f > 0 && f % 60 === 0) {
-            this.localHashes.set(f, this.core.computeHash());
-          }
-        } else if (sSlot) sSlot.frame = -1;
+        this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
       }
       const m1 = this.getPlayerInput(1, f);
       const m2 = this.getPlayerInput(2, f);
@@ -209,7 +205,7 @@ export class RollbackNetplayEngine {
       this.p2Simulated[idx] = m2;
       this.simulatedFrameTag[idx] = f;
       this.core.stepFrame(m1, m2, true);
-      if (!sparseRb && (f + 1) % 30 === 0) {
+      if ((f + 1) % 30 === 0) {
         this.localHashes.set(f + 1, this.core.computeHash());
       }
     }
@@ -297,18 +293,8 @@ export class RollbackNetplayEngine {
         this.localPlayer, this.lastLocalScheduledFrame, localButtonsMask, true
       );
     }
-    const f = this.currentFrame, isArc = this.systemId === 'arcade';
-    const idx = f % this.historySize;
-    const fSlot = this.saveRing[f % this.saveBufferSize];
-    const skipSave =
-      isArc && f % 2 === 1 && f > this.lastConfirmedRemoteFrame + 1;
-    if (!skipSave) {
-      this.core.saveState(fSlot, f);
-      if (isArc && f > 0 && f % 60 === 0) {
-        this.localHashes.set(f, this.core.computeHash());
-        this._cleanupOldHashes();
-      }
-    } else if (fSlot) fSlot.frame = -1;
+    const f = this.currentFrame, idx = f % this.historySize;
+    this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
     const p1Mask = this.getPlayerInput(1, f);
     const p2Mask = this.getPlayerInput(2, f);
     this.p1Simulated[idx] = p1Mask;
@@ -317,7 +303,7 @@ export class RollbackNetplayEngine {
     this.suppressCallbacks = false;
     this.core.stepFrame(p1Mask, p2Mask, Boolean(options?.skipPacket));
     this.currentFrame++;
-    if (!isArc && this.currentFrame % 30 === 0) {
+    if (this.currentFrame % 30 === 0) {
       this.localHashes.set(this.currentFrame, this.core.computeHash());
       this._cleanupOldHashes();
     }
