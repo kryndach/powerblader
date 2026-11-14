@@ -7,6 +7,7 @@ import { createFbneoArcadeCore } from '../src/fbneo_arcade_core.mjs';
 import { createSnes9xCore } from '../src/sega_gpgx_core.mjs';
 import { extractRomFromFile } from '../server/archive_extractor.mjs';
 import { createConsoleUI } from '../public/js/console_ui.mjs';
+import { formatTransferProgress } from '../public/js/transfer_status_ui.mjs';
 import { createRomSyncManager } from '../public/js/rom_sync.mjs';
 import { createProtocolHandlers } from '../public/js/net_protocol_handlers.mjs';
 import { createTelemetryReporter } from '../public/js/telemetry_reporter.mjs';
@@ -47,6 +48,61 @@ function createMockElement(id = '') {
       putImageData: () => {}
     })
   };
+}
+
+function verifyTransferProgressUiSurfaces(state, ui, proto) {
+  const detail = formatTransferProgress({
+    pct: 1, loadedBytes: 16384, totalBytes: 20971520, bps: 358400
+  });
+  ui.setTransferStatus({
+    phase: 'uploading', romName: 'tgm2p.zip', pct: 1, detail
+  });
+  assert.strictEqual(ui.topSendRomBtn.textContent, 'Uploading 1%');
+  assert.strictEqual(ui.topSendRomBtn.disabled, true);
+  assert.strictEqual(ui.sendRomManualBtn.textContent, 'Uploading ROM (1%)...');
+  assert.strictEqual(ui.sendRomManualBtn.disabled, true);
+  assert.ok(ui.lobbyFooterText.innerHTML.includes('xfer-box'));
+  assert.ok(ui.lobbyFooterText.innerHTML.includes('width:1%'));
+  assert.ok(ui.lobbyFooterText.innerHTML.includes('350 KB/s'));
+  assert.ok(!ui.lobbyFooterText.innerHTML.includes('Different'));
+  assert.strictEqual(ui.lobbyP1Badge.textContent, 'UPLOAD 1%');
+  assert.ok(ui.statusText.textContent.includes('Uploading "tgm2p.zip"'));
+  assert.strictEqual(ui.screenBanner.classList.contains('visible'), true);
+
+  state.sendingRomSessionId = 'S_XFER';
+  proto.handleIncomingNetMessage({
+    type: 'rom_transfer_progress', stage: 'downloading',
+    pct: 1, loadedBytes: 65536, totalBytes: 20971520, bps: 409600
+  });
+  assert.strictEqual(ui.topSendRomBtn.textContent, 'Sending 1%');
+  assert.strictEqual(ui.topSendRomBtn.disabled, true);
+  assert.strictEqual(
+    ui.sendRomManualBtn.textContent, 'Sending to Brother (1%)...'
+  );
+  assert.strictEqual(ui.lobbyP2Badge.textContent, 'DL 1%');
+
+  proto.handleIncomingNetMessage({
+    type: 'rom_transfer_progress', stage: 'loading-core', pct: 35
+  });
+  assert.strictEqual(ui.topSendRomBtn.textContent, 'Starting...');
+  assert.strictEqual(ui.topSendRomBtn.disabled, true);
+  assert.strictEqual(ui.lobbyP2Badge.textContent, 'STARTING 35%');
+
+  state.partnerRomCrc32 = state.romCrc32;
+  proto.handleIncomingNetMessage({
+    type: 'sync_ack', sessionId: state.engine.sessionId, romCrc32: '60C4E9CB'
+  });
+  assert.strictEqual(state.transferStatus, null);
+  assert.strictEqual(ui.topSendRomBtn.textContent, 'Send ROM');
+  assert.strictEqual(ui.topSendRomBtn.disabled, false);
+  assert.strictEqual(ui.sendRomManualBtn.textContent, 'Send ROM to Partner');
+  assert.strictEqual(ui.sendRomManualBtn.disabled, false);
+  assert.strictEqual(ui.lobbyOverlay.classList.contains('hidden'), true);
+
+  ui.setTransferStatus({ phase: 'sending', romName: 'tgm2p.zip', pct: 42 });
+  proto.handleIncomingNetMessage({ type: 'peer_left' });
+  assert.strictEqual(state.transferStatus, null);
+  assert.strictEqual(ui.topSendRomBtn.disabled, false);
 }
 
 export function runTest8MidGameLobbyPopupAndDelayGuard() {
@@ -149,10 +205,11 @@ export function runTest8MidGameLobbyPopupAndDelayGuard() {
     });
     assert.strictEqual(state.matchStarted, false);
     assert.strictEqual(ui.lobbyOverlay.classList.contains('hidden'), false);
+    verifyTransferProgressUiSurfaces(state, ui, proto);
     if (state.syncAckTimeout) clearTimeout(state.syncAckTimeout);
 
     console.log(
-      '[PASS] Edge Case 7: Mid-Game Lobby Popup Guard (Sync/Reset/Status) & ' +
+      '[PASS] Edge Case 7: Mid-Game Lobby Popup Guard, Live 1% Transfer UI & ' +
         'High-RTT Arcade 5f Auto-Delay Verified'
     );
   } finally {

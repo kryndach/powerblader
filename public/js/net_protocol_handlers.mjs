@@ -189,6 +189,7 @@ export function createProtocolHandlers(
     }
 
     if (msg.type === 'peer_left') {
+      clearActiveRomTransfers();
       state.peerConnected = false;
       state.partnerRomName = null;
       state.partnerRomCrc32 = null;

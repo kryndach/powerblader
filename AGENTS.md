@@ -77,7 +77,8 @@ rules before committing:
     (`key_bindings.mjs`), fullscreen/auto-center & 1x..8x turbo speed
     (`viewport_and_speed.mjs`), drag-drop & `.zip`/`.rar`/`.7z` loader
     (`rom_archive.mjs`), 8x striped HTTP `Range` + IndexedDB CRC32 cache
-    (`rom_fast_transfer.mjs`), 48kHz DRC audio, Dual-WSS + WebRTC, Lobby.
+    (`rom_fast_transfer.mjs`), unified live transfer UI
+    (`transfer_status_ui.mjs`), 48kHz DRC audio, Dual-WSS + WebRTC, Lobby.
   - `public/autotest.html` & `public/net_debug.html` — Zero-click 6-stage
     2-PC benchmark (`/autotest`) and interactive network workbench (`/nettest`).
 - **`server/` (FIFO WebSocket & HTTP Relay Server):**

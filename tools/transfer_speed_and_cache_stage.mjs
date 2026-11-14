@@ -23,6 +23,22 @@ function makeMockResponse(status, rawHdrs, buf) {
     ok: status >= 200 && status < 300,
     status,
     headers: { get: (k) => lower[String(k).toLowerCase()] ?? null },
+    body: {
+      getReader() {
+        let off = 0;
+        return {
+          async read() {
+            if (off >= buf.byteLength) return { done: true, value: undefined };
+            const end = Math.min(buf.byteLength, off + 16384);
+            const slice = new Uint8Array(
+              buf.buffer, buf.byteOffset + off, end - off
+            );
+            off = end;
+            return { done: false, value: slice };
+          }
+        };
+      }
+    },
     arrayBuffer: async () =>
       buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
   };
@@ -126,9 +142,11 @@ export async function runTest10PinggyTransferAndZeroUploadGate() {
     assert.strictEqual(singleUpRes.ok, true);
     const singleUpMs = performance.now() - tUpSingle0;
 
+    const upMarks = [];
     const tUpStripe0 = performance.now();
     const upOpts = {
-      concurrency: 8, sliceBytes: 262144, fetchImpl: wrapped, forceStriped: true
+      concurrency: 8, sliceBytes: 262144, fetchImpl: wrapped,
+      forceStriped: true, onProgress: (p, info) => upMarks.push({ p, info })
     };
     const okStripeUp = await uploadStripedRom(
       `${base}/api/room-rom?room=FAST&crc=${expectedCrc}&name=tgm2p.zip`,
@@ -136,6 +154,11 @@ export async function runTest10PinggyTransferAndZeroUploadGate() {
     );
     const stripeUpMs = performance.now() - tUpStripe0;
     assert.strictEqual(okStripeUp, true);
+    assert.strictEqual(upMarks[0]?.p, 0, 'Upload must emit 0% immediately');
+    assert.ok(
+      upMarks.some((m) => m.p > 0 && m.p <= 13 && m.info?.bps > 0),
+      'Upload must emit live byte/speed progress on the very first slice'
+    );
 
     const tDlSingle0 = performance.now();
     const singleDlRes = await wrapped(
@@ -150,17 +173,20 @@ export async function runTest10PinggyTransferAndZeroUploadGate() {
     const stripeDl = await fetchStripedBinary(
       `${base}/api/room-rom?room=FAST&crc=${expectedCrc}`,
       {
-        concurrency: 8, probeBytes: 65536, sliceBytes: 262144,
-        fetchImpl: wrapped, onProgress: (p) => progressMarks.push(p)
+        concurrency: 8, probeBytes: 16384, sliceBytes: 262144,
+        fetchImpl: wrapped,
+        onProgress: (p, info) => progressMarks.push({ p, info })
       }
     );
     const stripeDlMs = performance.now() - tDlStripe0;
     assert.ok(stripeDl?.u8, 'Striped download must succeed');
     assert.strictEqual(computeRomCrc32(stripeDl.u8), expectedCrc);
-    assert.ok(
-      progressMarks.length >= 3 &&
-        progressMarks[progressMarks.length - 1] === 100
+    assert.strictEqual(
+      progressMarks[0]?.p, 1,
+      'First 16KB chunk of 2MB download must emit 1% (never freeze until 4%!)'
     );
+    assert.strictEqual(progressMarks[0]?.info?.totalBytes, payload.byteLength);
+    assert.strictEqual(progressMarks[progressMarks.length - 1]?.p, 100);
 
     const ok502Up = await uploadStripedRom(
       `${base}/api/room-rom?room=DROP&crc=${expectedCrc}&name=tgm2p.zip`,

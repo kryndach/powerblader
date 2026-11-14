@@ -1,5 +1,8 @@
 // Console DOM Elements, Lobby Overlay, Status Strip & Debug Telemetry UI
 import { INPUT_BITS } from '../../src/netplay_engine.mjs';
+import {
+  describeTransferStatus, applyTransferToLobby, updateTransferUi
+} from './transfer_status_ui.mjs';
 
 function formatMaskShort(mask) {
   if (!mask) return 'Idle';
@@ -55,9 +58,12 @@ export function createConsoleUI(state) {
   let lastMiniPadP1 = -1;
   let lastMiniPadP2 = -1;
 
+  ui.setTransferStatus = (xfer) => updateTransferUi(state, ui, xfer);
+
   ui.resetSendRomButtons = function () {
+    state.transferStatus = null;
     if (ui.sendRomManualBtn) {
-      ui.sendRomManualBtn.textContent = 'Send My ROM File to Partner';
+      ui.sendRomManualBtn.textContent = 'Send ROM to Partner';
       ui.sendRomManualBtn.disabled = false;
     }
     if (ui.topSendRomBtn) {
@@ -156,7 +162,7 @@ export function createConsoleUI(state) {
       ui.lobbyP1Badge.textContent = 'ROM READY';
     } else {
       ui.lobbySlotP1.className = 'lobby-slot waiting';
-      ui.lobbyP1Rom.textContent = 'Waiting for .NES file selection...';
+      ui.lobbyP1Rom.textContent = 'Waiting for game selection...';
       ui.lobbyP1Badge.className = 'badge warn';
       ui.lobbyP1Badge.textContent = 'SELECT ROM';
     }
@@ -183,10 +189,12 @@ export function createConsoleUI(state) {
     } else {
       ui.lobbySlotP2.className = 'lobby-slot waiting';
       ui.lobbyP2Rom.textContent =
-        `${state.peerNick} connected - selecting .NES file...`;
+        `${state.peerNick} connected - selecting game...`;
       ui.lobbyP2Badge.className = 'badge warn';
       ui.lobbyP2Badge.textContent = 'SELECT ROM';
     }
+
+    if (applyTransferToLobby(state, ui)) return;
 
     if (!wsOpen) {
       ui.lobbyActionsRow.style.display = 'none';
@@ -194,11 +202,10 @@ export function createConsoleUI(state) {
         ui.lobbyOverlay.classList.add('hidden');
       } else {
         ui.lobbyFooterText.innerHTML =
-          'Select any <strong>.NES</strong> file using ' +
-          '<strong>-- Select Game --</strong> or <strong>Load .NES</strong> ' +
+          'Select any <strong>ROM / .ZIP</strong> using ' +
+          '<strong>-- Select Game --</strong> or <strong>Load ROM</strong> ' +
           'above (or drag &amp; drop onto screen).<br/>For 2-PC Online: ' +
-          'click <strong>Connect</strong> and select the same ' +
-          '<strong>.NES</strong> file on both PCs!';
+          'click <strong>Connect</strong> and select or send the game!';
         ui.lobbyOverlay.classList.remove('hidden');
       }
       return;
@@ -212,7 +219,7 @@ export function createConsoleUI(state) {
         ui.lobbyFooterText.innerHTML =
           `Connected to Room <strong>${state.roomCode}</strong>! Click ` +
           '<strong>Copy Link</strong> to invite Player 2, and select your ' +
-          '<strong>.NES</strong> file above.';
+          '<strong>ROM / .ZIP</strong> above.';
         ui.lobbyOverlay.classList.remove('hidden');
       }
       return;
@@ -236,28 +243,28 @@ export function createConsoleUI(state) {
 
     if (!state.romCrc32 && !state.partnerRomCrc32) {
       ui.lobbyFooterText.innerHTML =
-        'Both players connected! Select the <strong>same .NES file</strong> ' +
-        'on both PCs - the game starts automatically at Frame #0.';
+        'Both players connected! Select a <strong>game</strong> above ' +
+        '(or click <strong>Send ROM</strong>) to start at Frame #0.';
       ui.lobbyActionsRow.style.display = 'none';
     } else if (!state.romCrc32 && state.partnerRomCrc32) {
       ui.lobbyFooterText.innerHTML =
         `Partner selected <strong>${state.partnerRomName}</strong> ` +
-        `<code>[${state.partnerRomCrc32}]</code>.<br/>Select the ` +
-        '<strong>same .NES file</strong> on your PC to start at Frame #0!';
+        `<code>[${state.partnerRomCrc32}]</code>.<br/>Select the same game ` +
+        'or ask Partner to click <strong>Send ROM</strong>!';
       ui.lobbyActionsRow.style.display = 'none';
     } else if (state.romCrc32 && !state.partnerRomCrc32) {
       ui.lobbyFooterText.innerHTML =
         `You selected <strong>${state.romName}</strong> ` +
-        `<code>[${state.romCrc32}]</code>.<br/>Waiting for ` +
-        `<strong>${state.peerNick}</strong> to select the same .NES file...`;
+        `<code>[${state.romCrc32}]</code>.<br/>Click ` +
+        '<strong>Send ROM to Partner</strong> below (or wait for Partner).';
       ui.lobbyActionsRow.style.display = 'flex';
       ui.startMatchNowBtn.style.display = 'none';
       ui.sendRomManualBtn.style.display = 'inline-flex';
     } else if (!crcMatched) {
       ui.lobbyFooterText.innerHTML =
         '<span style="color:#f87171;font-weight:700;">' +
-        'Different .NES files selected!</span><br/>Select the same .NES file ' +
-        'on both PCs (or click "Send My .NES File to Partner" below).';
+        'Different games loaded!</span><br/>Select the same game on both PCs ' +
+        'or click <strong>Send ROM to Partner</strong> below.';
       ui.lobbyActionsRow.style.display = 'flex';
       ui.startMatchNowBtn.style.display = 'none';
       ui.sendRomManualBtn.style.display = 'inline-flex';
@@ -276,8 +283,18 @@ export function createConsoleUI(state) {
     const portStr = state.localPlayerIndex === 1 ? '$4016' : '$4017';
     ui.roleBadge.textContent = `YOU: P${state.localPlayerIndex} (${portStr})`;
     const shortRom = state.romName
-      ? state.romName.replace(/\.nes$/i, '')
+      ? state.romName.replace(/\.(nes|sfc|smc|md|gen|smd|sms|gg|zip)$/i, '')
       : 'No ROM';
+
+    const xferDesc = describeTransferStatus(state, state.transferStatus);
+    if (xferDesc) {
+      ui.statusLed.className = 'led warn';
+      ui.statusText.textContent = `${xferDesc.title} (${xferDesc.meta})`;
+      ui.dbgTransportBadge.className = 'badge warn';
+      ui.dbgTransportBadge.textContent = xferDesc.badgeText;
+      ui.updateLobbyOverlay();
+      return;
+    }
 
     if (!state.ws || state.ws.readyState !== 1) {
       ui.statusLed.className = 'led';

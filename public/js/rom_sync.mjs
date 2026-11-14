@@ -9,7 +9,7 @@ import { createSegaGpgxCore } from '../../src/sega_gpgx_core.mjs';
 import { createFbneoArcadeCore } from '../../src/fbneo_arcade_core.mjs';
 import { streamRomToPeer } from './rom_archive.mjs';
 import {
-  isLocalHostRuntime, putCachedRomByCrc,
+  isLocalHostRuntime, putCachedRomByCrc, formatTransferProgress,
   fetchRomBytesWithProgress, uploadRomToServerCache
 } from './rom_fast_transfer.mjs';
 
@@ -55,13 +55,10 @@ export function createRomSyncManager(state, ui, audio) {
   function armSyncAckWatchdog(sessionId, timeoutMs = 45000) {
     if (state.syncAckTimeout) clearTimeout(state.syncAckTimeout);
     state.syncAckTimeout = setTimeout(() => {
-      if (
-        state.engine &&
-        state.engine.syncPaused &&
-        state.engine.sessionId === sessionId
-      ) {
+      if (state.engine?.syncPaused && state.engine.sessionId === sessionId) {
         state.engine.syncPaused = false;
         state.matchStarted = true;
+        ui.resetSendRomButtons?.();
         ui.logDebug('Sync ACK timeout elapsed; unpausing emulation.');
         ui.updateStatusStrip();
       }
@@ -148,11 +145,16 @@ export function createRomSyncManager(state, ui, audio) {
     if (sysId === 'arcade') {
       state.nes = await createFbneoArcadeCore({
         romBytes: u8, romName: state.romName, onFrame, onAudioSample,
-        onCoreProgress: (pct) => {
-          if (pct < 100) {
-            ui.showScreenBanner(
-              `LOADING ARCADE ENGINE (${pct}%)...`, 'warn', 8000
-            );
+        onCoreProgress: (pct, info) => {
+          const detail = formatTransferProgress(info || { pct });
+          ui.setTransferStatus?.({
+            phase: 'loading-core', romName: state.romName, pct, detail
+          });
+          if (options?.reportPeerCoreProgress && state.ws?.readyState === 1) {
+            state.ws.send(JSON.stringify({
+              type: 'rom_transfer_progress', stage: 'loading-core',
+              pct, ...(info || {})
+            }));
           }
         }
       });
@@ -220,19 +222,16 @@ export function createRomSyncManager(state, ui, audio) {
     resetToZero = false, forceChunks = false
   } = {}) {
     if (!state.romUint8 || !state.engine) {
-      ui.showScreenBanner('LOAD A ROM FIRST BEFORE SENDING', 'warn', 3000);
-      return;
+      return ui.showScreenBanner('LOAD A ROM BEFORE SENDING', 'warn', 3000);
     }
     if (!state.ws || state.ws.readyState !== 1) {
-      ui.showScreenBanner('NOT CONNECTED - JOIN A ROOM FIRST', 'err', 3500);
-      return;
+      return ui.showScreenBanner('NOT CONNECTED - JOIN A ROOM', 'err', 3500);
     }
     if (!state.peerConnected) {
-      ui.showScreenBanner('WAITING FOR PARTNER TO JOIN ROOM', 'warn', 3500);
-      return;
+      return ui.showScreenBanner('WAITING FOR PARTNER TO JOIN', 'warn', 3500);
     }
-    const rand = Math.random().toString(36).slice(2, 7);
-    const newSessionId = `${Date.now().toString(36)}_${rand}`;
+    const newSessionId =
+      `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     state.engine.localPlayer = state.localPlayerIndex;
     state.engine.online = true;
     state.engine.inputDelayFrames = resolveDesiredInputDelay();
@@ -259,17 +258,14 @@ export function createRomSyncManager(state, ui, audio) {
   function sendStateSyncToPeer({ resetToZero = false } = {}) {
     if (!state.ws || state.ws.readyState !== 1 || !state.engine) return;
     if (resetToZero && state.partnerRomCrc32 === state.romCrc32) {
-      startLockstepMatchAtFrameZero('Reset to Frame #0');
-      return;
+      return startLockstepMatchAtFrameZero('Reset to Frame #0');
     }
-    const rand = Math.random().toString(36).slice(2, 7);
-    const newSessionId = `${Date.now().toString(36)}_${rand}`;
+    const newSessionId =
+      `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     if (resetToZero && state.nes && state.romBinaryString) {
       state.nes.loadROM(state.romBinaryString);
       state.engine.resetTimeline(0, newSessionId);
-    } else {
-      state.engine.sessionId = newSessionId;
-    }
+    } else state.engine.sessionId = newSessionId;
 
     const syncState = state.engine.exportSyncState();
     state.engine.localPlayer = state.localPlayerIndex;

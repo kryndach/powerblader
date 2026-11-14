@@ -151,6 +151,10 @@ function connectToRoom() {
   ws.onclose = () => {
     if (state.ws !== ws) return;
     ui.dbgWssState.textContent = 'Disconnected';
+    state.activeRomAbortCtrl?.abort();
+    state.activeRomAbortCtrl = null; state.activeRomDownload = null;
+    state.incomingRomTransfer = null; state.sendingRomSessionId = null;
+    ui.resetSendRomButtons?.();
     state.peerConnected = false;
     state.partnerRomName = null;
     state.partnerRomCrc32 = null;

@@ -1,4 +1,7 @@
 // Parallel Striped HTTP Range Downloader, Multipart Uploader & IDB ROM Cache
+import { formatTransferProgress } from './transfer_status_ui.mjs';
+export { formatTransferProgress };
+
 const IDB_NAME = 'nes_online_rom_cache_v1';
 const IDB_STORE = 'roms';
 const memCacheFallback = new Map();
@@ -6,6 +9,40 @@ const memCacheFallback = new Map();
 export function isLocalHostRuntime() {
   const h = globalThis.location?.hostname || '';
   return h === 'localhost' || h === '127.0.0.1' || h === '::1';
+}
+
+function createByteTracker(totalBytes, onProgress) {
+  const t0 = performance.now();
+  let loaded = 0, lastEmit = 0, lastPct = -1;
+  const emit = (force = false) => {
+    if (!onProgress) return;
+    const now = performance.now();
+    const pct = totalBytes > 0
+      ? (loaded >= totalBytes ? 100
+        : loaded > 0 ? Math.max(1, Math.min(99, Math.round(
+          (loaded / totalBytes) * 100
+        ))) : 0)
+      : 0;
+    const firstReal = lastPct <= 0 && pct > 0;
+    if (!force && !firstReal) {
+      if (lastPct >= 0 && pct === lastPct && now - lastEmit < 180) return;
+      if (lastPct >= 0 && now - lastEmit < 90 && pct < 100) return;
+    }
+    lastPct = pct;
+    lastEmit = now;
+    const dtSec = Math.max(0.05, (now - t0) / 1000);
+    const bps = loaded > 0 ? Math.round(loaded / dtSec) : 0;
+    onProgress(pct, { pct, loadedBytes: loaded, totalBytes, bps });
+  };
+  return {
+    emitZero: () => emit(true),
+    add: (n) => { loaded += n; emit(false); },
+    rollback: (n) => { loaded = Math.max(0, loaded - n); },
+    done: (finalTotal = totalBytes) => {
+      loaded = finalTotal;
+      emit(true);
+    }
+  };
 }
 
 function openRomIdb() {
@@ -97,6 +134,45 @@ async function fetchWithRetry(url, init, retries = 3, doFetch = null) {
   throw lastErr || new Error('Fetch failed');
 }
 
+async function fetchSliceInto(url, init, dst, start, maxLen, tracker, doFetch) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= 3; attempt++) {
+    let added = 0;
+    try {
+      const r = await fetchWithRetry(url, init, 0, doFetch);
+      if (!r.ok && r.status !== 206) throw new Error(`Slice HTTP ${r.status}`);
+      if (r.body?.getReader) {
+        const reader = r.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const n = Math.min(value.byteLength, maxLen - added);
+          if (n > 0) {
+            dst.set(value.subarray(0, n), start + added);
+            added += n;
+            tracker.add(n);
+          }
+        }
+        return added;
+      }
+      const chunk = new Uint8Array(await r.arrayBuffer());
+      const n = Math.min(chunk.byteLength, maxLen);
+      dst.set(chunk.subarray(0, n), start);
+      added = n;
+      tracker.add(n);
+      return added;
+    } catch (e) {
+      if (added > 0) tracker.rollback(added);
+      if (e?.name === 'AbortError' || init?.signal?.aborted) throw e;
+      lastErr = e;
+      if (attempt < 3) {
+        await new Promise((r) => setTimeout(r, 40 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastErr || new Error('Slice download failed');
+}
+
 export async function fetchStripedBinary(url, {
   concurrency = 8,
   probeBytes = 65536,
@@ -123,24 +199,25 @@ export async function fetchStripedBinary(url, {
 
   if (pRes.status !== 206) {
     const out = payloadEnc === 'gzip' ? await gunzipBytes(firstBuf) : firstBuf;
-    onProgress?.(100);
+    onProgress?.(100, {
+      pct: 100, loadedBytes: out.byteLength, totalBytes: out.byteLength, bps: 0
+    });
     return { romName, romCrc32, u8: out };
   }
 
   const cr = pRes.headers.get('Content-Range') || '';
   const m = /\/(\d+)$/.exec(cr);
   const total = m ? Number(m[1]) : firstBuf.length;
+  const tracker = createByteTracker(total, onProgress);
   if (firstBuf.length >= total) {
     const out = payloadEnc === 'gzip' ? await gunzipBytes(firstBuf) : firstBuf;
-    onProgress?.(100);
+    tracker.done(total);
     return { romName, romCrc32, u8: out };
   }
 
   const full = new Uint8Array(total);
   full.set(firstBuf, 0);
-  let loaded = firstBuf.length;
-  let lastPct = Math.min(99, Math.round((loaded / total) * 100));
-  if (lastPct > 0) onProgress?.(lastPct);
+  tracker.add(firstBuf.length);
 
   const ranges = [];
   for (let pos = firstBuf.length; pos < total; pos += sliceBytes) {
@@ -153,26 +230,18 @@ export async function fetchStripedBinary(url, {
     async () => {
       while (cursor < ranges.length) {
         const [start, end] = ranges[cursor++];
-        const r = await fetchWithRetry(url, {
+        const init = {
           headers: { ...baseHdrs, Range: `bytes=${start}-${end}` }, signal
-        }, 3, doFetch);
-        if (!r.ok && r.status !== 206) {
-          throw new Error(`Slice HTTP ${r.status}`);
-        }
-        const chunk = new Uint8Array(await r.arrayBuffer());
-        full.set(chunk, start);
-        loaded += chunk.length;
-        const pct = Math.min(99, Math.round((loaded / total) * 100));
-        if (pct >= lastPct + 2) {
-          lastPct = pct;
-          onProgress?.(pct);
-        }
+        };
+        await fetchSliceInto(
+          url, init, full, start, end - start + 1, tracker, doFetch
+        );
       }
     }
   );
   await Promise.all(workers);
   const out = payloadEnc === 'gzip' ? await gunzipBytes(full) : full;
-  onProgress?.(100);
+  tracker.done(total);
   return { romName, romCrc32, u8: out };
 }
 
@@ -183,18 +252,20 @@ export async function uploadStripedRom(
   } = {}
 ) {
   const doFetch = fetchImpl || globalThis.fetch;
+  const totalBytes = body.byteLength;
+  const tracker = createByteTracker(totalBytes, onProgress);
+  tracker.emitZero();
   const useSingle =
-    !forceStriped && (body.byteLength <= sliceBytes || isLocalHostRuntime());
+    !forceStriped && (totalBytes <= sliceBytes || isLocalHostRuntime());
   if (useSingle) {
     const r = await fetchWithRetry(
       baseUrl, { method: 'POST', headers, body }, 3, doFetch
     );
-    if (r.ok) onProgress?.(100);
+    if (r.ok) tracker.done(totalBytes);
     return r.ok;
   }
-  const totalBytes = body.byteLength;
   const totalParts = Math.ceil(totalBytes / sliceBytes);
-  let sentBytes = 0, lastPct = 0, cursor = 0;
+  let cursor = 0;
 
   const workers = Array.from(
     { length: Math.min(concurrency, totalParts) },
@@ -211,17 +282,12 @@ export async function uploadStripedRom(
           method: 'POST', headers, body: slice
         }, 3, doFetch);
         if (!r.ok) throw new Error(`Upload part ${part} HTTP ${r.status}`);
-        sentBytes += slice.length;
-        const pct = Math.min(99, Math.round((sentBytes / totalBytes) * 100));
-        if (pct >= lastPct + 3) {
-          lastPct = pct;
-          onProgress?.(pct);
-        }
+        tracker.add(slice.length);
       }
     }
   );
   await Promise.all(workers);
-  onProgress?.(100);
+  tracker.done(totalBytes);
   return true;
 }
 
@@ -230,10 +296,10 @@ export async function uploadRomToServerCache(state, onProgress = null) {
   if ((typeof window === 'undefined' && !base) || typeof fetch !== 'function' ||
       !state.romUint8 || !state.romCrc32) return null;
   const rm = state.roomCode || 'NOVA', crc = state.romCrc32;
+  state.roomRomOnProgress = onProgress;
   if (state.roomRomUploadedCrc === crc) return rm;
-  if (state.roomRomUploadPromise && state.roomRomUploadingCrc === crc) {
+  if (state.roomRomUploadPromise && state.roomRomUploadingCrc === crc)
     return state.roomRomUploadPromise;
-  }
   state.roomRomUploadingCrc = crc;
   state.roomRomUploadPromise = (async () => {
     try {
@@ -242,21 +308,20 @@ export async function uploadRomToServerCache(state, onProgress = null) {
       const isZip = String(state.romName).toLowerCase().endsWith('.zip');
       if (typeof CompressionStream === 'function' &&
           body.byteLength > 16384 && !isZip) {
-        const s = new Blob([body]).stream().pipeThrough(
-          new CompressionStream('gzip')
-        );
+        const gz = new CompressionStream('gzip');
+        const s = new Blob([body]).stream().pipeThrough(gz);
         body = new Uint8Array(await new Response(s).arrayBuffer());
         headers['X-Rom-Encoding'] = 'gzip';
       }
-      const q = `room=${encodeURIComponent(rm)}&crc=${encodeURIComponent(
-        crc
-      )}&name=${encodeURIComponent(state.romName)}`;
+      const q = `room=${encodeURIComponent(rm)}&crc=${encodeURIComponent(crc)}`
+        + `&name=${encodeURIComponent(state.romName)}`;
       const ok = await uploadStripedRom(
-        `${base}/api/room-rom?${q}`, body, headers, { onProgress }
+        `${base}/api/room-rom?${q}`, body, headers,
+        { onProgress: (p, info) => state.roomRomOnProgress?.(p, info) }
       );
       if (ok) { state.roomRomUploadedCrc = crc; return rm; }
     } catch {} finally {
-      state.roomRomUploadPromise = null;
+      state.roomRomUploadPromise = null; state.roomRomOnProgress = null;
     }
     return null;
   })();
@@ -266,17 +331,18 @@ export async function uploadRomToServerCache(state, onProgress = null) {
 export async function fetchRomBytesWithProgress(
   url, label, fileName, ui, onProgress = null, signal = null
 ) {
-  ui.showScreenBanner(`${label} "${fileName}" (0%)...`, 'warn', 8000);
+  const phase = label === 'DOWNLOADING' ? 'downloading' : 'local-load';
+  const show = (pct, detail) => ui.setTransferStatus
+    ? ui.setTransferStatus({ phase, romName: fileName, pct, detail })
+    : ui.showScreenBanner(`${label} "${fileName}" - ${detail}`, 'warn', 0);
+  show(0, '0%');
   const dl = await fetchStripedBinary(url, {
     signal,
-    onProgress: (pct) => {
-      onProgress?.(pct);
-      if (pct < 100) {
-        const msg = `${label} "${fileName}" (${pct}%)...`;
-        ui.showScreenBanner(msg, 'warn', 8000);
-      }
+    onProgress: (pct, info) => {
+      onProgress?.(pct, info);
+      if (pct < 100) show(pct, formatTransferProgress(info || { pct }));
     }
   });
-  if (!dl) return null;
+  if (!dl) { ui.setTransferStatus?.(null); return null; }
   return { romName: dl.romName || fileName, romCrc32: dl.romCrc32, u8: dl.u8 };
 }

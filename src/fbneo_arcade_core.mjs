@@ -14,6 +14,7 @@ export async function ensureFbneoRuntime(onProgress = null) {
   }
   if (fbneoLoadPromise) return fbneoLoadPromise;
   fbneoLoadPromise = (async () => {
+    onProgress?.(0, { pct: 0 });
     let wasmBytes;
     if (typeof window !== 'undefined' && !globalThis.process?.versions?.node) {
       const [ns, xfer] = await Promise.all([
