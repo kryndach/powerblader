@@ -26,6 +26,9 @@ import {
   runTest8MidGameLobbyPopupAndDelayGuard,
   runTest9RealArcadeAndSnesSgRuRollback
 } from './ui_and_arcade_regression_stages.mjs';
+import {
+  runTest10PinggyTransferAndZeroUploadGate
+} from './transfer_speed_and_cache_stage.mjs';
 
 const jsnes = jsnesModule.NES ? jsnesModule : jsnesModule.default;
 const LOCAL_DIR = path.resolve(
@@ -34,12 +37,11 @@ const LOCAL_DIR = path.resolve(
 
 function httpGetGzip(urlStr) {
   return new Promise((resolve, reject) => {
-    const u = new URL(urlStr);
-    const headers = { 'Accept-Encoding': 'gzip, deflate' };
-    const reqOpts = {
+    const u = new URL(urlStr), headers = { 'Accept-Encoding': 'gzip, deflate' };
+    const opts = {
       hostname: u.hostname, port: u.port, path: u.pathname + u.search, headers
     };
-    http.get(reqOpts, (res) => {
+    http.get(opts, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => {
@@ -76,10 +78,8 @@ function settleEngines(eng1, eng2) {
 }
 
 function createNesPair(nesBin) {
-  const nes1 = new jsnes.NES({});
-  const nes2 = new jsnes.NES({});
-  nes1.loadROM(nesBin);
-  nes2.loadROM(nesBin);
+  const nes1 = new jsnes.NES({}), nes2 = new jsnes.NES({});
+  nes1.loadROM(nesBin); nes2.loadROM(nesBin);
   const eng1 = new NesNetplayEngine(nes1, {
     localPlayer: 1, online: true, inputDelayFrames: 3
   });
@@ -277,7 +277,8 @@ async function testHttpGzipRomAndWasmTransfer() {
       `${base}/vendor/genesis_plus_gx_libretro.wasm`
     );
     assert.strictEqual(wasmRes.headers['content-encoding'], 'gzip');
-    assert.ok(wasmRes.headers['cache-control']?.includes('max-age=86400'));
+    assert.strictEqual(wasmRes.headers['accept-ranges'], 'bytes');
+    assert.ok(wasmRes.headers['cache-control']?.includes('max-age=31536000'));
     const ratio = wasmRes.body.length / wasmRes.wireBytes;
     assert.ok(ratio > 2.5, `Expected WASM gzip ratio >2.5x, got ${ratio}`);
 
@@ -323,24 +324,23 @@ async function main() {
   const arcCore = await runTest9RealArcadeAndSnesSgRuRollback(
     LOCAL_DIR, createMinimalArcadeTestZip()
   );
+  await runTest10PinggyTransferAndZeroUploadGate();
   console.log(
     '\n--- Multi-Console Zero-GC & 60 FPS (16.67ms) Frame-Budget Benchmarks ---'
   );
-  const nesCore = new jsnes.NES({});
-  nesCore.loadROM(nesBin);
+  const nesCore = new jsnes.NES({}); nesCore.loadROM(nesBin);
   benchmarkAndVerifyZeroGc('NES (TMNT III)', nesCore, true, 240);
   const segaDir = path.join(LOCAL_DIR, 'sega');
   if (fs.existsSync(segaDir) && fs.readdirSync(segaDir).length > 0) {
     const f = fs.readdirSync(segaDir)[0];
     const { romName, romBuffer } = extractRomFromFile(path.join(segaDir, f));
-    const segaCore = await createSegaGpgxCore({
-      romBytes: new Uint8Array(romBuffer), romName
-    });
+    const romBytes = new Uint8Array(romBuffer);
+    const segaCore = await createSegaGpgxCore({ romBytes, romName });
     benchmarkAndVerifyZeroGc('Sega MD (Sonic 3&K)', segaCore, false, 180);
   }
   benchmarkAndVerifyZeroGc('SNES (Snes9x WASM)', snesCore, false, 20);
   benchmarkAndVerifyZeroGc('Arcade (FBNeo TGM2+)', arcCore, false, 30);
-  console.log('\nALL 9 EDGE-CASE & ZERO-GC BENCHMARK GATES PASSED!');
+  console.log('\nALL 10 EDGE-CASE & ZERO-GC BENCHMARK GATES PASSED!');
 }
 
 main().catch((err) => {

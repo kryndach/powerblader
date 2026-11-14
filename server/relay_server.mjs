@@ -11,8 +11,9 @@ import {
   handleLocalRomsApi, handleLocalRomDownloadApi, handleExtractRomPostApi
 } from './archive_extractor.mjs';
 import {
-  handleRoomRomApi, handleSaveSlotApi
+  handleRoomRomApi, handleSaveSlotApi, sendBinaryWithRange
 } from './room_rom_and_save_api.mjs';
+const vendorMemCache = new Map();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -232,20 +233,12 @@ export function createCoopServer(options = {}) {
 
         for (const m of payload.messages || []) handlePeerMessage(peer, m);
 
-        sendJson(
-          res,
-          200,
-          {
-            ok: true,
-            roomCode,
-            playerIndex: peer.playerIndex,
-            peers: getRoomPeersInfo(roomCode),
-            messages: peer.httpOutbox.slice(0, 120),
-            accessLog: accessLog.slice(-12),
-            serverTime: Date.now()
-          },
-          true
-        );
+        sendJson(res, 200, {
+          ok: true, roomCode, playerIndex: peer.playerIndex,
+          peers: getRoomPeersInfo(roomCode),
+          messages: peer.httpOutbox.slice(0, 120),
+          accessLog: accessLog.slice(-12), serverTime: Date.now()
+        }, true);
       });
       return;
     }
@@ -289,18 +282,21 @@ export function createCoopServer(options = {}) {
 
     const ext = path.extname(filePath).toLowerCase();
     const isVendor = pathname.startsWith('/vendor/');
-    const gzOk = /\bgzip\b/i.test(req.headers['accept-encoding'] || '');
-    const hdrs = {
-      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-      'Cache-Control': isVendor ? 'public, max-age=86400' : 'no-cache'
-    };
-    if (isVendor && gzOk) {
-      hdrs['Content-Encoding'] = 'gzip';
-      res.writeHead(200, hdrs);
-      fs.createReadStream(filePath).pipe(zlib.createGzip()).pipe(res);
-      return;
+    const cType = MIME_TYPES[ext] || 'application/octet-stream';
+    if (isVendor) {
+      let vEntry = vendorMemCache.get(filePath);
+      const mtime = fs.statSync(filePath).mtimeMs;
+      if (!vEntry || vEntry.mtime !== mtime) {
+        const raw = fs.readFileSync(filePath);
+        vEntry = { mtime, raw, gz: zlib.gzipSync(raw, { level: 6 }) };
+        vendorMemCache.set(filePath, vEntry);
+      }
+      return sendBinaryWithRange(req, res, vEntry.raw, vEntry.gz, {
+        'Content-Type': cType,
+        'Cache-Control': 'public, max-age=31536000, immutable'
+      });
     }
-    res.writeHead(200, hdrs);
+    res.writeHead(200, { 'Content-Type': cType, 'Cache-Control': 'no-cache' });
     fs.createReadStream(filePath).pipe(res);
   });
 

@@ -7,9 +7,11 @@ import {
 } from '../../src/crc32.mjs';
 import { createSegaGpgxCore } from '../../src/sega_gpgx_core.mjs';
 import { createFbneoArcadeCore } from '../../src/fbneo_arcade_core.mjs';
+import { streamRomToPeer } from './rom_archive.mjs';
 import {
-  fetchRomBytesWithProgress, streamRomToPeer, uploadRomToServerCache
-} from './rom_archive.mjs';
+  isLocalHostRuntime, putCachedRomByCrc,
+  fetchRomBytesWithProgress, uploadRomToServerCache
+} from './rom_fast_transfer.mjs';
 
 export { base64ToUint8 };
 const jsnes = globalThis.window?.jsnes;
@@ -67,24 +69,14 @@ export function createRomSyncManager(state, ui, audio) {
   }
 
   function startLockstepMatchAtFrameZero(
-    reason = 'ROM CRC32 Match',
-    force = false
+    reason = 'ROM CRC32 Match', force = false
   ) {
-    if (
-      !state.ws ||
-      state.ws.readyState !== 1 ||
-      !state.peerConnected ||
-      !state.romUint8 ||
-      !state.romBinaryString ||
-      !state.engine
-    ) {
-      return;
-    }
+    if (!state.ws || state.ws.readyState !== 1 || !state.peerConnected ||
+        !state.romUint8 || !state.romBinaryString || !state.engine) return;
     if (!force && state.syncAckTimeout) return;
     state.activeRomAbortCtrl?.abort();
-    state.activeRomAbortCtrl = null;
-    state.incomingRomTransfer = null;
-    state.sendingRomSessionId = null;
+    state.activeRomAbortCtrl = null; state.activeRomDownload = null;
+    state.incomingRomTransfer = null; state.sendingRomSessionId = null;
     ui.resetSendRomButtons?.();
 
     const rand = Math.random().toString(36).slice(2, 7);
@@ -130,7 +122,11 @@ export function createRomSyncManager(state, ui, audio) {
     state.sendingRomSessionId = null;
 
     ensureRomInDropdown(options.dropdownKey || state.romName, u8);
-    if (!state.localServerRomKey && !isAutoDefault) {
+    if (!isAutoDefault) putCachedRomByCrc(state.romCrc32, state.romName, u8);
+    if (options?.serverCachedCrc === state.romCrc32) {
+      state.roomRomUploadedCrc = state.romCrc32;
+    } else if (!state.localServerRomKey && !isAutoDefault &&
+               isLocalHostRuntime()) {
       uploadRomToServerCache(state);
     }
 
@@ -151,7 +147,14 @@ export function createRomSyncManager(state, ui, audio) {
 
     if (sysId === 'arcade') {
       state.nes = await createFbneoArcadeCore({
-        romBytes: u8, romName: state.romName, onFrame, onAudioSample
+        romBytes: u8, romName: state.romName, onFrame, onAudioSample,
+        onCoreProgress: (pct) => {
+          if (pct < 100) {
+            ui.showScreenBanner(
+              `LOADING ARCADE ENGINE (${pct}%)...`, 'warn', 8000
+            );
+          }
+        }
       });
       ui.setConsoleResolution(state.nes.width, state.nes.height);
     } else if (
@@ -331,8 +334,7 @@ export function createRomSyncManager(state, ui, audio) {
       );
       if (!loaded) return;
       await loadRomFromUint8(loaded.u8, loaded.romName, {
-        ...options,
-        dropdownKey: fileName
+        ...options, dropdownKey: fileName, serverCachedCrc: loaded.romCrc32
       });
     } catch (e) {
       ui.logDebug(`Failed to load ${fileName}: ${e.message}`);

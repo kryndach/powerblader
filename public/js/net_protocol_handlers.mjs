@@ -1,6 +1,7 @@
 // Incoming WebSocket/WebRTC Protocol Message Dispatcher
 import { base64ToUint8 } from './rom_sync.mjs';
 import { handleRomTransferMessage } from './rom_archive.mjs';
+import { getCachedRomByCrc } from './rom_fast_transfer.mjs';
 
 export function createProtocolHandlers(
   state, ui, romSync, transport, telemetry
@@ -16,9 +17,26 @@ export function createProtocolHandlers(
   function clearActiveRomTransfers() {
     state.activeRomAbortCtrl?.abort();
     state.activeRomAbortCtrl = null;
+    state.activeRomDownload = null;
     state.incomingRomTransfer = null;
     state.sendingRomSessionId = null;
     ui.resetSendRomButtons?.();
+  }
+
+  function maybeAutoLoadCachedPartnerRom(crc, romName) {
+    if (!crc || crc === state.romCrc32 || state.loadingCachedRomCrc === crc) {
+      return;
+    }
+    if (!state.isAutoDefaultRom && state.romUint8) return;
+    state.loadingCachedRomCrc = crc;
+    getCachedRomByCrc(crc).then(async (hit) => {
+      if (!hit?.u8 || state.romCrc32 === crc) return;
+      await romSync.loadRomFromUint8(hit.u8, romName || hit.romName, {
+        broadcastToPeer: true, isAutoDefault: false
+      });
+    }).finally(() => {
+      if (state.loadingCachedRomCrc === crc) state.loadingCachedRomCrc = null;
+    });
   }
 
   function applyImportedSyncState(syncState, bannerText) {
@@ -104,6 +122,10 @@ export function createProtocolHandlers(
         state.partnerRomCrc32 === state.romCrc32
       ) {
         romSync.startLockstepMatchAtFrameZero('Joined with matching ROMs');
+      } else {
+        maybeAutoLoadCachedPartnerRom(
+          state.partnerRomCrc32, state.partnerRomName
+        );
       }
     }
     pushGameplayTelemetryToServer();
@@ -190,13 +212,13 @@ export function createProtocolHandlers(
       if (crcChanged || !state.matchStarted) {
         state.matchStarted = false;
         if (state.engine && state.peerConnected) state.engine.syncPaused = true;
-        if (
-          state.localPlayerIndex === 1 &&
-          state.peerConnected &&
-          state.romCrc32 &&
-          state.partnerRomCrc32 === state.romCrc32
-        ) {
+        if (state.localPlayerIndex === 1 && state.peerConnected &&
+            state.romCrc32 && state.partnerRomCrc32 === state.romCrc32) {
           romSync.startLockstepMatchAtFrameZero('Partner selected same ROM');
+        } else {
+          maybeAutoLoadCachedPartnerRom(
+            state.partnerRomCrc32, state.partnerRomName
+          );
         }
       }
       ui.updateStatusStrip();

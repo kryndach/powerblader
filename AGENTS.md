@@ -76,17 +76,18 @@ rules before committing:
     5-slot fast save/load (`save_slots.mjs`), custom keybinds & Z/X swap
     (`key_bindings.mjs`), fullscreen/auto-center & 1x..8x turbo speed
     (`viewport_and_speed.mjs`), drag-drop & `.zip`/`.rar`/`.7z` loader
-    (`rom_archive.mjs`), 48kHz DRC audio, Dual-WSS + WebRTC, Lobby.
+    (`rom_archive.mjs`), 8x striped HTTP `Range` + IndexedDB CRC32 cache
+    (`rom_fast_transfer.mjs`), 48kHz DRC audio, Dual-WSS + WebRTC, Lobby.
   - `public/autotest.html` & `public/net_debug.html` — Zero-click 6-stage
     2-PC benchmark (`/autotest`) and interactive network workbench (`/nettest`).
 - **`server/` (FIFO WebSocket & HTTP Relay Server):**
   - `server/relay_server.mjs`, `server/room_manager.mjs`,
-    `server/archive_extractor.mjs`, `server/report_formatters.mjs` — Node
-    HTTP/WSS server, `.zip`/`.rar`/`.7z` ROM unpacker, Dual-WS striping, and
-    telemetry auto-save.
+    `server/archive_extractor.mjs`, `server/room_rom_and_save_api.mjs` — Node
+    HTTP/WSS server, `.zip`/`.rar`/`.7z` ROM unpacker, `206` Range & multipart
+    ROM cache, Dual-WS striping, and telemetry auto-save.
 - **`tools/` (Automated QA & Style Verification):**
-  - `npm test` — Runs `test_coop_qa.mjs`, `test_net_diagnostics.mjs`, and
-    `test_real_roms.mjs`.
+  - `npm test` — Runs `test_coop_qa.mjs`, `test_net_diagnostics.mjs`,
+    `test_real_roms.mjs`, and `test_perf_and_edge_cases.mjs` (`npm run bench`).
   - `npm run check:style` — Verifies 80-char width and 350-line file limits.
 
 ## 4. Deep-Dive Reference Docs (Read On Demand)

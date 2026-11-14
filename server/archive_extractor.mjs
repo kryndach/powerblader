@@ -8,25 +8,15 @@ import {
   isSupportedRomFile, isArchiveFile, isSupportedRomOrArchiveFile
 } from '../src/core_adapter.mjs';
 import { computeRomCrc32 } from '../src/crc32.mjs';
-import { cacheRoomRom } from './room_rom_and_save_api.mjs';
+import {
+  cacheRoomRom, sendBinaryWithRange
+} from './room_rom_and_save_api.mjs';
 
-const WINRAR_PATHS = [
-  'C:\\Program Files\\WinRAR\\WinRAR.exe',
-  'C:\\Program Files (x86)\\WinRAR\\WinRAR.exe'
-];
-const UNRAR_PATHS = [
-  'C:\\Program Files\\WinRAR\\UnRAR.exe',
-  'C:\\Program Files (x86)\\WinRAR\\UnRAR.exe'
-];
-const SEVENZIP_PATHS = [
-  'C:\\Program Files\\7-Zip\\7z.exe',
-  'C:\\Program Files (x86)\\7-Zip\\7z.exe'
-];
-
-function findFirstExisting(paths) {
-  for (const p of paths) if (fs.existsSync(p)) return p;
-  return null;
-}
+const PF = ['C:\\Program Files', 'C:\\Program Files (x86)'];
+const WINRAR_PATHS = PF.map((d) => `${d}\\WinRAR\\WinRAR.exe`);
+const UNRAR_PATHS = PF.map((d) => `${d}\\WinRAR\\UnRAR.exe`);
+const SEVENZIP_PATHS = PF.map((d) => `${d}\\7-Zip\\7z.exe`);
+const findFirstExisting = (ps) => ps.find((p) => fs.existsSync(p)) || null;
 
 export function extractRomFromZipBuffer(buf) {
   const u8 = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
@@ -284,32 +274,26 @@ export function listLocalRomFiles(localDir) {
   return out.sort();
 }
 
-function sendRomBuffer(req, res, romName, romBuffer) {
-  const gzOk = /\bgzip\b/i.test(req?.headers?.['accept-encoding'] || '');
-  const useGz = gzOk && !romName.toLowerCase().endsWith('.zip') &&
-    romBuffer.length > 16384;
-  const body = useGz ? zlib.gzipSync(romBuffer) : romBuffer;
-  const hdrs = {
-    'Content-Type': 'application/octet-stream',
-    'Content-Length': String(body.length),
-    'X-Raw-Length': String(romBuffer.length),
-    'X-Rom-Filename': encodeURIComponent(romName)
-  };
-  if (useGz) hdrs['Content-Encoding'] = 'gzip';
-  res.writeHead(200, hdrs);
-  res.end(body);
+const localMemCache = new Map();
+function sendRomBuffer(req, res, romName, romBuffer, gzBuf = null, crc = '') {
+  const isZip = romName.toLowerCase().endsWith('.zip');
+  const gz = gzBuf || (!isZip && romBuffer.length > 16384
+    ? zlib.gzipSync(romBuffer, { level: 1 }) : null);
+  sendBinaryWithRange(req, res, romBuffer, gz, {
+    'X-Rom-Filename': encodeURIComponent(romName),
+    'X-Rom-Crc32': crc || computeRomCrc32(romBuffer)
+  });
 }
 
 export function handleLocalRomsApi(res, rootDir, sendJson) {
   sendJson(res, 200, { files: listLocalRomFiles(path.join(rootDir, 'local')) });
 }
 
-export function handleLocalRomDownloadApi(
-  req, urlObj, res, rootDir, sendJson
-) {
+export function handleLocalRomDownloadApi(req, urlObj, res, rootDir, sendJson) {
   const localDir = path.join(rootDir, 'local');
   const files = listLocalRomFiles(localDir);
-  const reqFile = (urlObj.searchParams.get('file') || '').replace(/\\/g, '/');
+  const q = urlObj.searchParams.get('file') || urlObj.searchParams.get('name');
+  const reqFile = (q || '').replace(/\\/g, '/');
   const matched = reqFile
     ? files.find((f) => f === reqFile || path.posix.basename(f) === reqFile)
     : files[0] || null;
@@ -318,8 +302,20 @@ export function handleLocalRomDownloadApi(
     return sendJson(res, 404, { available: false });
   }
   try {
-    const { romName, romBuffer } = extractRomFromFile(romFile);
-    sendRomBuffer(req, res, romName, romBuffer);
+    const mtime = fs.statSync(romFile).mtimeMs;
+    let entry = localMemCache.get(romFile);
+    if (!entry || entry.mtime !== mtime) {
+      const { romName, romBuffer } = extractRomFromFile(romFile);
+      const isZip = romName.toLowerCase().endsWith('.zip');
+      const gz = !isZip && romBuffer.length > 16384
+        ? zlib.gzipSync(romBuffer, { level: 1 }) : null;
+      const crc = computeRomCrc32(romBuffer);
+      entry = { mtime, romName, romBuffer, gz, crc };
+      localMemCache.set(romFile, entry);
+    }
+    sendRomBuffer(
+      req, res, entry.romName, entry.romBuffer, entry.gz, entry.crc
+    );
   } catch (e) {
     sendJson(res, 400, { ok: false, error: e.message });
   }
@@ -329,10 +325,9 @@ export function handleExtractRomPostApi(req, urlObj, res, sendJson) {
   const fileName = urlObj.searchParams.get('name') || 'archive.zip';
   const chunks = [];
   let total = 0;
-  req.on('data', (chunk) => {
-    total += chunk.length;
-    if (total > 64 * 1024 * 1024) return req.destroy();
-    chunks.push(chunk);
+  req.on('data', (c) => {
+    if ((total += c.length) > 64 * 1024 * 1024) req.destroy();
+    else chunks.push(c);
   });
   req.on('end', () => {
     try {
@@ -340,8 +335,10 @@ export function handleExtractRomPostApi(req, urlObj, res, sendJson) {
         Buffer.concat(chunks), fileName
       );
       const crc = computeRomCrc32(romBuffer);
-      cacheRoomRom(urlObj.searchParams.get('room'), crc, romName, romBuffer);
-      sendRomBuffer(req, res, romName, romBuffer);
+      const e = cacheRoomRom(
+        urlObj.searchParams.get('room'), crc, romName, romBuffer
+      );
+      sendRomBuffer(req, res, romName, romBuffer, e.gzipBuffer, crc);
     } catch (e) {
       sendJson(res, 400, { ok: false, error: e.message });
     }
