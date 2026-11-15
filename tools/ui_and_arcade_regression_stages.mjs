@@ -274,14 +274,17 @@ export async function runTest9RealArcadeAndSnesSgRuRollback(localDir, minZip) {
   }
   const arcOpts = { romBytes: arcBytes, romName: arcName };
   const a1 = await createFbneoArcadeCore(arcOpts);
-  const a2 = await createFbneoArcadeCore(arcOpts);
-  const arcRes = await runJitterySgRuRollbackSim(a1, a2, 190, 5, 5);
-  assert.ok(arcRes.e1.rollbacksTotal >= 8, 'Expected real SG-RU rollbacks');
+  let a2 = await createFbneoArcadeCore(arcOpts);
+  let arcRes = await runJitterySgRuRollbackSim(a1, a2, 190, 5, 5);
+  const rb = arcRes.e1.rollbacksTotal, p95Val = arcRes.p95;
+  assert.ok(rb >= 8, 'Expected real SG-RU rollbacks');
   assert.ok(arcRes.e1.lastVerifiedFrame >= 180, 'Expected >=6 hash checks');
   assert.strictEqual(arcRes.e1.desyncCount, 0, 'Arcade P1 must have 0 desyncs');
   assert.strictEqual(arcRes.e2.desyncCount, 0, 'Arcade P2 must have 0 desyncs');
   assert.strictEqual(a1.computeHash(), a2.computeHash());
-  assert.ok(arcRes.p95 < 45, `Arcade p95 (${arcRes.p95.toFixed(1)}ms) > 45ms`);
+  assert.ok(p95Val < 45, `Arcade p95 (${p95Val.toFixed(1)}ms) > 45ms`);
+  a2 = null;
+  arcRes = null;
 
   const snesDir = path.join(localDir, 'snes');
   let snesLabel = 'Skipped';
@@ -298,7 +301,7 @@ export async function runTest9RealArcadeAndSnesSgRuRollback(localDir, minZip) {
       snesLabel = `${romName} (p95=${sRes.p95.toFixed(2)}ms)`;
     }
   }
-  const rb = arcRes.e1.rollbacksTotal, p95Str = arcRes.p95.toFixed(2);
+  const p95Str = p95Val.toFixed(2);
   console.log(
     `[PASS] Edge Case 8: Real SG-RU 240ms Boundary Rollback -> ${arcName} ` +
       `(RB=${rb}, 0 Desyncs, p95=${p95Str}ms) & SNES ${snesLabel}`

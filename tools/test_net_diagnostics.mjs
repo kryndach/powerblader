@@ -1,6 +1,9 @@
 // 2-PC Network, Protocol & Data Transfer Diagnostic Test Suite
 import assert from 'assert';
+import fs from 'fs';
 import http from 'http';
+import os from 'os';
+import path from 'path';
 import WebSocket from 'ws';
 import { crc32Hex } from '../src/crc32.mjs';
 import { createCoopServer } from '../server/relay_server.mjs';
@@ -104,7 +107,8 @@ async function runNetDiagnosticsTests() {
     '=== 2-PC Network, Protocol & Data Transfer Diagnostic Test Suite ===\n'
   );
 
-  const app = createCoopServer({ logAccess: false });
+  const tmpLogsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nes_diag_logs_'));
+  const app = createCoopServer({ logAccess: false, logsDir: tmpLogsDir });
   const port = await app.listen(0, '127.0.0.1');
   const baseUrl = `http://127.0.0.1:${port}`;
   const wsUrl = `ws://127.0.0.1:${port}/ws`;
@@ -116,24 +120,17 @@ async function runNetDiagnosticsTests() {
   );
   console.log('[PASS] Stage 1: Standalone /nettest Workbench Page Served');
 
-  const ws1 = new WebSocket(wsUrl);
-  const ws2 = new WebSocket(wsUrl);
-  let serverPongReceived = false;
-  let peerPongReceived = false;
-  let singleXferAck = null;
-  let chunkedXferAck = null;
-  let streamSummary = null;
+  const ws1 = new WebSocket(wsUrl), ws2 = new WebSocket(wsUrl);
+  let serverPongReceived = false, peerPongReceived = false;
+  let singleXferAck = null, chunkedXferAck = null, streamSummary = null;
   let arenaStateReceived = false;
   const rxChunks = new Map();
-
   bindPeer2Responder(ws2, rxChunks, (ok) => { arenaStateReceived = ok; });
 
   await new Promise((resolve, reject) => {
-    ws1.on('open', () => {
-      ws1.send(
-        JSON.stringify({ type: 'join_room', roomCode: 'DIAG', nick: 'PC1-SG' })
-      );
-    });
+    ws1.on('open', () => ws1.send(
+      JSON.stringify({ type: 'join_room', roomCode: 'DIAG', nick: 'PC1-SG' })
+    ));
     ws1.on('message', (raw) => {
       const msg = JSON.parse(raw.toString());
       if (msg.type === 'room_joined') {
@@ -147,27 +144,19 @@ async function runNetDiagnosticsTests() {
         ws1.send(JSON.stringify({
           type: 'peer_ping', via: 'wss', t: performance.now()
         }));
-      } else if (msg.type === 'pong') {
-        serverPongReceived = true;
-      } else if (msg.type === 'peer_pong') {
-        peerPongReceived = true;
-        resolve();
-      }
+      } else if (msg.type === 'pong') serverPongReceived = true;
+      else if (msg.type === 'peer_pong') { peerPongReceived = true; resolve(); }
     });
     ws1.on('error', reject);
     ws2.on('error', reject);
   });
 
   assert.ok(serverPongReceived && peerPongReceived);
-  console.log(
-    '[PASS] Stage 2: Server Ping & End-to-End 2-PC Peer Ping Verified'
-  );
+  console.log('[PASS] Stage 2: Server Ping & 2-PC Peer Ping Verified');
 
   await new Promise((resolve) => {
     const singleBytes = new Uint8Array(64 * 1024);
-    for (let i = 0; i < singleBytes.length; i++) {
-      singleBytes[i] = (i * 31) & 0xff;
-    }
+    for (let i = 0; i < singleBytes.length; i++) singleBytes[i] = i & 255;
     const singleCrc = crc32Hex(singleBytes);
     const chunkedBytes = new Uint8Array(256 * 1024);
     for (let i = 0; i < chunkedBytes.length; i++) {
@@ -304,10 +293,30 @@ async function runNetDiagnosticsTests() {
   );
 
   const autoHtml = await httpGetText(`${baseUrl}/autotest`);
-  assert.ok(autoHtml.status === 200 && autoHtml.text.includes('AUTOBENCH'));
+  assert.ok(autoHtml.status === 200);
+  assert.ok(autoHtml.text.includes('AUTOBENCH v3.0'));
 
   const repRes = await httpPostJson(`${baseUrl}/api/autotest-report`, {
     playerIndex: 1, overallStatus: 'COMPLETE', serverRttMs: 1, wssRttMs: 250,
+    dualWsOk: true,
+    httpBench: {
+      payloadKb: 512, singleDlKbps: 280, stripeDlKbps: 1420, speedup: 5.1,
+      pc2UploadKbps: 980, firstDlPct: 3, firstUlPct: 3, crcOk: true
+    },
+    wasmBench: {
+      hashMatch: true,
+      pc1: { bootMs: 42, visMs: 0.9, rb5Ms: 4.8, hash60: 'A1B2C3D4' },
+      pc2: { bootMs: 85, visMs: 1.4, rb5Ms: 7.5, hash60: 'A1B2C3D4' }
+    },
+    liveNetplay: {
+      frames: 110, pc1Hash: 'DEAD1234', pc2Hash: 'DEAD1234', hashMatch: true,
+      pc1Desyncs: 0, pc2Desyncs: 0, pc1Rollbacks: 8, pc2Rollbacks: 9,
+      syncImportOk: true
+    },
+    recommendations: {
+      transport: 'Dual-WSS Relay (ws + wsAux)',
+      nesDelayFrames: 4, arcadeDelayFrames: 4, cpu60FpsOk: true
+    },
     stages: [
       { name: '1. Baseline WSS Relay Ping', status: 'PASS', summary: '1' }
     ],
@@ -319,8 +328,11 @@ async function runNetDiagnosticsTests() {
   });
   assert.ok(repRes.ok);
   assert.ok(repRes.combinedText.includes('2-PC AUTOMATED NETWORK'));
+  assert.ok(repRes.combinedText.includes('AUTO-TUNED NETPLAY RECOMMENDATIONS'));
+  assert.ok(fs.existsSync(path.join(tmpLogsDir, 'autotest_latest.json')));
+  fs.rmSync(tmpLogsDir, { recursive: true, force: true });
   console.log(
-    '[PASS] Stage 6: Zero-Click /autotest Page & Report Disk Auto-Save Verified'
+    '[PASS] Stage 6: Zero-Click /autotest v3.0 & Isolated Disk Save Verified'
   );
 
   wsHost.close();

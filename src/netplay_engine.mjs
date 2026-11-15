@@ -37,7 +37,8 @@ export class RollbackNetplayEngine {
     this.enableVisualSmoothing =
       options.enableVisualSmoothing ?? (this.systemId !== 'arcade');
     this.historySize = 256;
-    this.saveBufferSize = options.saveBufferSize ?? 64;
+    this.saveBufferSize =
+      options.saveBufferSize ?? (this.systemId === 'arcade' ? 32 : 64);
     this.sessionId = options.sessionId || 'default';
     this.syncPaused = false;
     this._pixelCount = this.core.pixelCount || 256 * 240;

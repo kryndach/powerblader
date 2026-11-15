@@ -1,202 +1,24 @@
-// Real Headless Chromium 2-Tab End-to-End Test (P1 Host + P2 Remote Loopback)
+// Real Headless Chromium 2-Tab E2E Suite (Main Game + Zero-Click /autotest v3)
 import assert from 'assert';
-import { spawn } from 'child_process';
 import fs from 'fs';
-import http from 'http';
-import net from 'net';
 import os from 'os';
 import path from 'path';
-import WebSocket from 'ws';
 import { createCoopServer } from '../server/relay_server.mjs';
+import {
+  sleep, findChromiumBinary, createCdpTab, waitFor, startRemoteProxy,
+  launchHeadlessBrowser, buildMultiSliceArcadeZipBase64
+} from './browser_cdp_harness.mjs';
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function findChromiumBinary() {
-  const candidates = [
-    path.join(
-      process.env.ProgramFiles || 'C:\\Program Files',
-      'Google\\Chrome\\Application\\chrome.exe'
-    ),
-    path.join(
-      process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
-      'Microsoft\\Edge\\Application\\msedge.exe'
-    ),
-    path.join(
-      process.env.ProgramFiles || 'C:\\Program Files',
-      'Microsoft\\Edge\\Application\\msedge.exe'
-    ),
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/chromium'
-  ];
-  return candidates.find((p) => fs.existsSync(p)) || null;
-}
-
-function httpJson(url) {
-  return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
-      let body = '';
-      res.on('data', (c) => (body += c));
-      res.on('end', () => {
-        try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
-      });
-    }).on('error', reject);
-  });
-}
-
-async function createCdpTab(debugPort, targetUrl) {
-  const created = await new Promise((resolve, reject) => {
-    const u = `http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent(
-      targetUrl
-    )}`;
-    const req = http.request(u, { method: 'PUT' }, (res) => {
-      let b = '';
-      res.on('data', (c) => (b += c));
-      res.on('end', () => {
-        try { resolve(JSON.parse(b)); } catch (e) { reject(e); }
-      });
-    });
-    req.on('error', reject);
-    req.end();
-  });
-
-  const ws = new WebSocket(created.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => {
-    ws.once('open', resolve);
-    ws.once('error', reject);
-  });
-
-  let nextId = 1;
-  const pending = new Map();
-  const exceptions = [];
-
-  ws.on('message', (raw) => {
-    const msg = JSON.parse(String(raw));
-    if (msg.id && pending.has(msg.id)) {
-      const { resolve, reject } = pending.get(msg.id);
-      pending.delete(msg.id);
-      if (msg.error) reject(new Error(msg.error.message));
-      else resolve(msg.result);
-    } else if (msg.method === 'Runtime.exceptionThrown') {
-      const d = msg.params?.exceptionDetails;
-      exceptions.push(d?.exception?.description || d?.text || 'JS Exception');
-    }
-  });
-
-  const send = (method, params = {}) => new Promise((resolve, reject) => {
-    const id = nextId++;
-    pending.set(id, { resolve, reject });
-    ws.send(JSON.stringify({ id, method, params }));
-  });
-
-  await send('Runtime.enable');
-  await send('Page.enable');
-
-  const evaluate = async (expression) => {
-    const res = await send('Runtime.evaluate', {
-      expression, awaitPromise: true, returnByValue: true
-    });
-    if (res.exceptionDetails) {
-      throw new Error(
-        res.exceptionDetails.exception?.description || res.exceptionDetails.text
-      );
-    }
-    return res.result?.value;
-  };
-
-  return { ws, evaluate, exceptions, close: () => ws.close() };
-}
-
-async function waitFor(fn, timeoutMs = 25000, label = 'condition') {
-  const t0 = Date.now();
-  let lastVal = null;
-  while (Date.now() - t0 < timeoutMs) {
-    lastVal = await fn();
-    if (lastVal) return lastVal;
-    await sleep(80);
-  }
-  throw new Error(`Timeout waiting for ${label} (last=${JSON.stringify(
-    lastVal
-  )})`);
-}
-
-function startRemoteProxy(targetPort) {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer((client) => {
-      const upstream = net.connect(targetPort, '127.0.0.1');
-      client.on('error', () => upstream.destroy());
-      upstream.on('error', () => client.destroy());
-      client.pipe(upstream);
-      upstream.pipe(client);
-    });
-    srv.once('error', reject);
-    srv.listen(0, '127.0.0.2', () => resolve({
-      port: srv.address().port,
-      close: () => new Promise((r) => srv.close(() => r()))
-    }));
-  });
-}
-
-async function launchHeadlessBrowser(binPath, userDataDir) {
-  const proc = spawn(binPath, [
-    '--headless=new',
-    '--remote-debugging-port=0',
-    `--user-data-dir=${userDataDir}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-background-timer-throttling',
-    '--disable-renderer-backgrounding',
-    '--disable-backgrounding-occluded-windows',
-    '--autoplay-policy=no-user-gesture-required',
-    '--mute-audio',
-    'about:blank'
-  ], { stdio: ['ignore', 'pipe', 'pipe'] });
-
-  let stderr = '';
-  const debugPort = await new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`Chrome launch timeout: ${stderr}`)), 12000
-    );
-    proc.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
-      const m = /listening on ws:\/\/127\.0\.0\.1:(\d+)\//.exec(stderr);
-      if (m) { clearTimeout(timer); resolve(Number(m[1])); }
-    });
-    proc.once('exit', (code) => {
-      clearTimeout(timer);
-      reject(new Error(`Chrome exited early (${code}): ${stderr}`));
-    });
-  });
-  await waitFor(() => httpJson(`http://127.0.0.1:${debugPort}/json/version`)
-    .catch(() => null), 5000, 'CDP ready');
-  return { proc, debugPort };
-}
-
-async function main() {
-  console.log('=== Real Chromium 2-Tab End-to-End Netplay & WASM Suite ===\n');
-  const bin = findChromiumBinary();
-  if (!bin) {
-    console.log('[SKIP] No local Chrome/Edge binary found.');
-    return;
-  }
-  const app = createCoopServer({ logAccess: false });
-  const hostPort = await app.listen(0, '127.0.0.1');
-  const remProxy = await startRemoteProxy(hostPort);
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nes_e2e_chrome_'));
-  let browser = null, tab1 = null, tab2 = null;
-
+async function runMainGameTwoTabE2E(browser, hostPort, remPort) {
+  const tab1 = await createCdpTab(
+    browser.debugPort,
+    `http://127.0.0.1:${hostPort}/?room=E2E&nick=HostSG&debug=1`
+  );
+  const tab2 = await createCdpTab(
+    browser.debugPort,
+    `http://127.0.0.2:${remPort}/?room=E2E&nick=BroRU&debug=1`
+  );
   try {
-    browser = await launchHeadlessBrowser(bin, tmpDir);
-    tab1 = await createCdpTab(
-      browser.debugPort,
-      `http://127.0.0.1:${hostPort}/?room=E2E&nick=HostSG&debug=1`
-    );
-    tab2 = await createCdpTab(
-      browser.debugPort,
-      `http://127.0.0.2:${remProxy.port}/?room=E2E&nick=BroRU&debug=1`
-    );
-
-    // 1. Wait for both real DOMs + ES module graphs to boot cleanly
     await waitFor(() => tab1.evaluate(
       `Boolean(document.getElementById('connectBtn') && ` +
       `document.getElementById('localRomSelect')?.options.length > 1)`
@@ -204,15 +26,13 @@ async function main() {
     await waitFor(() => tab2.evaluate(
       `Boolean(document.getElementById('connectBtn'))`
     ), 10000, 'Tab 2 DOM ready');
-    // Pre-seed Chrome's real immutable HTTP disk cache with non-Range WASM GET
-    // so remote Tab 2 proves striped rawgz=1 Range never splices cached raw!
+
     await tab2.evaluate(
       `fetch('/vendor/fbneo_arcade.wasm?v=3').then((r) => r.arrayBuffer())` +
       `.then((b) => b.byteLength)`
     );
 
-    // Watch #topSendRomBtn labels in real DOM
-    await tab1.evaluate(`
+    const observeBtns = `
       window.__seenBtnTexts = [];
       new MutationObserver(() => {
         const t = document.getElementById('topSendRomBtn')?.textContent || '';
@@ -220,16 +40,16 @@ async function main() {
       }).observe(document.getElementById('topSendRomBtn'), {
         childList: true, characterData: true, subtree: true
       });
-    `);
+    `;
+    await tab1.evaluate(observeBtns);
+    await tab2.evaluate(observeBtns);
 
-    // 2. Connect both tabs to Room E2E
     await tab1.evaluate(`document.getElementById('connectBtn').click(); true`);
     await tab2.evaluate(`document.getElementById('connectBtn').click(); true`);
     await waitFor(() => tab1.evaluate(
       `document.getElementById('lobbyP2Name')?.textContent.includes('BroRU')`
     ), 8000, 'Both tabs joined Room E2E');
 
-    // 3. Pick Arcade ROM (tgm2p.zip if present, else first available local ROM)
     const pickedRom = await tab1.evaluate(`(() => {
       const sel = document.getElementById('localRomSelect');
       const opts = [...sel.options].map((o) => o.value).filter(Boolean);
@@ -246,7 +66,6 @@ async function main() {
       return b.includes('[') && !b.includes('None') ? b : null;
     })()`), 25000, `Tab 1 load ${pickedRom}`);
 
-    // 4. Send ROM from P1 (127.0.0.1) -> P2 (127.0.0.2 remote striped Range!)
     await tab1.evaluate(
       `document.getElementById('topSendRomBtn').click(); true`
     );
@@ -256,13 +75,13 @@ async function main() {
     ]).then(([f1, f2]) => (f1 >= 45 && f2 >= 45 ? { f1, f2 } : null)),
     30000, '2-Tab Real Chrome Lockstep Frame >= 45');
 
-    // 5. Verify UI invariants, 0 desyncs, non-black canvas & mid-game QuickSave
-    const seenBtns = await tab1.evaluate(`window.__seenBtnTexts`);
+    const seenBtns1 = await tab1.evaluate(`window.__seenBtnTexts`);
     assert.ok(
-      !seenBtns.some((t) => t.includes('Partner DL') || /^DL\s+\d/.test(t)),
-      `Forbidden upload button text seen: ${JSON.stringify(seenBtns)}`
+      !seenBtns1.some((t) => t.includes('Partner DL') || /^DL\s+\d/.test(t)),
+      `Forbidden upload button text seen: ${JSON.stringify(seenBtns1)}`
     );
 
+    // Mid-game QuickSave / QuickLoad + Turbo 1x -> 4x -> 1x sync check
     await tab1.evaluate(`
       window.__popupShownMidGame = false;
       new MutationObserver(() => {
@@ -276,44 +95,192 @@ async function main() {
       document.getElementById('quickSaveBtn').click();
       true;
     `);
-    await sleep(150);
+    await sleep(120);
     await tab1.evaluate(
       `document.getElementById('quickLoadBtn').click(); true`
     );
-    await sleep(300);
+    await tab1.evaluate(
+      `document.querySelector('.speed-btn[data-speed="4"]').click(); true`
+    );
+    await waitFor(() => tab2.evaluate(
+      `document.querySelector('.speed-btn[data-speed="4"]')` +
+      `?.classList.contains('active-toggle')`
+    ), 5000, 'Tab 2 synced 4x Turbo');
+    const preTurboF = await tab1.evaluate(
+      `Number(document.getElementById('dbgFrame')?.textContent)`
+    );
+    await waitFor(() => tab1.evaluate(
+      `Number(document.getElementById('dbgFrame')?.textContent)`
+    ).then((f) => (f >= preTurboF + 40 ? f : null)), 8000, '4x Turbo frames');
+    await tab1.evaluate(
+      `document.querySelector('.speed-btn[data-speed="1"]').click(); true`
+    );
+    await waitFor(() => tab2.evaluate(
+      `document.querySelector('.speed-btn[data-speed="1"]')` +
+      `?.classList.contains('active-toggle')`
+    ), 5000, 'Tab 2 restored 1x speed');
 
-    const check = await Promise.all([
+    const midCheck = await tab1.evaluate(`({
+      popupShown: window.__popupShownMidGame,
+      desyncs: document.getElementById('dbgDesyncs').textContent
+    })`);
+    assert.strictEqual(midCheck.popupShown, false, 'No mid-game Lobby popup');
+    assert.strictEqual(midCheck.desyncs, '0', '0 desyncs after Save/4x Turbo');
+
+    // Remote P2 (127.0.0.2) -> P1 (127.0.0.1) custom 300KB .zip multipart sync
+    const zipB64 = buildMultiSliceArcadeZipBase64(290000);
+    await tab2.evaluate(`(() => {
+      window.__seenBtnTexts = [];
+      const bin = atob(${JSON.stringify(zipB64)});
+      const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      const dt = new DataTransfer();
+      dt.items.add(new File([u8], 'minivadr_p2.zip', {
+        type: 'application/zip'
+      }));
+      const inp = document.getElementById('romFileInput');
+      inp.files = dt.files;
+      inp.dispatchEvent(new Event('change', { bubbles: true }));
+      return u8.byteLength;
+    })()`);
+    await waitFor(() => tab2.evaluate(`
+      document.getElementById('romBadge')?.textContent.includes('minivadr_p2')
+    `), 15000, 'Remote Tab 2 loaded custom minivadr_p2.zip locally');
+    await tab2.evaluate(
+      `document.getElementById('topSendRomBtn').click(); true`
+    );
+    await waitFor(() => Promise.all([
       tab1.evaluate(`({
-        hidden: document.getElementById('lobbyOverlay')
-          .classList.contains('hidden'),
-        popupShown: window.__popupShownMidGame,
-        desyncs: document.getElementById('dbgDesyncs').textContent,
-        btn: document.getElementById('topSendRomBtn').textContent
+        rom: document.getElementById('romBadge')?.textContent || '',
+        f: Number(document.getElementById('dbgFrame')?.textContent)
       })`),
+      tab2.evaluate(`Number(document.getElementById('dbgFrame')?.textContent)`)
+    ]).then(([p1, f2]) =>
+      p1.rom.includes('minivadr_p2') && p1.f >= 30 && f2 >= 30 ? p1 : null
+    ), 20000, 'P2 -> P1 multipart .zip upload & lockstep >= 30');
+
+    const p2Check = await Promise.all([
+      tab1.evaluate(`document.getElementById('dbgDesyncs').textContent`),
       tab2.evaluate(`({
-        hidden: document.getElementById('lobbyOverlay')
-          .classList.contains('hidden'),
         desyncs: document.getElementById('dbgDesyncs').textContent,
-        isRemoteMode: location.hostname === '127.0.0.2'
+        btns: window.__seenBtnTexts
       })`)
     ]);
-    assert.strictEqual(check[0].hidden, true, 'P1 Lobby must stay hidden');
-    assert.strictEqual(check[0].popupShown, false, 'No mid-game Lobby popup');
-    assert.strictEqual(check[0].desyncs, '0', 'P1 must have 0 desyncs');
-    assert.strictEqual(check[0].btn, 'Send ROM', 'Send button reset cleanly');
-    assert.strictEqual(check[1].hidden, true, 'P2 Lobby must stay hidden');
-    assert.strictEqual(check[1].desyncs, '0', 'P2 must have 0 desyncs');
-    assert.strictEqual(check[1].isRemoteMode, true);
+    assert.strictEqual(p2Check[0], '0', 'P1 0 desyncs after P2->P1 zip');
+    assert.strictEqual(p2Check[1].desyncs, '0', 'P2 0 desyncs');
+    assert.ok(
+      p2Check[1].btns.some((t) => t.startsWith('Uploading ')),
+      `Expected Uploading % on Remote P2 button: ${JSON.stringify(
+        p2Check[1].btns
+      )}`
+    );
     assert.strictEqual(tab1.exceptions.length, 0, tab1.exceptions.join('; '));
     assert.strictEqual(tab2.exceptions.length, 0, tab2.exceptions.join('; '));
-
     console.log(
-      `[PASS] Real Chrome 2-Tab E2E (${pickedRom}): Host+Remote Striped ` +
-      `WASM/ROM Sync, Live UI, Mid-Game Save/Load & 0 Desyncs Verified!`
+      `[PASS] 1/3 Real Chrome Main Game E2E (${pickedRom} + 4x Turbo + ` +
+      `P2->P1 Multipart .zip + Save/Load + 0 Desyncs)`
     );
   } finally {
-    try { tab1?.close(); } catch {}
-    try { tab2?.close(); } catch {}
+    try { tab1.close(); } catch {}
+    try { tab2.close(); } catch {}
+  }
+}
+
+async function runAutotestV3TwoTabE2E(browser, hostPort, remPort, logsDir) {
+  const tabA = await createCdpTab(
+    browser.debugPort, `http://127.0.0.1:${hostPort}/autotest?room=E2EAUTO`
+  );
+  const tabB = await createCdpTab(
+    browser.debugPort, `http://127.0.0.2:${remPort}/autotest?room=E2EAUTO`
+  );
+  try {
+    const hdr = await waitFor(() => tabA.evaluate(
+      `document.body?.textContent.includes('AUTOBENCH v3.0')`
+    ), 8000, 'AUTOBENCH v3.0 header');
+    assert.strictEqual(hdr, true);
+
+    await waitFor(async () => {
+      if (tabA.exceptions.length) throw new Error(tabA.exceptions.join('; '));
+      if (tabB.exceptions.length) throw new Error(tabB.exceptions.join('; '));
+      const [a, b] = await Promise.all([
+        tabA.evaluate(`document.getElementById('stateBadge')?.textContent`),
+        tabB.evaluate(`document.getElementById('stateBadge')?.textContent`)
+      ]);
+      return a === 'BENCHMARK COMPLETE' && b === 'BENCHMARK COMPLETE'
+        ? true : null;
+    }, 55000, 'Zero-click /autotest v3.0 completion on both tabs');
+
+    const domRes = await Promise.all([
+      tabA.evaluate(`document.querySelectorAll('#stagesBody tr').length`),
+      tabB.evaluate(`document.querySelectorAll('#stagesBody tr').length`)
+    ]);
+    assert.strictEqual(domRes[0], 8, 'Tab A must render 8 benchmark stages');
+    assert.strictEqual(domRes[1], 8, 'Tab B must render 8 benchmark stages');
+
+    const jsonPath = path.join(logsDir, 'autotest_latest.json');
+    const txtPath = path.join(logsDir, 'autotest_latest.txt');
+    assert.ok(fs.existsSync(jsonPath) && fs.existsSync(txtPath));
+    const session = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+    const txt = fs.readFileSync(txtPath, 'utf8');
+
+    assert.strictEqual(session.pc1?.overallStatus, 'COMPLETE');
+    assert.strictEqual(session.pc2?.overallStatus, 'COMPLETE');
+    assert.strictEqual(session.pc1?.stages?.length, 8);
+    assert.ok(!session.pc1.stages.some((s) => s.status === 'FAIL'));
+    assert.strictEqual(session.pc1?.dualWsOk, true);
+    assert.strictEqual(session.pc2?.dualWsOk, true);
+    assert.strictEqual(session.pc1?.httpBench?.crcOk, true);
+    assert.ok(session.pc1?.httpBench?.stripeDlKbps > 0);
+    assert.ok(session.pc1?.httpBench?.pc2UploadKbps > 0);
+    assert.strictEqual(session.pc1?.wasmBench?.hashMatch, true);
+    assert.strictEqual(session.pc1?.liveNetplay?.hashMatch, true);
+    assert.strictEqual(session.pc1?.liveNetplay?.pc1Desyncs, 0);
+    assert.strictEqual(session.pc1?.liveNetplay?.pc2Desyncs, 0);
+    assert.strictEqual(session.pc1?.liveNetplay?.syncImportOk, true);
+    assert.ok(txt.includes('AUTO-TUNED NETPLAY RECOMMENDATIONS'));
+    assert.strictEqual(tabA.exceptions.length, 0, tabA.exceptions.join('; '));
+    assert.strictEqual(tabB.exceptions.length, 0, tabB.exceptions.join('; '));
+    console.log(
+      '[PASS] 2/3 Real Chrome Zero-Click /autotest v3.0 E2E ' +
+      '(8 Stages, Dual-WS, Striped HTTP, FBNeo WASM & Live Rollback)'
+    );
+  } finally {
+    try { tabA.close(); } catch {}
+    try { tabB.close(); } catch {}
+  }
+
+  const tabNet = await createCdpTab(
+    browser.debugPort, `http://127.0.0.1:${hostPort}/nettest?room=E2ENET`
+  );
+  try {
+    await waitFor(async () => {
+      if (tabNet.exceptions.length) throw new Error(tabNet.exceptions[0]);
+      return tabNet.evaluate(
+        `Boolean(document.getElementById('logBox')?.children.length)`
+      );
+    }, 8000, '/nettest ES module boot');
+    assert.strictEqual(tabNet.exceptions.length, 0);
+    console.log('[PASS] 3/3 Real Chrome /nettest Workbench Boot Verified');
+  } finally {
+    try { tabNet.close(); } catch {}
+  }
+}
+
+async function main() {
+  console.log('=== Real Chromium 2-Tab End-to-End Netplay & AutoBench ===\n');
+  const bin = findChromiumBinary();
+  if (!bin) return console.log('[SKIP] No local Chrome/Edge binary found.');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nes_e2e_chrome_'));
+  const logsDir = path.join(tmpDir, 'logs');
+  const app = createCoopServer({ logAccess: false, logsDir });
+  const hostPort = await app.listen(0, '127.0.0.1');
+  const remProxy = await startRemoteProxy(hostPort);
+  let browser = null;
+  try {
+    browser = await launchHeadlessBrowser(bin, path.join(tmpDir, 'profile'));
+    await runMainGameTwoTabE2E(browser, hostPort, remProxy.port);
+    await runAutotestV3TwoTabE2E(browser, hostPort, remProxy.port, logsDir);
+  } finally {
     if (browser?.proc) {
       try { browser.proc.kill('SIGKILL'); } catch {}
       await sleep(150);

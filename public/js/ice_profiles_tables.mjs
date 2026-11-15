@@ -105,3 +105,15 @@ export const WEBRTC_PROFILES = [
     ]
   }
 ];
+export { WEBRTC_PROFILES as AUTOTEST_WEBRTC_PROFILES };
+
+export const NET_DEBUG_STUN_PROFILES = {
+  mixed: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.nextcloud.com:443' }
+  ],
+  cloudflare: [{ urls: 'stun:stun.cloudflare.com:3478' }],
+  google: [{ urls: 'stun:stun.l.google.com:19302' }],
+  none: []
+};

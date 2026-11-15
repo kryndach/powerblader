@@ -110,6 +110,7 @@ export function startConsoleFrameLoop(
   let lastTickTime = performance.now();
   let accumulatorMs = 0;
   let framesThisSec = 0;
+  let lastDbgUiFrame = -99;
   let lastFpsUpdate = performance.now();
   let lastTelemetryTick = performance.now();
 
@@ -153,10 +154,12 @@ export function startConsoleFrameLoop(
             transport.sendFastNetplayPacket(res.packetToSend);
           }
           if (res.stepped) framesThisSec++;
+          const curF = state.engine.currentFrame;
           if (
             isLast &&
-            (state.engine.currentFrame % 4 === 0 || !res.stepped)
+            (Math.abs(curF - lastDbgUiFrame) >= 4 || !res.stepped)
           ) {
+            lastDbgUiFrame = curF;
             telemetry.updateDebugTelemetry(res.p1Mask, res.p2Mask);
           }
         }

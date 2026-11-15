@@ -139,7 +139,7 @@ export function createAutotestStagesManager(ctx, webrtcMgr, profiles) {
           });
           sent++;
         }
-        ctx.sendWs({
+        (ctx.sendDualWs || ctx.sendWs)({
           type: 'autotest_stream_pkt',
           seq: frames[0].seq,
           frames,
@@ -169,6 +169,7 @@ export function createAutotestStagesManager(ctx, webrtcMgr, profiles) {
 
   function handleStreamPacket(msg) {
     if (!rxStream.active) return;
+    if (typeof msg.seq === 'number' && rxStream.seqs.has(msg.seq)) return;
     const now = performance.now();
     if (rxStream.lastAt > 0) rxStream.gaps.push(now - rxStream.lastAt);
     rxStream.lastAt = now;

@@ -30,7 +30,7 @@ export function createSessionTrackers(rootDir, options = {}) {
   };
 
   function ensureLogsDir() {
-    const logsDir = path.join(rootDir, 'logs');
+    const logsDir = options.logsDir || path.join(rootDir, 'logs');
     if (!fs.existsSync(logsDir)) {
       fs.mkdirSync(logsDir, { recursive: true });
     }
@@ -186,7 +186,8 @@ export function createSessionTrackers(rootDir, options = {}) {
         lines.push(`  URL: ${pc.url || '--'} | UA: ${pc.userAgent || '--'}`);
         lines.push(
           `  Stage Status: ${pc.overallStatus || '--'}` +
-            ` | Active Transport: ${pc.activeTransport || '--'}`
+            ` | Active Transport: ${pc.activeTransport || '--'}` +
+            ` | Dual-WS: ${pc.dualWsOk ? 'BOUND' : 'SINGLE'}`
         );
         lines.push(
           `  Server RTT: ${pc.serverRttMs ?? '--'} ms` +
@@ -197,6 +198,36 @@ export function createSessionTrackers(rootDir, options = {}) {
           `  WebRTC Fast UDP RTT: ${pc.rtcFastRttMs ?? 'BLOCKED'} ms` +
             ` | WebRTC Reliable RTT: ${pc.rtcRelRttMs ?? 'BLOCKED'} ms`
         );
+        if (pc.httpBench) {
+          const hb = pc.httpBench;
+          lines.push(
+            `  Striped HTTP (/api/room-rom ${hb.payloadKb || 512}KB): ` +
+              `1x=${hb.singleDlKbps} KB/s | 8x=${hb.stripeDlKbps} KB/s ` +
+              `(${hb.speedup}x) | PC2-UL=${hb.pc2UploadKbps} KB/s | ` +
+              `1stPct=DL:${hb.firstDlPct}%/UL:${hb.firstUlPct}% | ` +
+              `CRC=${hb.crcOk ? 'OK' : 'FAIL'}`
+          );
+        }
+        if (pc.wasmBench) {
+          const wb = pc.wasmBench;
+          const p1 = wb.pc1 || {}, p2 = wb.pc2 || {};
+          lines.push(
+            `  Arcade WASM (FBNeo): Hash60=${wb.hashMatch ? 'MATCH' : 'DIFF'}` +
+              ` (${p1.hash60 || '--'}) | PC1 5f-RB=${p1.rb5Ms ?? '--'}ms` +
+              ` (Boot=${p1.bootMs ?? '--'}ms) | PC2 5f-RB=${p2.rb5Ms ?? '--'}` +
+              `ms (Boot=${p2.bootMs ?? '--'}ms)`
+          );
+        }
+        if (pc.liveNetplay) {
+          const ln = pc.liveNetplay;
+          lines.push(
+            `  Live 2-PC Netplay (${ln.frames}f + 4x + Sync): ` +
+              `Hash=${ln.hashMatch ? 'SYNC_OK' : 'DESYNC'} (${ln.pc1Hash}) | ` +
+              `Desyncs=${ln.pc1Desyncs}/${ln.pc2Desyncs} | ` +
+              `RB=${ln.pc1Rollbacks}/${ln.pc2Rollbacks} | ` +
+              `SyncLoad=${ln.syncImportOk ? 'OK' : 'FAIL'}`
+          );
+        }
         if (Array.isArray(pc.stages) && pc.stages.length > 0) {
           lines.push('  Benchmark Stages:');
           for (const s of pc.stages) {
@@ -222,6 +253,21 @@ export function createSessionTrackers(rootDir, options = {}) {
             lines.push(`    ${l}`);
           }
         }
+      }
+
+      const rec =
+        autotestSession.pc1?.recommendations ||
+        autotestSession.pc2?.recommendations;
+      if (rec) {
+        lines.push('\n--- AUTO-TUNED NETPLAY RECOMMENDATIONS ---');
+        lines.push(`  Preferred Transport: ${rec.transport}`);
+        lines.push(
+          `  Recommended Input Delay: NES=${rec.nesDelayFrames}f` +
+            ` | Arcade=${rec.arcadeDelayFrames}f`
+        );
+        const cpuTag = rec.cpu60FpsOk
+          ? 'PASS (Both PCs < 16.7ms)' : 'WARN (Heavy CPU)';
+        lines.push(`  60fps 5f-Rollback Headroom: ${cpuTag}`);
       }
 
       lines.push('\n--- RECENT SERVER ACCESS LOG ---');
