@@ -9,45 +9,54 @@ for (let p = 0; p < 65536; p++) {
 }
 let fbneoFactory = null, fbneoWasmModule = null, fbneoLoadPromise = null;
 export async function ensureFbneoRuntime(onProgress = null) {
-  if (fbneoFactory && fbneoWasmModule) {
+  if (fbneoFactory && fbneoWasmModule)
     return { factory: fbneoFactory, wasmModule: fbneoWasmModule };
-  }
   if (fbneoLoadPromise) return fbneoLoadPromise;
   fbneoLoadPromise = (async () => {
     onProgress?.(0, { pct: 0 });
-    let wasmBytes;
     if (typeof window !== 'undefined' && !globalThis.process?.versions?.node) {
       const [ns, xfer] = await Promise.all([
-        import('/vendor/fbneo_arcade.js?v=2'),
+        import('/vendor/fbneo_arcade.js?v=3'),
         import('/js/rom_fast_transfer.mjs')
       ]);
       fbneoFactory = ns.default;
-      const hit = await xfer.getCachedRomByCrc('WASM_FBNEO_V2');
-      if (hit?.u8?.byteLength > 1000000) {
-        wasmBytes = hit.u8;
-      } else {
-        const dl = await xfer.fetchStripedBinary(
-          '/vendor/fbneo_arcade.wasm?v=2', { onProgress }
-        );
-        if (!dl?.u8) throw new Error('Failed to load fbneo_arcade.wasm');
-        wasmBytes = dl.u8;
-        xfer.putCachedRomByCrc('WASM_FBNEO_V2', 'fbneo_arcade.wasm', wasmBytes);
+      const wasmUrl = '/vendor/fbneo_arcade.wasm?v=3', key = 'WASM_FBNEO_V3';
+      const hit = await xfer.getCachedRomByCrc(key);
+      let u8 = hit?.u8?.byteLength > 1000000 ? hit.u8 : null;
+      if (!u8) {
+        if (xfer.isLocalHostRuntime()) {
+          const r = await fetch(wasmUrl);
+          if (!r.ok) throw new Error(`FBNeo WASM HTTP ${r.status}`);
+          u8 = new Uint8Array(await r.arrayBuffer());
+        } else {
+          const dl = await xfer.fetchStripedBinary(wasmUrl, { onProgress });
+          if (!dl?.u8) throw new Error('Failed to load fbneo_arcade.wasm');
+          u8 = dl.u8;
+        }
+        xfer.putCachedRomByCrc(key, 'fbneo_arcade.wasm', u8);
+      }
+      try { fbneoWasmModule = await WebAssembly.compile(u8); }
+      catch {
+        await xfer.deleteCachedRomByCrc(key);
+        const fresh = await fetch(wasmUrl, { cache: 'reload' });
+        u8 = new Uint8Array(await fresh.arrayBuffer());
+        fbneoWasmModule = await WebAssembly.compile(u8);
+        xfer.putCachedRomByCrc(key, 'fbneo_arcade.wasm', u8);
       }
     } else {
       const [fs, path, url] = await Promise.all([
         import('node:fs'), import('node:path'), import('node:url')
       ]);
-      const dir = path.dirname(url.fileURLToPath(import.meta.url));
-      const vDir = path.resolve(dir, '..', 'public', 'vendor');
-      const ns = await import(
-        url.pathToFileURL(path.join(vDir, 'fbneo_arcade.js')).href
+      const vDir = path.resolve(
+        path.dirname(url.fileURLToPath(import.meta.url)), '..', 'public/vendor'
       );
-      fbneoFactory = ns.default;
-      wasmBytes = new Uint8Array(
-        fs.readFileSync(path.join(vDir, 'fbneo_arcade.wasm'))
+      fbneoFactory = (await import(
+        url.pathToFileURL(path.join(vDir, 'fbneo_arcade.js')).href
+      )).default;
+      fbneoWasmModule = await WebAssembly.compile(
+        new Uint8Array(fs.readFileSync(path.join(vDir, 'fbneo_arcade.wasm')))
       );
     }
-    fbneoWasmModule = await WebAssembly.compile(wasmBytes);
     return { factory: fbneoFactory, wasmModule: fbneoWasmModule };
   })().catch((err) => { fbneoLoadPromise = null; throw err; });
   return fbneoLoadPromise;
@@ -70,23 +79,16 @@ function listZipEntryNames(u8) {
   const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
   if (dv.getUint32(0, true) !== 0x04034b50) return names;
   let eocd = -1;
-  for (let i = u8.byteLength - 22; i >= Math.max(0, u8.byteLength - 65557);
-       i--) {
+  for (let i = u8.byteLength - 22; i >= Math.max(0, u8.byteLength - 65557); i--)
     if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
-  }
   if (eocd < 0) return names;
-  const total = dv.getUint16(eocd + 10, true);
-  let cdOff = dv.getUint32(eocd + 16, true);
-  const dec = new TextDecoder('utf-8');
-  for (let e = 0; e < total && cdOff + 46 <= u8.byteLength; e++) {
-    if (dv.getUint32(cdOff, true) !== 0x02014b50) break;
-    const nLen = dv.getUint16(cdOff + 28, true);
-    const xLen = dv.getUint16(cdOff + 30, true);
-    const cLen = dv.getUint16(cdOff + 32, true);
-    names.push(
-      dec.decode(u8.subarray(cdOff + 46, cdOff + 46 + nLen)).toLowerCase()
-    );
-    cdOff += 46 + nLen + xLen + cLen;
+  const total = dv.getUint16(eocd + 10, true), dec = new TextDecoder('utf-8');
+  for (let e = 0, cd = dv.getUint32(eocd + 16, true);
+       e < total && cd + 46 <= u8.byteLength; e++) {
+    if (dv.getUint32(cd, true) !== 0x02014b50) break;
+    const nLen = dv.getUint16(cd + 28, true);
+    names.push(dec.decode(u8.subarray(cd + 46, cd + 46 + nLen)).toLowerCase());
+    cd += 46 + nLen + dv.getUint16(cd + 30, true) + dv.getUint16(cd + 32, true);
   }
   return names;
 }
@@ -285,11 +287,9 @@ export async function createFbneoArcadeCore({
   };
   core.saveStateInto = function (slot, frame) {
     const view = getMemfsStateView();
-    slot.frame = frame;
-    slot.usedLen = view.length;
-    if (!slot.stateBytes || slot.stateBytes.length < view.length) {
+    slot.frame = frame; slot.usedLen = view.length;
+    if (!slot.stateBytes || slot.stateBytes.length < view.length)
       slot.stateBytes = new Uint8Array(view.length);
-    }
     slot.stateBytes.set(view);
   };
   core.loadStateFromSlot = function (slot) {

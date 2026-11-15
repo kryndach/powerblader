@@ -1,10 +1,14 @@
-// Parallel Striped HTTP Range Downloader, Multipart Uploader & IDB ROM Cache
+// Parallel Striped HTTP Range Downloader, Multipart Uploader & ROM Cache
 import { formatTransferProgress } from './transfer_status_ui.mjs';
-export { formatTransferProgress };
+import {
+  getCachedRomByCrc, putCachedRomByCrc, deleteCachedRomByCrc,
+  clearMemRomCacheForTests
+} from './rom_idb_cache.mjs';
 
-const IDB_NAME = 'nes_online_rom_cache_v1';
-const IDB_STORE = 'roms';
-const memCacheFallback = new Map();
+export {
+  formatTransferProgress, getCachedRomByCrc, putCachedRomByCrc,
+  deleteCachedRomByCrc, clearMemRomCacheForTests
+};
 
 export function isLocalHostRuntime() {
   const h = globalThis.location?.hostname || '';
@@ -38,67 +42,8 @@ function createByteTracker(totalBytes, onProgress) {
     emitZero: () => emit(true),
     add: (n) => { loaded += n; emit(false); },
     rollback: (n) => { loaded = Math.max(0, loaded - n); },
-    done: (finalTotal = totalBytes) => {
-      loaded = finalTotal;
-      emit(true);
-    }
+    done: (finalTotal = totalBytes) => { loaded = finalTotal; emit(true); }
   };
-}
-
-function openRomIdb() {
-  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
-  return new Promise((resolve) => {
-    try {
-      const req = indexedDB.open(IDB_NAME, 1);
-      req.onupgradeneeded = () => {
-        if (!req.result.objectStoreNames.contains(IDB_STORE)) {
-          req.result.createObjectStore(IDB_STORE);
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-    } catch { resolve(null); }
-  });
-}
-
-export async function getCachedRomByCrc(crc) {
-  const key = String(crc || '').trim().toUpperCase();
-  if (!key) return null;
-  if (memCacheFallback.has(key)) return memCacheFallback.get(key);
-  const db = await openRomIdb();
-  if (!db) return null;
-  return new Promise((resolve) => {
-    try {
-      const tx = db.transaction(IDB_STORE, 'readonly');
-      const req = tx.objectStore(IDB_STORE).get(key);
-      req.onsuccess = () => {
-        const val = req.result;
-        if (val?.u8) {
-          resolve({ romName: val.romName, u8: new Uint8Array(val.u8) });
-        } else resolve(null);
-      };
-      req.onerror = () => resolve(null);
-    } catch { resolve(null); }
-  });
-}
-
-export async function putCachedRomByCrc(crc, romName, u8) {
-  const key = String(crc || '').trim().toUpperCase();
-  if (!key || !u8?.byteLength) return;
-  if (typeof indexedDB === 'undefined') {
-    memCacheFallback.set(key, { romName, u8: new Uint8Array(u8) });
-    return;
-  }
-  const db = await openRomIdb();
-  if (!db) return;
-  try {
-    const tx = db.transaction(IDB_STORE, 'readwrite');
-    tx.objectStore(IDB_STORE).put({ romName, u8, ts: Date.now() }, key);
-  } catch {}
-}
-
-export function clearMemRomCacheForTests() {
-  memCacheFallback.clear();
 }
 
 async function gunzipBytes(u8) {
@@ -121,7 +66,8 @@ async function fetchWithRetry(url, init, retries = 3, doFetch = null) {
         throw init.signal.reason || new Error('Aborted');
       }
       const res = await fn(url, init);
-      if (res.ok || res.status === 206 || res.status === 404) return res;
+      if (res.ok || res.status === 206 || res.status === 404 ||
+          res.status === 416) return res;
       lastErr = new Error(`HTTP ${res.status}`);
     } catch (e) {
       if (e?.name === 'AbortError' || init?.signal?.aborted) throw e;
@@ -134,13 +80,33 @@ async function fetchWithRetry(url, init, retries = 3, doFetch = null) {
   throw lastErr || new Error('Fetch failed');
 }
 
-async function fetchSliceInto(url, init, dst, start, maxLen, tracker, doFetch) {
+function validateSliceHeaders(r, start, expectedTotal, expectedEnc) {
+  if (r.status !== 206) {
+    throw Object.assign(
+      new Error(`Slice HTTP ${r.status}`), { rangeMismatch: r.status === 416 ||
+        r.status === 200 }
+    );
+  }
+  const enc = r.headers.get('X-Payload-Encoding') || 'identity';
+  const cr = r.headers.get('Content-Range') || '';
+  const m = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(cr.trim());
+  if (!m || Number(m[1]) !== start || Number(m[3]) !== expectedTotal ||
+      enc !== expectedEnc) {
+    throw Object.assign(
+      new Error('Range representation mismatch'), { rangeMismatch: true }
+    );
+  }
+}
+
+async function fetchSliceInto(
+  url, init, dst, start, maxLen, tracker, doFetch, meta
+) {
   let lastErr = null;
   for (let attempt = 0; attempt <= 3; attempt++) {
     let added = 0;
     try {
       const r = await fetchWithRetry(url, init, 0, doFetch);
-      if (!r.ok && r.status !== 206) throw new Error(`Slice HTTP ${r.status}`);
+      validateSliceHeaders(r, start, meta.total, meta.payloadEnc);
       if (r.body?.getReader) {
         const reader = r.body.getReader();
         while (true) {
@@ -153,17 +119,19 @@ async function fetchSliceInto(url, init, dst, start, maxLen, tracker, doFetch) {
             tracker.add(n);
           }
         }
-        return added;
+      } else {
+        const chunk = new Uint8Array(await r.arrayBuffer());
+        const n = Math.min(chunk.byteLength, maxLen);
+        dst.set(chunk.subarray(0, n), start);
+        added = n;
+        tracker.add(n);
       }
-      const chunk = new Uint8Array(await r.arrayBuffer());
-      const n = Math.min(chunk.byteLength, maxLen);
-      dst.set(chunk.subarray(0, n), start);
-      added = n;
-      tracker.add(n);
+      if (added !== maxLen) throw new Error(`Short slice ${added}/${maxLen}`);
       return added;
     } catch (e) {
       if (added > 0) tracker.rollback(added);
-      if (e?.name === 'AbortError' || init?.signal?.aborted) throw e;
+      if (e?.name === 'AbortError' || init?.signal?.aborted ||
+          e?.rangeMismatch) throw e;
       lastErr = e;
       if (attempt < 3) {
         await new Promise((r) => setTimeout(r, 40 * (attempt + 1)));
@@ -173,20 +141,36 @@ async function fetchSliceInto(url, init, dst, start, maxLen, tracker, doFetch) {
   throw lastErr || new Error('Slice download failed');
 }
 
+async function fetchSingleFullFallback(url, signal, doFetch, onProgress) {
+  const res = await fetchWithRetry(
+    url, { cache: 'no-store', signal }, 2, doFetch
+  );
+  if (!res.ok) return null;
+  const hdrName = res.headers.get('X-Rom-Filename');
+  const romName = hdrName ? decodeURIComponent(hdrName) : null;
+  const romCrc32 = res.headers.get('X-Rom-Crc32') || null;
+  const enc = res.headers.get('X-Payload-Encoding') || 'identity';
+  const raw = new Uint8Array(await res.arrayBuffer());
+  const out = enc === 'gzip' ? await gunzipBytes(raw) : raw;
+  onProgress?.(100, {
+    pct: 100, loadedBytes: out.byteLength, totalBytes: out.byteLength, bps: 0
+  });
+  return { romName, romCrc32, u8: out };
+}
+
 export async function fetchStripedBinary(url, {
-  concurrency = 8,
-  probeBytes = 65536,
-  sliceBytes = 262144,
-  onProgress = null,
-  signal = null,
-  fetchImpl = null
+  concurrency = 8, probeBytes = 65536, sliceBytes = 262144,
+  onProgress = null, signal = null, fetchImpl = null
 } = {}) {
   const doFetch = fetchImpl || globalThis.fetch;
   const canGunzip = typeof DecompressionStream === 'function' ||
     Boolean(globalThis.process?.versions?.node);
   const baseHdrs = canGunzip ? { 'X-Accept-Raw-Gz': '1' } : {};
+  const sep = url.includes('?') ? '&' : '?';
+  const reqUrl = canGunzip && !/[?&]rawgz=1\b/.test(url)
+    ? `${url}${sep}rawgz=1` : url;
 
-  const pRes = await fetchWithRetry(url, {
+  const pRes = await fetchWithRetry(reqUrl, {
     headers: { ...baseHdrs, Range: `bytes=0-${probeBytes - 1}` }, signal
   }, 3, doFetch);
   if (pRes.status === 404 || (!pRes.ok && pRes.status !== 206)) return null;
@@ -218,28 +202,35 @@ export async function fetchStripedBinary(url, {
   const full = new Uint8Array(total);
   full.set(firstBuf, 0);
   tracker.add(firstBuf.length);
-
   const ranges = [];
   for (let pos = firstBuf.length; pos < total; pos += sliceBytes) {
     ranges.push([pos, Math.min(total - 1, pos + sliceBytes - 1)]);
   }
 
   let cursor = 0;
-  const workers = Array.from(
-    { length: Math.min(concurrency, ranges.length) },
-    async () => {
-      while (cursor < ranges.length) {
-        const [start, end] = ranges[cursor++];
-        const init = {
-          headers: { ...baseHdrs, Range: `bytes=${start}-${end}` }, signal
-        };
-        await fetchSliceInto(
-          url, init, full, start, end - start + 1, tracker, doFetch
-        );
+  const meta = { total, payloadEnc };
+  try {
+    const workers = Array.from(
+      { length: Math.min(concurrency, ranges.length) },
+      async () => {
+        while (cursor < ranges.length) {
+          const [start, end] = ranges[cursor++];
+          const init = {
+            headers: { ...baseHdrs, Range: `bytes=${start}-${end}` }, signal
+          };
+          await fetchSliceInto(
+            reqUrl, init, full, start, end - start + 1, tracker, doFetch, meta
+          );
+        }
       }
+    );
+    await Promise.all(workers);
+  } catch (err) {
+    if (err?.rangeMismatch) {
+      return fetchSingleFullFallback(url, signal, doFetch, onProgress);
     }
-  );
-  await Promise.all(workers);
+    throw err;
+  }
   const out = payloadEnc === 'gzip' ? await gunzipBytes(full) : full;
   tracker.done(total);
   return { romName, romCrc32, u8: out };
@@ -266,7 +257,6 @@ export async function uploadStripedRom(
   }
   const totalParts = Math.ceil(totalBytes / sliceBytes);
   let cursor = 0;
-
   const workers = Array.from(
     { length: Math.min(concurrency, totalParts) },
     async () => {
@@ -278,9 +268,9 @@ export async function uploadStripedRom(
         const sep = baseUrl.includes('?') ? '&' : '?';
         const u = `${baseUrl}${sep}part=${part}&total=${totalParts}` +
           `&offset=${off}&size=${totalBytes}`;
-        const r = await fetchWithRetry(u, {
-          method: 'POST', headers, body: slice
-        }, 3, doFetch);
+        const r = await fetchWithRetry(
+          u, { method: 'POST', headers, body: slice }, 3, doFetch
+        );
         if (!r.ok) throw new Error(`Upload part ${part} HTTP ${r.status}`);
         tracker.add(slice.length);
       }
@@ -298,8 +288,9 @@ export async function uploadRomToServerCache(state, onProgress = null) {
   const rm = state.roomCode || 'NOVA', crc = state.romCrc32;
   state.roomRomOnProgress = onProgress;
   if (state.roomRomUploadedCrc === crc) return rm;
-  if (state.roomRomUploadPromise && state.roomRomUploadingCrc === crc)
+  if (state.roomRomUploadPromise && state.roomRomUploadingCrc === crc) {
     return state.roomRomUploadPromise;
+  }
   state.roomRomUploadingCrc = crc;
   state.roomRomUploadPromise = (async () => {
     try {

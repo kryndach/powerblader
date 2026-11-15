@@ -15,10 +15,12 @@ const cleanRoom = (raw) =>
 export function sendBinaryWithRange(
   req, res, rawBuf, gzBuf = null, extra = {}
 ) {
-  const rawGz = req.headers['x-accept-raw-gz'] === '1';
+  const rawGz = req.headers['x-accept-raw-gz'] === '1' ||
+    /[?&]rawgz=1\b/.test(req.url || '');
   const gzOk = /\bgzip\b/i.test(req.headers['accept-encoding'] || '');
   const rangeHdr = req.headers.range || '';
   const m = /^bytes=(\d+)-(\d*)$/i.exec(rangeHdr.trim());
+  const vary = 'Accept-Encoding, X-Accept-Raw-Gz';
 
   if (m) {
     const useGz = Boolean(rawGz && gzBuf);
@@ -26,7 +28,9 @@ export function sendBinaryWithRange(
     const start = Number(m[1]);
     const end = m[2] ? Math.min(src.length - 1, Number(m[2])) : src.length - 1;
     if (start >= src.length || start > end) {
-      res.writeHead(416, { 'Content-Range': `bytes */${src.length}` });
+      res.writeHead(416, {
+        'Content-Range': `bytes */${src.length}`, Vary: vary
+      });
       return res.end();
     }
     const slice = src.subarray(start, end + 1);
@@ -37,6 +41,7 @@ export function sendBinaryWithRange(
       'Content-Length': String(slice.length),
       'X-Raw-Length': String(rawBuf.length),
       'X-Payload-Encoding': useGz ? 'gzip' : 'identity',
+      Vary: vary,
       ...extra
     });
     return res.end(slice);
@@ -50,6 +55,7 @@ export function sendBinaryWithRange(
     'Content-Length': String(body.length),
     'X-Raw-Length': String(rawBuf.length),
     'X-Payload-Encoding': rawGz && gzBuf ? 'gzip' : 'identity',
+    Vary: vary,
     ...extra
   };
   if (useGz) hdrs['Content-Encoding'] = 'gzip';

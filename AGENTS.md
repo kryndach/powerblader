@@ -20,6 +20,13 @@
   - Keep `.ps1` scripts (`start_online.ps1`) strictly **7-bit ASCII** (no
     Unicode em-dashes or smart quotes) so PowerShell 5.1 parses without BOM.
 - **Baseline Tag:** `stable2` (`64176b6`) marks the verified pre-cleanup state.
+- **Mandatory Bug-Fix TDD Workflow (NO EXCEPTIONS):**
+  1. **Reproduce:** Inspect `logs/` & code to pinpoint exact root cause.
+  2. **Write Failing Test First:** Add a Node or Real-Chrome E2E test that
+     reproduces the bug and verify it **FAILS** before editing production code.
+  3. **Fix:** Implement the minimal, clean root-cause fix.
+  4. **Verify Green:** Run `npm run check:style` and `npm test` (including 2-tab
+     Chromium E2E `tools/test_browser_e2e.mjs`) before merging to `master`.
 
 ## 2. Code Style & Clean Code Rules (Strictly Enforced)
 
@@ -77,7 +84,7 @@ rules before committing:
     (`key_bindings.mjs`), fullscreen/auto-center & 1x..8x turbo speed
     (`viewport_and_speed.mjs`), drag-drop & `.zip`/`.rar`/`.7z` loader
     (`rom_archive.mjs`), 8x striped HTTP `Range` + IndexedDB CRC32 cache
-    (`rom_fast_transfer.mjs`), unified live transfer UI
+    (`rom_fast_transfer.mjs`, `rom_idb_cache.mjs`), unified live transfer UI
     (`transfer_status_ui.mjs`), 48kHz DRC audio, Dual-WSS + WebRTC, Lobby.
   - `public/autotest.html` & `public/net_debug.html` — Zero-click 6-stage
     2-PC benchmark (`/autotest`) and interactive network workbench (`/nettest`).
@@ -86,9 +93,10 @@ rules before committing:
     `server/archive_extractor.mjs`, `server/room_rom_and_save_api.mjs` — Node
     HTTP/WSS server, `.zip`/`.rar`/`.7z` ROM unpacker, `206` Range & multipart
     ROM cache, Dual-WS striping, and telemetry auto-save.
-- **`tools/` (Automated QA & Style Verification):**
+- **`tools/` (Automated QA, Real-Browser E2E & Style Verification):**
   - `npm test` — Runs `test_coop_qa.mjs`, `test_net_diagnostics.mjs`,
-    `test_real_roms.mjs`, and `test_perf_and_edge_cases.mjs` (`npm run bench`).
+    `test_real_roms.mjs`, `test_perf_and_edge_cases.mjs`, and real 2-tab
+    headless Chrome E2E `test_browser_e2e.mjs` (`npm run test:e2e`).
   - `npm run check:style` — Verifies 80-char width and 350-line file limits.
 
 ## 4. Deep-Dive Reference Docs (Read On Demand)

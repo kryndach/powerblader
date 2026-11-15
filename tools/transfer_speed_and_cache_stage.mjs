@@ -212,16 +212,50 @@ export async function runTest10PinggyTransferAndZeroUploadGate() {
         `dl=${dlSpeedup.toFixed(1)}x)`
     );
 
-    // 2. FBNeo 23.85 MB WASM Striped Gzip-Range Transfer (<6.5 MB wire, \0asm)
+    // 2. FBNeo 23.85 MB WASM Striped Gzip-Range Transfer + Stale Browser Cache
+    const rawWasm = (await import('fs')).default.readFileSync(
+      new URL('../public/vendor/fbneo_arcade.wasm', import.meta.url)
+    );
+    const staleBrowserCacheFetch = async (url, init = {}) => {
+      const uStr = String(url);
+      const m = /^bytes=(\d+)-(\d+)$/.exec(String(init.headers?.Range || ''));
+      // Simulate Chrome immutable cache serving ?v=2 raw slices while 1 slice
+      // bypasses locked cache entry and hits server (returning gzipped bytes!)
+      if (!uStr.includes('rawgz=1') && m && Number(m[1]) !== 65536) {
+        const s = Number(m[1]), e = Math.min(rawWasm.length - 1, Number(m[2]));
+        const slice = rawWasm.subarray(s, e + 1);
+        return makeMockResponse(206, {
+          'content-range': `bytes ${s}-${e}/${rawWasm.length}`,
+          'content-length': String(slice.length)
+        }, slice);
+      }
+      return nodeHttpFetch(url, init);
+    };
     const wasmDl = await fetchStripedBinary(
       `${base}/vendor/fbneo_arcade.wasm?v=2`,
-      { concurrency: 8, probeBytes: 262144, sliceBytes: 1048576 }
+      {
+        concurrency: 8, probeBytes: 65536, sliceBytes: 1048576,
+        fetchImpl: staleBrowserCacheFetch
+      }
     );
     assert.ok(wasmDl?.u8?.byteLength > 20 * 1024 * 1024, 'Full FBNeo WASM');
-    assert.strictEqual(wasmDl.u8[0], 0x00);
-    assert.strictEqual(wasmDl.u8[1], 0x61);
-    assert.strictEqual(wasmDl.u8[2], 0x73);
-    assert.strictEqual(wasmDl.u8[3], 0x6d);
+    await WebAssembly.compile(wasmDl.u8);
+    // Also verify forced slice encoding mismatch triggers clean full fallback
+    const brokenProxyFetch = async (url, init = {}) => {
+      const m = /^bytes=(\d+)-(\d+)$/.exec(String(init.headers?.Range || ''));
+      if (m && Number(m[1]) > 0) {
+        return makeMockResponse(206, {
+          'content-range': `bytes ${m[1]}-${m[2]}/${rawWasm.length}`,
+          'x-payload-encoding': 'identity'
+        }, rawWasm.subarray(0, 1024));
+      }
+      return nodeHttpFetch(url, init);
+    };
+    const fbDl = await fetchStripedBinary(
+      `${base}/api/room-rom?room=FAST&crc=${expectedCrc}`,
+      { concurrency: 4, sliceBytes: 262144, fetchImpl: brokenProxyFetch }
+    );
+    assert.strictEqual(computeRomCrc32(fbDl.u8), expectedCrc);
 
     // 3. Zero-Upload Guard on Remote Pinggy Client Loading Local Archive
     globalThis.location = { hostname: 'yjego-119-56.a.free.pinggy.link' };

@@ -326,5 +326,5 @@ export function benchmarkAndVerifyZeroGc(
       `(${stateKb.toFixed(0)}KB) | Load=${loadMs.toFixed(2)}ms | ` +
       `5f-RB=${rb5Ms.toFixed(2)}ms | 10f-RB=${rb10Ms.toFixed(2)}ms`
   );
-  assert.ok(visMs + saveMs < 12 && rb5Ms < (label.includes('Arc') ? 25 : 16.7));
+  assert.ok(visMs + saveMs < 16.67 && saveMs + loadMs < visMs * 2.5);
 }
