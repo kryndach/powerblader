@@ -79,6 +79,9 @@ export function cacheRoomRom(
   };
   if (roomCode) roomRomCache.set(roomCode, entry);
   if (crc) roomRomCache.set(`CRC:${crc}`, entry);
+  while (roomRomCache.size > 16) {
+    roomRomCache.delete(roomRomCache.keys().next().value);
+  }
   return entry;
 }
 

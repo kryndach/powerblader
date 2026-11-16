@@ -204,32 +204,31 @@ export function createNetTransport(state, ui, onIncomingMessage) {
       const p2pReady =
         state.rtcChannel && state.rtcChannel.readyState === 'open';
 
+      const sendWssStriped = () => {
+        if (!state.ws || state.ws.readyState !== 1) return;
+        state.ws.send(raw);
+        const sendAux =
+          (pkt.startFrame & 1) === 0 ||
+          (pkt.inputs && pkt.inputs.length > 1) ||
+          pkt.hashFrame !== undefined;
+        if (sendAux && state.wsAux && state.wsAux.readyState === 1) {
+          try { state.wsAux.send(raw); } catch {}
+        }
+        state.txCountThisSec++;
+      };
+
       if (mode === 'p2p') {
         if (p2pReady) {
           state.rtcChannel.send(raw);
           state.txCountThisSec++;
         }
       } else if (mode === 'wss') {
-        if (state.ws && state.ws.readyState === 1) {
-          state.ws.send(raw);
-          if (state.wsAux && state.wsAux.readyState === 1) {
-            try {
-              state.wsAux.send(raw);
-            } catch {}
-          }
-          state.txCountThisSec++;
-        }
+        sendWssStriped();
       } else if (p2pReady) {
         state.rtcChannel.send(raw);
         state.txCountThisSec++;
-      } else if (state.ws && state.ws.readyState === 1) {
-        state.ws.send(raw);
-        if (state.wsAux && state.wsAux.readyState === 1) {
-          try {
-            state.wsAux.send(raw);
-          } catch {}
-        }
-        state.txCountThisSec++;
+      } else {
+        sendWssStriped();
       }
     };
 

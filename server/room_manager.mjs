@@ -9,6 +9,15 @@ const FORWARD_TYPES = new Set([
 const normCode = (raw) =>
   String(raw || 'NOVA').trim().toUpperCase().slice(0, 12);
 
+function seenInputKey(peer, key) {
+  let s = peer._rxInputDedupSet;
+  if (!s) s = peer._rxInputDedupSet = new Set();
+  if (s.has(key)) return true;
+  s.add(key);
+  if (s.size > 128) s.delete(s.keys().next().value);
+  return false;
+}
+
 export function createRoomManager(trackers, options = {}) {
   const rooms = new Map();
   const {
@@ -40,16 +49,12 @@ export function createRoomManager(trackers, options = {}) {
     const msgWithSeq = { ...payloadObj, _seq: peer.nextSeq++ };
     const raw = JSON.stringify(msgWithSeq);
     let sentViaWs = false;
-    if (peer.ws?.readyState === 1) {
-      try { peer.ws.send(raw); peer.lastTxAt = Date.now(); sentViaWs = true; }
+    const socks = payloadObj.type === 'netplay_input'
+      ? [peer.ws, peer.wsAux] : [peer.ws];
+    for (const s of socks) {
+      if (s?.readyState !== 1) continue;
+      try { s.send(raw); peer.lastTxAt = Date.now(); sentViaWs = true; }
       catch {}
-    }
-    if (payloadObj.type === 'netplay_input' && peer.wsAux?.readyState === 1) {
-      try {
-        peer.wsAux.send(raw);
-        peer.lastTxAt = Date.now();
-        sentViaWs = true;
-      } catch {}
     }
     if (sentViaWs) return;
     peer.httpOutbox.push(msgWithSeq);
@@ -212,17 +217,13 @@ export function createRoomManager(trackers, options = {}) {
     if (shouldForward) {
       if (msg.type === 'netplay_input' && typeof msg.startFrame === 'number') {
         const firstIn = Array.isArray(msg.inputs) ? msg.inputs[0] : 0;
-        const dedupKey =
-          `${msg.sessionId || ''}:${msg.startFrame}:` +
+        const dedupKey = `${msg.sessionId || ''}:${msg.startFrame}:` +
           `${firstIn}:${msg.hashFrame || ''}`;
-        if (peer._lastInputDedupKey === dedupKey) return;
-        peer._lastInputDedupKey = dedupKey;
+        if (seenInputKey(peer, dedupKey)) return;
       }
       broadcastToRoom(peer.roomCode, peer.clientId, {
-        ...msg,
-        fromPlayer: peer.playerIndex,
-        fromNick: peer.nick,
-        serverRxTime: Date.now()
+        ...msg, fromPlayer: peer.playerIndex,
+        fromNick: peer.nick, serverRxTime: Date.now()
       });
     }
   }

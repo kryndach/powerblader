@@ -117,7 +117,12 @@ export function createTelemetryReporter(state, ui, romSync) {
         );
         if (topOpt) topOpt.textContent = `Lag: Auto (${recDelay}f)`;
       }
-      if (recDelay !== state.engine.inputDelayFrames) {
+      const delta = Math.abs(recDelay - state.engine.inputDelayFrames);
+      const inActiveMatch =
+        !state.engine.syncPaused && (state.engine.currentFrame || 0) >= 90;
+      const minStreak = inActiveMatch ? 8 : 3;
+      const minCooldown = inActiveMatch ? 45000 : 12000;
+      if (delta > 0 && (!inActiveMatch || delta >= 2)) {
         if (state.autoDelayCandidate === recDelay) {
           state.autoDelayStreak++;
         } else {
@@ -126,8 +131,8 @@ export function createTelemetryReporter(state, ui, romSync) {
         }
         const nowMs = performance.now();
         if (
-          state.autoDelayStreak >= 3 &&
-          nowMs - state.lastAutoDelayChangeAt > 12000
+          state.autoDelayStreak >= minStreak &&
+          nowMs - state.lastAutoDelayChangeAt > minCooldown
         ) {
           state.lastAutoDelayChangeAt = nowMs;
           state.autoDelayStreak = 0;

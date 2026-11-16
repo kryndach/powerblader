@@ -29,6 +29,9 @@ if (!clientId) {
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('room') || 'AUTO').trim().toUpperCase();
+const gameRoom = (params.get('gameRoom') || 'NOVA').trim().toUpperCase();
+const backBtn = el('backToGameBtn');
+if (backBtn) backBtn.href = `/?room=${encodeURIComponent(gameRoom)}`;
 
 let ws = null, wsAux = null, localPlayerIndex = 1, peerConnected = false;
 let suiteRunning = false, autoStartedOnce = false, reconnectTimer = null;

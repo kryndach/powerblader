@@ -103,22 +103,15 @@ if (params.get('debug') === '1') {
 
 function connectToRoom() {
   audio.initAudio();
-  if (state.ws) {
-    try {
-      state.ws.close();
-    } catch {}
-    state.ws = null;
-  }
-  if (state.wsAux) {
-    try {
-      state.wsAux.close();
-    } catch {}
-    state.wsAux = null;
-  }
+  if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
+  if (state.wsAux) { try { state.wsAux.close(); } catch {} state.wsAux = null; }
   transport.closeWebRtc();
 
   const code = (ui.roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
   ui.roomInput.value = code;
+  if (ui.autoBenchLink) {
+    ui.autoBenchLink.href = `/autotest?gameRoom=${encodeURIComponent(code)}`;
+  }
   const nick = (ui.nickInput.value || 'Player').trim().slice(0, 14);
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${proto}//${window.location.host}/ws`;
@@ -342,7 +335,9 @@ ui.saveFileInput?.addEventListener('change', () => {
 startConsoleFrameLoop(
   state, ui, transport, telemetry, saveSlots, keyBindings, viewportCtrl
 );
+ui.autoBenchLink?.addEventListener('click', () => {
+  const c = (ui.roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
+  ui.autoBenchLink.href = `/autotest?gameRoom=${encodeURIComponent(c)}`;
+});
 await romSync.discoverLocalRoms();
-if (params.get('room')) {
-  connectToRoom();
-}
+if (params.get('room')) connectToRoom();

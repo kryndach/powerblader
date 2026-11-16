@@ -259,7 +259,7 @@ export function buildNetplayInputPacket(engine, latestScheduledFrame) {
     1,
     latestScheduledFrame - engine.timelineStartFrame + 1
   );
-  const count = Math.min(32, avail);
+  const count = Math.min(Math.max(32, engine.maxRollbackFrames || 32), avail);
   const fullInputs = new Array(count);
   for (let i = 0; i < count; i++) {
     fullInputs[i] = engine.getLocalInputAt(latestScheduledFrame - i);

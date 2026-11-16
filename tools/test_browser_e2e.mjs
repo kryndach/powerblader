@@ -187,11 +187,12 @@ async function runMainGameTwoTabE2E(browser, hostPort, remPort) {
 }
 
 async function runAutotestV3TwoTabE2E(browser, hostPort, remPort, logsDir) {
+  const q = 'room=E2EAUTO&gameRoom=POSTAT';
   const tabA = await createCdpTab(
-    browser.debugPort, `http://127.0.0.1:${hostPort}/autotest?room=E2EAUTO`
+    browser.debugPort, `http://127.0.0.1:${hostPort}/autotest?${q}`
   );
   const tabB = await createCdpTab(
-    browser.debugPort, `http://127.0.0.2:${remPort}/autotest?room=E2EAUTO`
+    browser.debugPort, `http://127.0.0.2:${remPort}/autotest?${q}`
   );
   try {
     const hdr = await waitFor(() => tabA.evaluate(
@@ -240,9 +241,19 @@ async function runAutotestV3TwoTabE2E(browser, hostPort, remPort, logsDir) {
     assert.ok(txt.includes('AUTO-TUNED NETPLAY RECOMMENDATIONS'));
     assert.strictEqual(tabA.exceptions.length, 0, tabA.exceptions.join('; '));
     assert.strictEqual(tabB.exceptions.length, 0, tabB.exceptions.join('; '));
+
+    // Click "Back to NES Game" on both tabs & verify auto-rejoin to POSTAT!
+    await tabA.evaluate(`document.getElementById('backToGameBtn').click()`);
+    await tabB.evaluate(`document.getElementById('backToGameBtn').click()`);
+    await waitFor(() => tabA.evaluate(`(() => {
+      const b = document.getElementById('lobbyRoomBadge')?.textContent || '';
+      const p2 = document.getElementById('lobbyP2Badge')?.textContent || '';
+      return b.includes('POSTAT') && p2 !== 'WAITING' && p2 !== 'OFFLINE';
+    })()`), 10000, 'Post-autotest auto-rejoin Room POSTAT on both tabs');
+
     console.log(
-      '[PASS] 2/3 Real Chrome Zero-Click /autotest v3.0 E2E ' +
-      '(8 Stages, Dual-WS, Striped HTTP, FBNeo WASM & Live Rollback)'
+      '[PASS] 2/3 Real Chrome Zero-Click /autotest v3.0 + Post-Autotest ' +
+      'Auto-Rejoin E2E Verified'
     );
   } finally {
     try { tabA.close(); } catch {}

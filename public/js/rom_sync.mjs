@@ -81,7 +81,7 @@ export function createRomSyncManager(state, ui, audio) {
     state.nes.loadROM(state.romBinaryString);
     state.engine.localPlayer = state.localPlayerIndex;
     state.engine.online = true;
-    state.engine.enableRiftPacing = true;
+    state.engine.enableRiftPacing = false;
     state.engine.inputDelayFrames = resolveDesiredInputDelay();
     state.engine.resetTimeline(0, newSessionId);
     state.engine.syncPaused = true;
@@ -177,10 +177,10 @@ export function createRomSyncManager(state, ui, audio) {
     state.engine = new NesNetplayEngine(state.nes, {
       localPlayer: state.localPlayerIndex,
       online: isOnline,
-      enableRiftPacing: true,
+      enableRiftPacing: false,
       inputDelayFrames: resolveDesiredInputDelay(sysId),
-      maxRollbackFrames: 20,
-      saveBufferSize: sysId === 'nes' ? 64 : 48
+      maxRollbackFrames: sysId === 'arcade' ? 36 : 56,
+      saveBufferSize: sysId === 'arcade' ? 48 : 64
     });
 
     if (isOnline) state.engine.syncPaused = true;

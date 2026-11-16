@@ -57,7 +57,9 @@ async function gunzipBytes(u8) {
   return new Uint8Array(zlib.gunzipSync(u8));
 }
 
-async function fetchWithRetry(url, init, retries = 3, doFetch = null) {
+const RETRY_WAIT_MS = [120, 280, 550, 1100, 2200];
+
+async function fetchWithRetry(url, init, retries = 5, doFetch = null) {
   const fn = doFetch || globalThis.fetch;
   let lastErr = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -74,7 +76,8 @@ async function fetchWithRetry(url, init, retries = 3, doFetch = null) {
       lastErr = e;
     }
     if (attempt < retries) {
-      await new Promise((r) => setTimeout(r, 40 * (attempt + 1)));
+      const wait = RETRY_WAIT_MS[attempt] || 2200;
+      await new Promise((r) => setTimeout(r, wait));
     }
   }
   throw lastErr || new Error('Fetch failed');
@@ -238,7 +241,7 @@ export async function fetchStripedBinary(url, {
 
 export async function uploadStripedRom(
   baseUrl, body, headers = {}, {
-    concurrency = 8, sliceBytes = 262144, onProgress = null, fetchImpl = null,
+    concurrency = 4, sliceBytes = 131072, onProgress = null, fetchImpl = null,
     forceStriped = false
   } = {}
 ) {
@@ -269,7 +272,7 @@ export async function uploadStripedRom(
         const u = `${baseUrl}${sep}part=${part}&total=${totalParts}` +
           `&offset=${off}&size=${totalBytes}`;
         const r = await fetchWithRetry(
-          u, { method: 'POST', headers, body: slice }, 3, doFetch
+          u, { method: 'POST', headers, body: slice }, 5, doFetch
         );
         if (!r.ok) throw new Error(`Upload part ${part} HTTP ${r.status}`);
         tracker.add(slice.length);

@@ -44,7 +44,7 @@ export function createProtocolHandlers(
     clearActiveRomTransfers();
     state.engine.localPlayer = state.localPlayerIndex;
     state.engine.online = true;
-    state.engine.enableRiftPacing = true;
+    state.engine.enableRiftPacing = false;
     state.engine.inputDelayFrames = romSync.resolveDesiredInputDelay();
     if (syncState.resetToZero && state.nes && state.romBinaryString) {
       state.nes.loadROM(state.romBinaryString);
@@ -97,7 +97,7 @@ export function createProtocolHandlers(
     if (state.engine) {
       state.engine.localPlayer = state.localPlayerIndex;
       state.engine.online = state.peerConnected;
-      state.engine.enableRiftPacing = true;
+      state.engine.enableRiftPacing = false;
       state.engine.resetTimeline(0);
       if (state.peerConnected) state.engine.syncPaused = true;
     }
@@ -135,11 +135,13 @@ export function createProtocolHandlers(
     if (msg.type === 'aux_bound') return;
     if (msg.type === 'netplay_input') {
       const firstIn = Array.isArray(msg.inputs) ? msg.inputs[0] : 0;
-      const dedupKey =
-        `${msg.sessionId || ''}:${msg.startFrame}:` +
+      const dedupKey = `${msg.sessionId || ''}:${msg.startFrame}:` +
         `${firstIn}:${msg.hashFrame || ''}`;
-      if (dedupKey === state.lastRxInputDedupKey) return;
-      state.lastRxInputDedupKey = dedupKey;
+      let seen = state.rxInputDedupSet;
+      if (!seen) seen = state.rxInputDedupSet = new Set();
+      if (seen.has(dedupKey)) return;
+      seen.add(dedupKey);
+      if (seen.size > 128) seen.delete(seen.keys().next().value);
       state.rxCountThisSec++;
       const nowPerf = performance.now();
       if (state.lastRxInputAt > 0) {
@@ -174,7 +176,7 @@ export function createProtocolHandlers(
       if (state.engine) {
         state.engine.localPlayer = state.localPlayerIndex;
         state.engine.online = true;
-        state.engine.enableRiftPacing = true;
+        state.engine.enableRiftPacing = false;
         state.engine.syncPaused = true;
       }
       ui.updateStatusStrip();
@@ -238,7 +240,7 @@ export function createProtocolHandlers(
         state.nes.loadROM(state.romBinaryString);
         state.engine.localPlayer = state.localPlayerIndex;
         state.engine.online = true;
-        state.engine.enableRiftPacing = true;
+        state.engine.enableRiftPacing = false;
         state.engine.inputDelayFrames = romSync.resolveDesiredInputDelay();
         state.engine.resetTimeline(0, msg.sessionId);
         state.engine.syncPaused = false;

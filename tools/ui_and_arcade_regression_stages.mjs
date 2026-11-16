@@ -6,6 +6,9 @@ import { NesNetplayEngine, INPUT_BITS } from '../src/netplay_engine.mjs';
 import { createFbneoArcadeCore } from '../src/fbneo_arcade_core.mjs';
 import { createSnes9xCore } from '../src/sega_gpgx_core.mjs';
 import { extractRomFromFile } from '../server/archive_extractor.mjs';
+import {
+  runTest11SmoothnessDedupAndUploadResilience
+} from './smoothness_and_upload_regression_stage.mjs';
 import { createConsoleUI } from '../public/js/console_ui.mjs';
 import { formatTransferProgress } from '../public/js/transfer_status_ui.mjs';
 import { createRomSyncManager } from '../public/js/rom_sync.mjs';
@@ -306,5 +309,6 @@ export async function runTest9RealArcadeAndSnesSgRuRollback(localDir, minZip) {
     `[PASS] Edge Case 8: Real SG-RU 240ms Boundary Rollback -> ${arcName} ` +
       `(RB=${rb}, 0 Desyncs, p95=${p95Str}ms) & SNES ${snesLabel}`
   );
+  await runTest11SmoothnessDedupAndUploadResilience(localDir);
   return a1;
 }

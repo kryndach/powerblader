@@ -108,31 +108,37 @@ export function startConsoleFrameLoop(
 
   const FRAME_DURATION_MS = 1000 / 60.0988;
   let lastTickTime = performance.now();
+  let lastRafAt = performance.now();
   let accumulatorMs = 0;
   let framesThisSec = 0;
   let lastDbgUiFrame = -99;
   let lastFpsUpdate = performance.now();
   let lastTelemetryTick = performance.now();
 
-  function runTick(now) {
+  function runTick(now, fromRaf = false) {
     const dt = Math.min(100, Math.max(0, now - lastTickTime));
     lastTickTime = now;
 
     let effectiveFrameMs = FRAME_DURATION_MS;
+    let rift = 0;
     if (
       state.engine &&
       state.engine.online &&
       state.peerConnected &&
       !state.engine.syncPaused
     ) {
-      const rift = state.engine.riftFrames || 0;
+      rift = state.engine.riftFrames || 0;
       if (Math.abs(rift) > 0.25) {
-        const scale = Math.max(-0.03, Math.min(0.03, rift * 0.008));
+        const scale = Math.max(-0.025, Math.min(0.025, rift * 0.007));
         effectiveFrameMs = FRAME_DURATION_MS * (1 + scale);
       }
     }
 
-    accumulatorMs = Math.min(accumulatorMs + dt, effectiveFrameMs * 2);
+    if (fromRaf && dt >= 14.2 && dt <= 19.2 && Math.abs(rift) < 1.8) {
+      accumulatorMs = effectiveFrameMs;
+    } else {
+      accumulatorMs = Math.min(accumulatorMs + dt, effectiveFrameMs * 2);
+    }
 
     while (accumulatorMs >= effectiveFrameMs) {
       accumulatorMs -= effectiveFrameMs;
@@ -217,20 +223,20 @@ export function startConsoleFrameLoop(
     }
   }
 
-  let workerTimerActive = false;
   try {
-    const workerBlob = new Blob(['setInterval(() => postMessage(0), 4);'], {
+    const workerBlob = new Blob(['setInterval(() => postMessage(0), 6);'], {
       type: 'application/javascript'
     });
     const tickWorker = new Worker(URL.createObjectURL(workerBlob));
     tickWorker.onmessage = () => {
-      workerTimerActive = true;
-      runTick(performance.now());
+      const now = performance.now();
+      if (document.hidden || now - lastRafAt > 50) runTick(now, false);
     };
   } catch {}
 
   function rafLoop(now) {
-    if (!workerTimerActive) runTick(now);
+    lastRafAt = now;
+    runTick(now, true);
     if (state.canvasDirty) {
       ui.ctx.putImageData(ui.imgData, 0, 0);
       state.canvasDirty = false;
@@ -240,8 +246,7 @@ export function startConsoleFrameLoop(
   requestAnimationFrame(rafLoop);
 
   setInterval(() => {
-    if (!workerTimerActive && (document.hidden || !document.hasFocus())) {
-      runTick(performance.now());
-    }
+    const now = performance.now();
+    if (document.hidden && now - lastRafAt > 50) runTick(now, false);
   }, 16);
 }

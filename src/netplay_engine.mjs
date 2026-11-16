@@ -32,13 +32,13 @@ export class RollbackNetplayEngine {
     this.localPlayer = options.localPlayer || 1;
     this.online = Boolean(options.online);
     this.inputDelayFrames = options.inputDelayFrames ?? 2;
-    this.maxRollbackFrames = options.maxRollbackFrames ?? 20;
+    this.maxRollbackFrames = options.maxRollbackFrames ?? 25;
     this.enableRiftPacing = Boolean(options.enableRiftPacing);
     this.enableVisualSmoothing =
       options.enableVisualSmoothing ?? (this.systemId !== 'arcade');
     this.historySize = 256;
     this.saveBufferSize =
-      options.saveBufferSize ?? (this.systemId === 'arcade' ? 32 : 64);
+      options.saveBufferSize ?? (this.systemId === 'arcade' ? 36 : 64);
     this.sessionId = options.sessionId || 'default';
     this.syncPaused = false;
     this._pixelCount = this.core.pixelCount || 256 * 240;
@@ -269,7 +269,8 @@ export class RollbackNetplayEngine {
         p2Mask: this.getPlayerInput(2, prevF)
       };
     }
-    if (this.enableRiftPacing && this.riftFrames > 1.75 * turbo) {
+    const clumpPad = Math.min(4.5, (this.rxClumpFrames || 0) * 1.25);
+    if (this.enableRiftPacing && this.riftFrames > (1.75 + clumpPad) * turbo) {
       const cooldownTarget = this.riftFrames > 5 * turbo ? 4 : 10;
       if (this._riftCooldown >= cooldownTarget) {
         this._riftCooldown = 0;
