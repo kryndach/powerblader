@@ -13,6 +13,7 @@ import {
 import {
   handleRoomRomApi, handleSaveSlotApi, sendBinaryWithRange
 } from './room_rom_and_save_api.mjs';
+import { createTunnelManager } from './tunnel_manager.mjs';
 const vendorMemCache = new Map();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -97,8 +98,12 @@ export function createCoopServer(options = {}) {
     rooms, getOrCreateRoom, getRoomPeersInfo, joinOrUpdatePeerSession,
     handlePeerMessage, attachWebSocketServer, stopCleanup
   } = roomMgr;
+  let server = null;
+  const tunnelMgr = createTunnelManager(
+    ROOT_DIR, tunnelInfo, () => server?.address()?.port || 8080, options
+  );
 
-  const server = http.createServer((req, res) => {
+  server = http.createServer((req, res) => {
     const hostHdr = req.headers.host || 'localhost';
     const urlObj = new URL(req.url, `http://${hostHdr}`);
     const pathname = urlObj.pathname;
@@ -110,23 +115,10 @@ export function createCoopServer(options = {}) {
       return;
     }
 
-    if (pathname === '/api/tunnel-info') {
-      if (req.method === 'GET') {
-        sendJson(res, 200, { ok: true, tunnelInfo }, true);
-        return;
-      }
-      if (req.method === 'POST') {
-        readJsonBody(req, res, 64 * 1024, (parsed) => {
-          if (parsed.tunnel) tunnelInfo.tunnel = String(parsed.tunnel);
-          if (parsed.region) tunnelInfo.region = String(parsed.region);
-          if (parsed.publicUrl !== undefined) {
-            tunnelInfo.publicUrl = parsed.publicUrl;
-          }
-          tunnelInfo.updatedAt = new Date().toISOString();
-          sendJson(res, 200, { ok: true, tunnelInfo });
-        });
-        return;
-      }
+    if (pathname === '/api/tunnel-info' || pathname === '/api/tunnel-routes') {
+      return tunnelMgr.handleTunnelApi(
+        req, urlObj, res, readJsonBody, sendJson
+      );
     }
 
     if (pathname === '/api/gameplay-telemetry') {
@@ -323,6 +315,7 @@ export function createCoopServer(options = {}) {
     },
     close() {
       stopCleanup();
+      tunnelMgr.stop();
       return new Promise((resolve) => {
         for (const client of wss.clients) client.terminate();
         wss.close(() => server.close(() => resolve()));

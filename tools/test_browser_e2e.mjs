@@ -50,6 +50,35 @@ async function runMainGameTwoTabE2E(browser, hostPort, remPort) {
       `document.getElementById('lobbyP2Name')?.textContent.includes('BroRU')`
     ), 8000, 'Both tabs joined Room E2E');
 
+    // Verify Host UI Route Selector is visible ONLY on Host Tab 1 (127.0.0.1)
+    const routeCheck = await Promise.all([
+      tab1.evaluate(`(() => {
+        const s = document.getElementById('tunnelRouteSelect');
+        return s && getComputedStyle(s).display !== 'none' &&
+          s.options.length >= 6;
+      })()`),
+      tab2.evaluate(`(() => {
+        const s = document.getElementById('tunnelRouteSelect');
+        return !s || getComputedStyle(s).display === 'none';
+      })()`),
+      tab2.evaluate(`fetch('/api/tunnel-routes', {
+        method: 'POST', body: '{"route":"sg1"}'
+      }).then((r) => r.status)`)
+    ]);
+    assert.strictEqual(routeCheck[0], true, 'Host Tab 1 route picker visible');
+    assert.strictEqual(routeCheck[1], true, 'Remote Tab 2 route picker hidden');
+    assert.strictEqual(routeCheck[2], 403, 'Remote Tab 2 blocked from switch');
+
+    await tab1.evaluate(`(() => {
+      const s = document.getElementById('tunnelRouteSelect');
+      s.value = 'sg3';
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(() => tab1.evaluate(
+      `fetch('/api/tunnel-info').then((r) => r.json())` +
+      `.then((d) => d.tunnelInfo?.routeId === 'sg3')`
+    ), 8000, 'Live UI route switch to sg3');
+
     const pickedRom = await tab1.evaluate(`(() => {
       const sel = document.getElementById('localRomSelect');
       const opts = [...sel.options].map((o) => o.value).filter(Boolean);
@@ -283,7 +312,15 @@ async function main() {
   if (!bin) return console.log('[SKIP] No local Chrome/Edge binary found.');
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nes_e2e_chrome_'));
   const logsDir = path.join(tmpDir, 'logs');
-  const app = createCoopServer({ logAccess: false, logsDir });
+  const app = createCoopServer({
+    logAccess: false, logsDir,
+    probeTcpFn: async () => 8,
+    spawnTunnelFn: async (r) => ({
+      publicUrl: `https://${r.id}-e2e.run.pinggy-free.link`,
+      altUrl: `https://${r.id}-e2e.free.pinggy.net`,
+      kill: () => {}
+    })
+  });
   const hostPort = await app.listen(0, '127.0.0.1');
   const remProxy = await startRemoteProxy(hostPort);
   let browser = null;

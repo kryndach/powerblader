@@ -20,23 +20,23 @@ function formatMaskShort(mask) {
 
 const UI_IDS = [
   'localRomSelect', 'romFileInput', 'topSendRomBtn', 'nickInput', 'roomInput',
-  'connectBtn', 'copyLinkBtn', 'resetBtn', 'saveSlotSelect', 'quickSaveBtn',
-  'quickLoadBtn', 'exportSaveFileBtn', 'importSaveFileBtn', 'saveFileInput',
-  'topInputDelaySelect', 'muteBtn', 'volumeSlider',
-  'volumeValLabel', 'crtToggleBtn', 'scanlinesOverlay', 'debugToggleBtn',
-  'debugDrawer', 'autoBenchLink', 'netBenchLink', 'lobbyOverlay',
-  'lobbyRoomBadge', 'lobbySlotP1', 'lobbyP1Name', 'lobbyP1Rom', 'lobbyP1Badge',
-  'lobbySlotP2', 'lobbyP2Name', 'lobbyP2Rom', 'lobbyP2Badge', 'lobbyFooterText',
-  'lobbyActionsRow', 'startMatchNowBtn', 'sendRomManualBtn', 'statusLed',
-  'statusText', 'romBadge', 'roleBadge', 'miniPadP1', 'miniPadP2', 'pingBadge',
-  'fpsLabel', 'screenBanner', 'dbgSyncBadge', 'dbgFrame', 'dbgVerifiedFrame',
-  'dbgLocalHash', 'dbgRemoteHash', 'dbgDesyncs', 'forceResyncBtn',
-  'dbgTransportBadge', 'dbgWssState', 'dbgRtcState', 'dbgRtt', 'dbgPktRate',
-  'transportModeSelect', 'inputDelaySelect', 'dbgStepTime', 'dbgRollbacks',
-  'dbgRbDepth', 'dbgAdvantage', 'dbgRift', 'copyTelemetryBtn', 'dbgP1Hex',
-  'dbgP2Hex', 'simLagSlider', 'simLossSlider', 'dbgSimLabel', 'dbgLog'
+  'connectBtn', 'tunnelRouteSelect', 'copyLinkBtn', 'resetBtn',
+  'saveSlotSelect', 'quickSaveBtn', 'quickLoadBtn', 'exportSaveFileBtn',
+  'importSaveFileBtn', 'saveFileInput', 'topInputDelaySelect', 'muteBtn',
+  'volumeSlider', 'volumeValLabel', 'crtToggleBtn', 'scanlinesOverlay',
+  'debugToggleBtn', 'debugDrawer', 'autoBenchLink', 'netBenchLink',
+  'lobbyOverlay', 'lobbyRoomBadge', 'lobbySlotP1', 'lobbyP1Name', 'lobbyP1Rom',
+  'lobbyP1Badge', 'lobbySlotP2', 'lobbyP2Name', 'lobbyP2Rom', 'lobbyP2Badge',
+  'lobbyFooterText', 'lobbyActionsRow', 'startMatchNowBtn', 'sendRomManualBtn',
+  'statusLed', 'statusText', 'romBadge', 'roleBadge', 'miniPadP1', 'miniPadP2',
+  'pingBadge', 'fpsLabel', 'screenBanner', 'dbgSyncBadge', 'dbgFrame',
+  'dbgVerifiedFrame', 'dbgLocalHash', 'dbgRemoteHash', 'dbgDesyncs',
+  'forceResyncBtn', 'dbgTransportBadge', 'dbgWssState', 'dbgRtcState', 'dbgRtt',
+  'dbgPktRate', 'transportModeSelect', 'inputDelaySelect', 'dbgStepTime',
+  'dbgRollbacks', 'dbgRbDepth', 'dbgAdvantage', 'dbgRift', 'copyTelemetryBtn',
+  'dbgP1Hex', 'dbgP2Hex', 'simLagSlider', 'simLossSlider', 'dbgSimLabel',
+  'dbgLog'
 ];
-
 export function createConsoleUI(state) {
   const el = (id) => document.getElementById(id);
   const canvas = el('nesCanvas');

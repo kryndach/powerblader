@@ -1,6 +1,7 @@
 // Regression Tests: Dual-WS Skew Dedup, 0f High-RTT Smoothness & 502 Upload
 import assert from 'assert';
 import fs from 'fs';
+import http from 'http';
 import os from 'os';
 import path from 'path';
 import WebSocket from 'ws';
@@ -189,13 +190,91 @@ async function testPinggy502OutageMultipartRecovery() {
   assert.strictEqual(ok, true, 'Multipart upload must survive 500ms 502 blip');
 }
 
+function httpReqJson(port, urlPath, method = 'GET', bodyObj = null, hdrs = {}) {
+  return new Promise((resolve, reject) => {
+    const raw = bodyObj ? JSON.stringify(bodyObj) : '';
+    const req = http.request({
+      hostname: '127.0.0.1', port, path: urlPath, method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(raw ? { 'Content-Length': Buffer.byteLength(raw) } : {}),
+        ...hdrs
+      }
+    }, (res) => {
+      let b = '';
+      res.on('data', (c) => (b += c));
+      res.on('end', () => resolve({
+        status: res.statusCode, json: JSON.parse(b || '{}')
+      }));
+    });
+    req.on('error', reject);
+    if (raw) req.write(raw);
+    req.end();
+  });
+}
+
+async function testTunnelAutoProbeFailoverAndGuard() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nes_tun_'));
+  let killed = 0;
+  const rttMap = {
+    'lin.ap.1.a.pinggy.click': 14, 'lin.ap.2.a.pinggy.click': 6,
+    'lin.ap.3.a.pinggy.click': 9, 'lin.ap.4.a.pinggy.click': 4,
+    'eu.a.pinggy.io': 188
+  };
+  const app = createCoopServer({
+    logAccess: false, logsDir: tmp,
+    probeTcpFn: async (host) => rttMap[host] ?? 50,
+    spawnTunnelFn: async (route) => {
+      if (route.id === 'sg2') throw new Error('Node busy');
+      return {
+        publicUrl: `https://${route.id}-ok.run.pinggy-free.link`,
+        altUrl: `https://${route.id}-ok.free.pinggy.net`,
+        kill: () => { killed++; }
+      };
+    }
+  });
+  const port = await app.listen(0, '127.0.0.1');
+  try {
+    // 1. Remote / tunneled Host header MUST be blocked with 403
+    const forbid = await httpReqJson(
+      port, '/api/tunnel-routes', 'POST', { route: 'sg1' },
+      { Host: 'evil.run.pinggy-free.link' }
+    );
+    assert.strictEqual(forbid.status, 403, 'Remote tunnel switch must 403');
+
+    // 2. Auto route ranks sg2 (6ms) #1 over sg4_alt (4ms+65ms penalty),
+    //    and fails over cleanly to sg3 (9ms) when sg2 fails to allocate!
+    const autoRes = await httpReqJson(
+      port, '/api/tunnel-routes', 'POST', { route: 'auto' }
+    );
+    assert.strictEqual(autoRes.status, 200);
+    assert.strictEqual(autoRes.json.tunnelInfo?.routeId, 'sg3');
+    assert.strictEqual(
+      autoRes.json.tunnelInfo?.publicUrl,
+      'https://sg3-ok.run.pinggy-free.link'
+    );
+
+    // 3. Live switch to eu kills old tunnel process and updates publicUrl
+    const euRes = await httpReqJson(
+      port, '/api/tunnel-routes', 'POST', { route: 'eu' }
+    );
+    assert.strictEqual(euRes.status, 200);
+    assert.strictEqual(killed, 1, 'Previous tunnel must be killed on switch');
+    assert.strictEqual(euRes.json.tunnelInfo?.routeId, 'eu');
+  } finally {
+    await app.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 export async function runTest11SmoothnessDedupAndUploadResilience(localDir) {
   await testSkewedDualWsDeduplication();
   testZeroDelayHighRttNoStalls(localDir);
   testNoMidGameAutoDelayOscillation();
   await testPinggy502OutageMultipartRecovery();
+  await testTunnelAutoProbeFailoverAndGuard();
   console.log(
     '[PASS] Edge Case 10: Skewed Dual-WS Dedup, 0-Stall 280ms Rollback, ' +
-      'Locked Mid-Game Auto-Delay & 500ms 502 Upload Recovery Verified'
+      'Auto-Route Failover & 502 Upload Recovery Verified'
   );
 }

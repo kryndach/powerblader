@@ -9,6 +9,7 @@ import { createSaveSlotsManager } from './save_slots.mjs';
 import { createKeyBindingsManager } from './key_bindings.mjs';
 import { createViewportAndSpeedController } from './viewport_and_speed.mjs';
 import { setupRomDropAndPicker } from './rom_archive.mjs';
+import { setupHostTunnelController } from './tunnel_ui.mjs';
 import { startConsoleFrameLoop } from './frame_loop.mjs';
 
 const state = {
@@ -168,16 +169,7 @@ function connectToRoom() {
 }
 
 ui.connectBtn.addEventListener('click', connectToRoom);
-
-ui.copyLinkBtn.addEventListener('click', () => {
-  const code = (ui.roomInput.value || 'NOVA').trim().toUpperCase();
-  const url = `${window.location.origin}/?room=${encodeURIComponent(code)}`;
-  navigator.clipboard.writeText(url).then(() => {
-    const orig = ui.copyLinkBtn.textContent;
-    ui.copyLinkBtn.textContent = 'Copied!';
-    setTimeout(() => (ui.copyLinkBtn.textContent = orig), 1500);
-  });
-});
+setupHostTunnelController(state, ui);
 
 ui.resetBtn.addEventListener('click', () => {
   if (!state.nes || !state.engine) return;

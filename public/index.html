@@ -16,8 +16,6 @@
       <span class="brand-logo">NES</span>
       <span class="brand-title">NETPLAY DECK</span>
     </div>
-
-    <!-- Cartridge Loader -->
     <div class="deck-group">
       <select id="localRomSelect" title="Select ROM or Archive from local/">
         <option value="">-- Select Game --</option>
@@ -42,6 +40,10 @@
         style="width:78px;text-transform:uppercase;font-weight:700;"
         title="Room Code" />
       <button id="connectBtn" class="primary">Connect</button>
+      <select id="tunnelRouteSelect" style="display:none"
+        title="Host Tunnel Route (Auto-Detect Fastest or Switch Live!)">
+        <option value="auto">Route: Auto</option>
+      </select>
       <button id="copyLinkBtn" title="Copy direct invite link for Player 2">
         Copy Link
       </button>
@@ -121,17 +123,11 @@
         ROM: None
       </span>
       <span id="roleBadge">Port: P1 ($4016)</span>
-      <span id="miniPadP1" class="mini-pad" title="Player 1 Activity">
-        P1: Idle
-      </span>
-      <span id="miniPadP2" class="mini-pad" title="Player 2 Activity">
-        P2: Idle
-      </span>
+      <span id="miniPadP1" class="mini-pad" title="P1 Input">P1: Idle</span>
+      <span id="miniPadP2" class="mini-pad" title="P2 Input">P2: Idle</span>
       <span id="pingBadge">Ping: --</span>
     </div>
   </div>
-
-  <!-- Main Workspace: NES Screen + Optional Debug View -->
   <main class="workspace">
     <div class="tv-bezel" id="dropTarget">
       <div class="canvas-wrap large" id="canvasWrap">

@@ -1,4 +1,6 @@
 param(
+  [ValidateSet("auto", "sg1", "sg2", "sg3", "sg4_alt", "eu", "lhr", "")]
+  [string]$Route = "",
   [ValidateSet("localhost.run", "pinggy")]
   [string]$Tunnel = "pinggy",
   [ValidateSet("auto", "ap", "eu", "us")]
@@ -15,10 +17,21 @@ $ErrorActionPreference = "Continue"
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $RootDir
 
+if ($Route -eq "") {
+  if ($Tunnel -eq "localhost.run") { $Route = "lhr" }
+  elseif ($Region -eq "eu") { $Route = "eu" }
+  elseif ($TunnelHost -like "*lin.ap.3*") { $Route = "sg3" }
+  elseif ($TunnelHost -like "*lin.ap.2*") { $Route = "sg2" }
+  elseif ($TunnelHost -like "*lin.ap.4*" -or
+          $PreferDomain -eq "free.pinggy.net") { $Route = "sg4_alt" }
+  elseif ($TunnelHost -like "*lin.ap.1*") { $Route = "sg1" }
+  else { $Route = "auto" }
+}
+
 $sep = "================================================================"
 Write-Host ""
 Write-Host $sep -ForegroundColor Cyan
-Write-Host "   NES ONLINE & 2-PC AUTO-BENCHMARK ONE-CLICK LAUNCHER" `
+Write-Host "   NES ONLINE -- AUTO-ROUTE & LIVE UI TUNNEL LAUNCHER" `
   -ForegroundColor Cyan
 Write-Host $sep -ForegroundColor Cyan
 
@@ -37,7 +50,7 @@ if ($existingConns) {
   Start-Sleep -Milliseconds 600
 }
 
-# 2. Start Node.js Relay Server
+# 2. Start Node.js Relay & Tunnel Manager Server
 Write-Host "[2/4] Starting local Node.js Server on port $Port..." `
   -ForegroundColor Green
 $logsDir = Join-Path $RootDir "logs"
@@ -61,10 +74,7 @@ for ($i = 0; $i -lt 25; $i++) {
   Start-Sleep -Milliseconds 250
   try {
     $resp = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 1 -ErrorAction Stop
-    if ($resp.ok) {
-      $serverReady = $true
-      break
-    }
+    if ($resp.ok) { $serverReady = $true; break }
   } catch {}
 }
 
@@ -79,81 +89,35 @@ if (-not $serverReady) {
 Write-Host "      Server is ONLINE at http://localhost:$Port" `
   -ForegroundColor Green
 
-# 3. Start SSH Tunnel and capture public URL automatically
-$sshOut = Join-Path $logsDir "tunnel_stdout.log"
-$sshErr = Join-Path $logsDir "tunnel_stderr.log"
-Remove-Item $sshOut -Force -ErrorAction SilentlyContinue
-Remove-Item $sshErr -Force -ErrorAction SilentlyContinue
-
-$activeEdgeLabel = $Region
-if ($Tunnel -eq "pinggy") {
-  $tunnelKey = Join-Path $logsDir "pinggy_ed25519"
-  if (!(Test-Path $tunnelKey)) {
-    Write-Host "      Generating local SSH key for Pinggy tunnel..." `
-      -ForegroundColor DarkGray
-    cmd.exe /c "ssh-keygen -t ed25519 -f `"$tunnelKey`" -q -N `"`"" | Out-Null
-  }
-  $pinggyHost = "ap.a.pinggy.io"
-  if ($Region -eq "ap") { $pinggyHost = "lin.ap.1.a.pinggy.click" }
-  if ($Region -eq "eu") { $pinggyHost = "eu.a.pinggy.io" }
-  if ($Region -eq "us") { $pinggyHost = "us.a.pinggy.io" }
-  if ($TunnelHost -ne "") { $pinggyHost = $TunnelHost }
-  $activeEdgeLabel = "$Region [$pinggyHost]"
-  Write-Host "[3/4] Starting Pinggy SSH ($pinggyHost, prefer=$PreferDomain)" `
-    -ForegroundColor Green
-  $sshOpts = "-T -p 443 -i `"$tunnelKey`" -o StrictHostKeyChecking=no " +
-    "-o BatchMode=yes -o ServerAliveInterval=15 -o IPQoS=lowdelay"
-  $sshArgs = "$sshOpts -R0:127.0.0.1:$Port $pinggyHost"
-} else {
-  $activeEdgeLabel = "ssh [localhost.run]"
-  Write-Host "[3/4] Starting SSH tunnel via localhost.run..." `
-    -ForegroundColor Green
-  $sshOpts = "-T -o StrictHostKeyChecking=no -o ServerAliveInterval=15 " +
-    "-o IPQoS=lowdelay"
-  $sshArgs = "$sshOpts -R 80:127.0.0.1:$Port nokey@localhost.run"
-}
-
-$sshProc = Start-Process -FilePath "ssh.exe" `
-  -ArgumentList $sshArgs `
-  -WorkingDirectory $RootDir `
-  -RedirectStandardOutput $sshOut `
-  -RedirectStandardError $sshErr `
-  -NoNewWindow `
-  -PassThru
-
+# 3. Probe & Activate Best Tunnel Route via Host Tunnel Manager API
+Write-Host "[3/4] Probing & starting tunnel route '$Route'..." `
+  -ForegroundColor Green
+$routesUrl = "http://localhost:$Port/api/tunnel-routes"
 $publicBaseUrl = $null
 $altBaseUrl = $null
-$urlRegex = "(https://[a-zA-Z0-9\-\.]+\." +
-  "(lhr\.life|pinggy-free\.link|free\.pinggy\.net|pinggy\.link|pinggy\.online))"
-$waitedSecondUrl = $false
-for ($i = 0; $i -lt 60; $i++) {
-  Start-Sleep -Milliseconds 350
-  $combined = ""
-  if (Test-Path $sshOut) {
-    $combined += (Get-Content $sshOut -Raw -ErrorAction SilentlyContinue) + "`n"
-  }
-  if (Test-Path $sshErr) {
-    $combined += (Get-Content $sshErr -Raw -ErrorAction SilentlyContinue) + "`n"
-  }
-  $found = @([regex]::Matches($combined, $urlRegex) |
-    ForEach-Object { $_.Value } | Select-Object -Unique)
-  if ($found.Count -ge 1) {
-    if ($Tunnel -eq "pinggy" -and $found.Count -lt 2 -and !$waitedSecondUrl) {
-      $waitedSecondUrl = $true
-      Start-Sleep -Milliseconds 450
-      continue
+$activeLabel = $Route
+
+try {
+  $body = @{ route = $Route } | ConvertTo-Json -Compress
+  $tRes = Invoke-RestMethod -Uri $routesUrl -Method Post -Body $body `
+    -ContentType "application/json" -TimeoutSec 35 -ErrorAction Stop
+  if ($tRes.routes) {
+    Write-Host "      TCP 443 Edge Probe Results:" -ForegroundColor DarkCyan
+    foreach ($r in $tRes.routes) {
+      if ($r.isAuto -or $null -eq $r.rttMs) { continue }
+      $mark = if ($r.id -eq $tRes.tunnelInfo.routeId) { " <-- ACTIVE" }
+        else { "" }
+      $col = if ($mark -ne "") { "Green" } else { "Gray" }
+      Write-Host ("        - {0,-22}: {1,4} ms{2}" -f `
+        $r.label, $r.rttMs, $mark) -ForegroundColor $col
     }
-    $publicBaseUrl = $found[0]
-    if ($PreferDomain -ne "any") {
-      foreach ($u in $found) {
-        if ($u -like "*$PreferDomain*") { $publicBaseUrl = $u; break }
-      }
-    }
-    foreach ($u in $found) {
-      if ($u -ne $publicBaseUrl) { $altBaseUrl = $u; break }
-    }
-    break
   }
+  $publicBaseUrl = $tRes.tunnelInfo.publicUrl
+  $altBaseUrl = $tRes.tunnelInfo.altUrl
+  $activeLabel = "$($tRes.tunnelInfo.routeLabel) [$($tRes.tunnelInfo.region)]"
+} catch {
+  Write-Host "[WARN] Tunnel activation warning: $($_.Exception.Message)" `
+    -ForegroundColor Yellow
 }
 
 $pathSuffix = "/autotest"
@@ -161,18 +125,7 @@ if ($Mode -eq "nettest") { $pathSuffix = "/nettest?room=NOVA" }
 if ($Mode -eq "game") { $pathSuffix = "/?room=NOVA" }
 
 $localUrl = "http://localhost:$Port$pathSuffix"
-$infoUrl = "http://localhost:$Port/api/tunnel-info"
-
-try {
-  $tunnelInfoBody = @{
-    tunnel = $Tunnel
-    region = $activeEdgeLabel
-    publicUrl = $publicBaseUrl
-  } | ConvertTo-Json -Compress
-  Invoke-RestMethod -Uri $infoUrl -Method Post -Body $tunnelInfoBody `
-    -ContentType "application/json" -TimeoutSec 2 `
-    -ErrorAction SilentlyContinue | Out-Null
-} catch {}
+$lastShownPublicUrl = $publicBaseUrl
 
 if ($publicBaseUrl) {
   $broUrl = "$publicBaseUrl$pathSuffix"
@@ -180,7 +133,7 @@ if ($publicBaseUrl) {
 
   Write-Host ""
   Write-Host $sep -ForegroundColor Green
-  Write-Host "   READY! NO ROOM CODE NEEDED -- JUST OPEN THESE LINKS:" `
+  Write-Host "   READY! YOU CAN ALSO SWITCH ROUTES LIVE IN THE TOP BAR!" `
     -ForegroundColor Green
   Write-Host $sep -ForegroundColor Green
   Write-Host ""
@@ -196,15 +149,10 @@ if ($publicBaseUrl) {
     -ForegroundColor Cyan
   Write-Host "     $localUrl" -ForegroundColor White
   Write-Host ""
-  Write-Host "  Other Direct Links ($activeEdgeLabel):" `
-    -ForegroundColor DarkGray
-  Write-Host "     Auto-Tester:  $publicBaseUrl/autotest?gameRoom=NOVA" `
-    -ForegroundColor Gray
-  Write-Host "     Workbench:    $publicBaseUrl/nettest?room=NOVA" `
-    -ForegroundColor Gray
+  Write-Host "  Active Route: $activeLabel" -ForegroundColor Gray
   Write-Host $sep -ForegroundColor Green
 } else {
-  Write-Host "[WARN] Could not parse tunnel URL yet. Check logs." `
+  Write-Host "[WARN] No public tunnel URL yet -- pick a Route in the UI!" `
     -ForegroundColor Yellow
   Write-Host "Local URL: $localUrl" -ForegroundColor Cyan
 }
@@ -214,61 +162,37 @@ Write-Host "[4/4] Opening $localUrl in your default browser..." `
   -ForegroundColor Green
 Start-Process $localUrl
 
-$reportFile = Join-Path $logsDir "autotest_latest.txt"
-$lastReportWrite = if (Test-Path $reportFile) {
-  (Get-Item $reportFile).LastWriteTime
-} else {
-  [datetime]::MinValue
-}
-
+$infoUrl = "http://localhost:$Port/api/tunnel-info"
 Write-Host ""
-Write-Host "Watching for 2-PC Auto-Test results (logs/autotest_latest.txt)..." `
+Write-Host "Server & Tunnel Manager active (switch routes anytime in UI)." `
   -ForegroundColor Cyan
-Write-Host "Press Ctrl+C at any time to stop the Server and SSH Tunnel." `
+Write-Host "Press Ctrl+C at any time to stop Server and SSH Tunnel." `
   -ForegroundColor DarkGray
 Write-Host ""
 
 try {
   while ($true) {
-    Start-Sleep -Seconds 1
+    Start-Sleep -Seconds 2
     if ($nodeProc.HasExited) {
       Write-Host "[ERROR] Node.js server exited unexpectedly." `
         -ForegroundColor Red
       break
     }
-    if ($sshProc.HasExited) {
-      Write-Host "[WARN] SSH tunnel closed -- restarting..." `
-        -ForegroundColor Yellow
-      $sshProc = Start-Process -FilePath "ssh.exe" `
-        -ArgumentList $sshArgs `
-        -WorkingDirectory $RootDir `
-        -RedirectStandardOutput $sshOut `
-        -RedirectStandardError $sshErr `
-        -NoNewWindow `
-        -PassThru
-    }
-    if (Test-Path $reportFile) {
-      $curWrite = (Get-Item $reportFile).LastWriteTime
-      if ($curWrite -gt $lastReportWrite) {
-        $lastReportWrite = $curWrite
-        $content = Get-Content $reportFile -Raw -ErrorAction SilentlyContinue
-        if ($content -match "Stage Status:\s+COMPLETE") {
-          Write-Host $sep -ForegroundColor Green
-          Write-Host " [SAVED] 2-PC Auto-Benchmark COMPLETE!" `
-            -ForegroundColor Green
-          Write-Host " Saved to logs/autotest_latest.txt" `
-            -ForegroundColor Yellow
-          Write-Host $sep -ForegroundColor Green
-        }
+    try {
+      $inf = Invoke-RestMethod -Uri $infoUrl -TimeoutSec 1 -ErrorAction Stop
+      $curUrl = $inf.tunnelInfo.publicUrl
+      if ($curUrl -and $curUrl -ne $lastShownPublicUrl) {
+        $lastShownPublicUrl = $curUrl
+        $newBro = "$curUrl$pathSuffix"
+        try { Set-Clipboard -Value $newBro } catch {}
+        Write-Host "[UI ROUTE SWITCH] $($inf.tunnelInfo.routeLabel) -> $newBro"`
+          -ForegroundColor Green
       }
-    }
+    } catch {}
   }
 } finally {
   Write-Host "`nShutting down Node.js Server and SSH Tunnel..." `
     -ForegroundColor Yellow
-  if ($sshProc -and !$sshProc.HasExited) {
-    Stop-Process -Id $sshProc.Id -Force -ErrorAction SilentlyContinue
-  }
   if ($nodeProc -and !$nodeProc.HasExited) {
     Stop-Process -Id $nodeProc.Id -Force -ErrorAction SilentlyContinue
   }
