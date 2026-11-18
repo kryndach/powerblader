@@ -1,4 +1,8 @@
 // Room Session Manager, Dual-WebSocket Striping & Message Relay
+import {
+  createWireRttProber, relayRawNetplayInput
+} from './wire_rtt_prober.mjs';
+
 const FORWARD_TYPES = new Set([
   'netplay_input', 'state_sync', 'sync_ack', 'resync_request', 'console_reset',
   'rom_info', 'rom_status', 'rom_request', 'rom_sync', 'webrtc_signal',
@@ -69,17 +73,15 @@ export function createRoomManager(trackers, options = {}) {
     }
   }
 
+  const wireProber = createWireRttProber(rooms, options.wirePingIntervalMs);
+
   function joinOrUpdatePeerSession(
-    roomCodeRaw,
-    clientIdRaw,
-    info = {},
-    wsInstance = null
+    roomCodeRaw, clientIdRaw, info = {}, wsInstance = null
   ) {
     const roomCode = normCode(roomCodeRaw);
     const randSuffix = Math.random().toString(36).slice(2, 7);
     const clientId = String(clientIdRaw || `c_${Date.now()}_${randSuffix}`);
     const roomMap = getOrCreateRoom(roomCode);
-
     let peer = roomMap.get(clientId);
     const isNewJoin = !peer;
 
@@ -92,25 +94,15 @@ export function createRoomManager(trackers, options = {}) {
           }
         }
       }
-      const usedIndices = new Set(
-        Array.from(roomMap.values(), (p) => p.playerIndex)
-      );
+      const used = new Set(Array.from(roomMap.values(), (p) => p.playerIndex));
       peer = {
-        clientId,
-        roomCode,
-        playerIndex: usedIndices.has(1) ? 2 : 1,
+        clientId, roomCode, playerIndex: used.has(1) ? 2 : 1,
         nick: String(info.nick || 'Player').slice(0, 20),
-        romCrc32: info.romCrc32 || null,
-        romName: info.romName || null,
-        isAutoDefaultRom:
-          typeof info.isAutoDefaultRom === 'boolean'
-            ? info.isAutoDefaultRom
-            : true,
-        ws: wsInstance || null,
-        httpActive: Boolean(info.httpActive),
-        httpOutbox: [],
-        nextSeq: 1,
-        lastSeenAt: Date.now()
+        romCrc32: info.romCrc32 || null, romName: info.romName || null,
+        isAutoDefaultRom: typeof info.isAutoDefaultRom === 'boolean'
+          ? info.isAutoDefaultRom : true,
+        ws: wsInstance || null, httpActive: Boolean(info.httpActive),
+        httpOutbox: [], nextSeq: 1, lastSeenAt: Date.now()
       };
       roomMap.set(clientId, peer);
     } else {
@@ -135,23 +127,20 @@ export function createRoomManager(trackers, options = {}) {
     const peers = getRoomPeersInfo(roomCode);
     if (isNewJoin || info.forceRoomJoined) {
       sendToPeer(peer, {
-        type: 'room_joined',
-        roomCode,
-        clientId,
-        playerIndex: peer.playerIndex,
-        peers
+        type: 'room_joined', roomCode, clientId,
+        playerIndex: peer.playerIndex, peers
       });
       broadcastToRoom(roomCode, clientId, {
-        type: 'peer_joined',
-        roomCode,
-        peer: formatPeerInfo(peer),
-        peers
+        type: 'peer_joined', roomCode, peer: formatPeerInfo(peer), peers
       });
+      if (roomMap.size >= 2) {
+        setTimeout(() => wireProber.probeRoomWires(roomCode), 25);
+      }
     }
     return peer;
   }
 
-  function handlePeerMessage(peer, msg) {
+  function handlePeerMessage(peer, msg, rawStr = null) {
     if (!peer || !msg || typeof msg.type !== 'string') return;
     peer.lastSeenAt = Date.now();
 
@@ -216,10 +205,7 @@ export function createRoomManager(trackers, options = {}) {
 
     if (shouldForward) {
       if (msg.type === 'netplay_input' && typeof msg.startFrame === 'number') {
-        const firstIn = Array.isArray(msg.inputs) ? msg.inputs[0] : 0;
-        const dedupKey = `${msg.sessionId || ''}:${msg.startFrame}:` +
-          `${firstIn}:${msg.hashFrame || ''}`;
-        if (seenInputKey(peer, dedupKey)) return;
+        return relayRawNetplayInput(rooms, peer, msg, rawStr, seenInputKey);
       }
       broadcastToRoom(peer.roomCode, peer.clientId, {
         ...msg, fromPlayer: peer.playerIndex,
@@ -250,10 +236,12 @@ export function createRoomManager(trackers, options = {}) {
       ws._socket?.setNoDelay?.(true);
       recordAccess(req, 'WS_CONNECTED /ws');
       ws.peerSession = null;
+      wireProber.attachPongHandler(ws);
 
       ws.on('message', (data) => {
+        const rawStr = data.toString();
         let msg;
-        try { msg = JSON.parse(data.toString()); } catch { return; }
+        try { msg = JSON.parse(rawStr); } catch { return; }
         if (!msg || typeof msg.type !== 'string') return;
 
         if (msg.type === 'ping' && !ws.peerSession) {
@@ -270,6 +258,7 @@ export function createRoomManager(trackers, options = {}) {
             peer.wsAux = ws;
             ws.peerSession = peer;
             ws.isAux = true;
+            wireProber.pingSock(ws);
             try {
               ws.send(
                 JSON.stringify({ type: 'aux_bound', roomCode, clientId })
@@ -288,25 +277,18 @@ export function createRoomManager(trackers, options = {}) {
             removePeerSession(ws.peerSession.roomCode, ws.peerSession.clientId);
           }
           const peer = joinOrUpdatePeerSession(
-            roomCode,
-            clientId,
-            {
-              nick: msg.nick,
-              romCrc32: msg.romCrc32,
-              romName: msg.romName,
-              isAutoDefaultRom: msg.isAutoDefaultRom,
-              forceRoomJoined: true
-            },
-            ws
+            roomCode, clientId, {
+              nick: msg.nick, romCrc32: msg.romCrc32, romName: msg.romName,
+              isAutoDefaultRom: msg.isAutoDefaultRom, forceRoomJoined: true
+            }, ws
           );
           ws.peerSession = peer;
           recordAccess(
-            req,
-            `WS_JOIN room=${roomCode} P${peer.playerIndex} (${peer.nick})`
+            req, `WS_JOIN room=${roomCode} P${peer.playerIndex} (${peer.nick})`
           );
           return;
         }
-        if (ws.peerSession) handlePeerMessage(ws.peerSession, msg);
+        if (ws.peerSession) handlePeerMessage(ws.peerSession, msg, rawStr);
       });
 
       ws.on('close', () => {
@@ -342,6 +324,6 @@ export function createRoomManager(trackers, options = {}) {
   return {
     rooms, getOrCreateRoom, getRoomPeersInfo, joinOrUpdatePeerSession,
     handlePeerMessage, removePeerSession, attachWebSocketServer,
-    stopCleanup: () => clearInterval(cleanupTimer)
+    stopCleanup: () => { clearInterval(cleanupTimer); wireProber.stop(); }
   };
 }

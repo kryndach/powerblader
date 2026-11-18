@@ -27,6 +27,17 @@
   3. **Fix:** Implement the minimal, clean root-cause fix.
   4. **Verify Green:** Run `npm run check:style` and `npm test` (including 2-tab
      Chromium E2E `tools/test_browser_e2e.mjs`) before merging to `master`.
+- **Never Deliver a Broken Build (MANDATORY PRE-DELIVERY GATE):**
+  - Never rely solely on mocked child-process, SSH, or PowerShell unit tests
+    when touching `.bat`, `.ps1`, server startup, tunnel routing, or UI boot.
+  - Every `npm test` run MUST execute `tools/verify_release_smoke.mjs` (verifies
+    all `PLAY_NES_*.bat` launchers, real PowerShell 5.1 AST + 7-bit ASCII on
+    `start_online.ps1`, 32-bit/64-bit OpenSSH binaries, and real child-process
+    `server/relay_server.mjs` boot with zero `stderr`).
+  - **After merging to `master` (`...\Projects\NES_Online`):** ALWAYS run
+    `node tools/verify_release_smoke.mjs --live-tunnel` inside the main repo
+    main repo folder BEFORE telling the user a build is ready, confirming the
+    exact files the user launches start cleanly and allocate a live HTTPS URL.
 
 ## 2. Code Style & Clean Code Rules (Strictly Enforced)
 
@@ -90,13 +101,14 @@ rules before committing:
     2-PC full-stack benchmark (`/autotest`) & network workbench (`/nettest`).
 - **`server/` (FIFO WebSocket & HTTP Relay Server):**
   - `server/relay_server.mjs`, `server/room_manager.mjs`,
+    `server/wire_rtt_prober.mjs`, `server/tunnel_manager.mjs`,
     `server/archive_extractor.mjs`, `server/room_rom_and_save_api.mjs` — Node
-    HTTP/WSS server, `.zip`/`.rar`/`.7z` ROM unpacker, `206` Range & multipart
-    ROM cache, Dual-WS striping, and telemetry auto-save.
-- **`tools/` (Automated QA, Real-Browser E2E & Style Verification):**
+    HTTP/WSS server, auto-route SSH tunnel manager, C++ RFC 6455 `wire_rtt`
+    prober, `.zip`/`.rar`/`.7z` unpacker, `206` Range ROM cache, Dual-WS.
+- **`tools/` (Automated QA, Real-Browser E2E & Release Smoke Gate):**
   - `npm test` — Runs `test_coop_qa.mjs`, `test_net_diagnostics.mjs`,
-    `test_real_roms.mjs`, `test_perf_and_edge_cases.mjs`, and real 2-tab
-    headless Chrome E2E `test_browser_e2e.mjs` (`npm run test:e2e`).
+    `test_real_roms.mjs`, `test_perf_and_edge_cases.mjs`, real 2-tab Chrome E2E
+    `test_browser_e2e.mjs`, and `verify_release_smoke.mjs` (`verify:release`).
   - `npm run check:style` — Verifies 80-char width and 350-line file limits.
 
 ## 4. Deep-Dive Reference Docs (Read On Demand)

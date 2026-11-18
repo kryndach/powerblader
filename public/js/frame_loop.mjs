@@ -189,13 +189,24 @@ export function startConsoleFrameLoop(
       framesThisSec = 0;
       lastFpsUpdate = now;
 
-      if (state.ws && state.ws.readyState === 1) {
+      const p2pOpen = state.rtcChannel?.readyState === 'open' &&
+        ui.transportModeSelect?.value !== 'wss';
+      if (p2pOpen) {
+        try {
+          state.rtcChannel.send(JSON.stringify({
+            type: 'peer_ping', t: Date.now()
+          }));
+        } catch {}
+      } else if (
+        state.ws && state.ws.readyState === 1 &&
+        (!state.peerConnected || now - (state._lastWireRttAt || 0) > 4500)
+      ) {
         const pingType = state.peerConnected ? 'peer_ping' : 'ping';
         state.ws.send(JSON.stringify({ type: pingType, t: Date.now() }));
       }
     }
 
-    if (now - lastTelemetryTick >= 4000) {
+    if (now - lastTelemetryTick >= 8000) {
       lastTelemetryTick = now;
       if (state.ws && state.ws.readyState === 1) {
         const t = state.engine ? state.engine.getTelemetry() : {};

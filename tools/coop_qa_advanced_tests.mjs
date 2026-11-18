@@ -164,7 +164,9 @@ export async function runTest6ChrRamRiftAndTelemetry() {
     if (r1.packetToSend) {
       if (tick >= 50 && !checkedSteadySingleInputRle) {
         assert.strictEqual(r1.packetToSend.inputs.length, 1);
-        assert.strictEqual(r1.packetToSend.tailCount, 32);
+        assert.ok(
+          r1.packetToSend.tailCount >= 4 && r1.packetToSend.tailCount <= 32
+        );
         checkedSteadySingleInputRle = true;
       }
       q12.push({ at: now + 110, pkt: r1.packetToSend });

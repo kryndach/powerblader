@@ -160,7 +160,7 @@ export function createProtocolHandlers(
       return sendWs({ type: 'peer_pong', t: msg.t });
     }
     if (
-      msg.type === 'peer_pong' ||
+      msg.type === 'wire_rtt' || msg.type === 'peer_pong' ||
       (msg.type === 'pong' && !state.peerConnected)
     ) {
       return handlePongAndAutoDelay(msg);

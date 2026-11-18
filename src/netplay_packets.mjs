@@ -18,6 +18,9 @@ export function resetEngineTimeline(
   engine.simulatedFrameTag = new Int32Array(engine.historySize).fill(-1);
 
   engine.lastConfirmedRemoteFrame = startFrame - 1;
+  engine.peerAckedLocalFrame = startFrame - 1;
+  engine._lastSentHashFrame = -1;
+  engine._lastSentHashRepeats = 0;
   engine.lastLocalScheduledFrame = startFrame - 1;
   engine.earliestMispredictedFrame = null;
 
@@ -214,6 +217,10 @@ export function processRemoteInputPacket(
     );
   }
 
+  if (typeof packet.ack === 'number' && Number.isFinite(packet.ack)) {
+    const prev = engine.peerAckedLocalFrame ?? (engine.timelineStartFrame - 1);
+    if (packet.ack > prev) engine.peerAckedLocalFrame = Math.floor(packet.ack);
+  }
   if (typeof packet.rxClump === 'number' && Number.isFinite(packet.rxClump)) {
     engine.peerClumpFrames = packet.rxClump;
   }
@@ -256,10 +263,13 @@ export function processRemoteInputPacket(
 
 export function buildNetplayInputPacket(engine, latestScheduledFrame) {
   const avail = Math.max(
-    1,
-    latestScheduledFrame - engine.timelineStartFrame + 1
+    1, latestScheduledFrame - engine.timelineStartFrame + 1
   );
-  const count = Math.min(Math.max(32, engine.maxRollbackFrames || 32), avail);
+  const maxWin = Math.min(Math.max(32, engine.maxRollbackFrames || 32), avail);
+  const acked = engine.peerAckedLocalFrame ?? (engine.timelineStartFrame - 1);
+  const count = acked >= engine.timelineStartFrame
+    ? Math.min(maxWin, Math.max(4, latestScheduledFrame - acked + 2))
+    : maxWin;
   const fullInputs = new Array(count);
   for (let i = 0; i < count; i++) {
     fullInputs[i] = engine.getLocalInputAt(latestScheduledFrame - i);
@@ -273,33 +283,34 @@ export function buildNetplayInputPacket(engine, latestScheduledFrame) {
     engine.lastConfirmedRemoteFrame - (engine.remoteInputDelayFrames || 0)
   );
   const pkt = {
-    type: 'netplay_input',
-    sessionId: engine.sessionId,
-    player: engine.localPlayer,
-    startFrame: latestScheduledFrame,
+    type: 'netplay_input', sessionId: engine.sessionId,
+    player: engine.localPlayer, startFrame: latestScheduledFrame,
+    ack: engine.lastConfirmedRemoteFrame,
     inputDelay: engine.inputDelayFrames,
     peerLead: engine.currentFrame - peerEmulConfirmed,
-    rxClump: engine.rxClumpFrames,
-    inputs
+    rxClump: engine.rxClumpFrames, inputs
   };
   if (trimLen < count) pkt.tailCount = count;
-  if (
-    engine.localHashes.size > 0 &&
-    engine.earliestMispredictedFrame === null
-  ) {
+  const canSendHash =
+    engine.localHashes.size > 0 && engine.earliestMispredictedFrame === null;
+  if (canSendHash) {
     let bestFrame = -1;
     for (const k of engine.localHashes.keys()) {
-      if (
-        k <= engine.lastConfirmedRemoteFrame &&
-        k <= engine.currentFrame &&
-        k > bestFrame
-      ) {
+      if (k <= engine.lastConfirmedRemoteFrame &&
+          k <= engine.currentFrame && k > bestFrame) {
         bestFrame = k;
       }
     }
     if (bestFrame >= 0) {
-      pkt.hashFrame = bestFrame;
-      pkt.hash = engine.localHashes.get(bestFrame);
+      if (bestFrame !== engine._lastSentHashFrame) {
+        engine._lastSentHashFrame = bestFrame;
+        engine._lastSentHashRepeats = 0;
+      }
+      if ((engine._lastSentHashRepeats || 0) < 2) {
+        engine._lastSentHashRepeats = (engine._lastSentHashRepeats || 0) + 1;
+        pkt.hashFrame = bestFrame;
+        pkt.hash = engine.localHashes.get(bestFrame);
+      }
     }
   }
   return pkt;

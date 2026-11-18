@@ -65,36 +65,73 @@ export function createTelemetryReporter(state, ui, romSync) {
     };
   }
 
-  function pushGameplayTelemetryToServer() {
-    const sock =
-      state.ws2 && state.ws2.readyState === 1 ? state.ws2 : state.ws;
-    if (!sock || sock.readyState !== 1) return;
+  let telemetryPostInFlight = false;
+
+  async function pushGameplayTelemetryToServer() {
+    if (!state.ws || state.ws.readyState !== 1) return;
+    const telemetry = buildGameplayTelemetryPayload();
+    if (typeof fetch === 'function') {
+      if (telemetryPostInFlight) return;
+      telemetryPostInFlight = true;
+      try {
+        await fetch('/api/gameplay-telemetry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(telemetry)
+        });
+      } catch {} finally {
+        telemetryPostInFlight = false;
+      }
+      return;
+    }
     try {
-      const telemetry = buildGameplayTelemetryPayload();
-      const payload = JSON.stringify({
-        type: 'gameplay_telemetry_ws',
-        telemetry
-      });
-      sock.send(payload);
+      const msg = { type: 'gameplay_telemetry_ws', telemetry };
+      state.ws.send(JSON.stringify(msg));
     } catch {}
   }
 
   function handlePongAndAutoDelay(msg) {
-    const sampleRtt = Math.max(1, Date.now() - msg.t);
+    const p2pOpen = Boolean(
+      state.rtcChannel && state.rtcChannel.readyState === 'open' &&
+      ui.transportModeSelect?.value !== 'wss'
+    );
+    const nowPerf = performance.now();
+    if (msg.type === 'wire_rtt') {
+      if (p2pOpen) return;
+      state._lastWireRttAt = nowPerf;
+    } else if (
+      msg.type === 'peer_pong' && !p2pOpen &&
+      nowPerf - (state._lastWireRttAt || 0) < 5000
+    ) {
+      return;
+    }
+
+    const sampleRtt = msg.type === 'wire_rtt'
+      ? Math.max(1, Math.round(msg.rttMs || 1))
+      : Math.max(1, Date.now() - msg.t);
     if (sampleRtt > 1500 || (state.engine?.syncPaused && sampleRtt > 500)) {
       return;
     }
+    if (!state._rttSamples) state._rttSamples = [];
+    state._rttSamples.push(sampleRtt);
+    if (state._rttSamples.length > 5) state._rttSamples.shift();
+    const sorted = [...state._rttSamples].sort((a, b) => a - b);
+    const medRtt = sorted[Math.floor(sorted.length * 0.5)];
+
     state.jitterMs = Math.round(
-      state.jitterMs * 0.7 + Math.abs(sampleRtt - state.rttMs) * 0.3
+      state.jitterMs * 0.7 + Math.abs(sampleRtt - medRtt) * 0.3
     );
     state.rttMs = Math.round(
-      state.rttMs === 0 ? sampleRtt : state.rttMs * 0.7 + sampleRtt * 0.3
+      state.rttMs === 0 ? medRtt : state.rttMs * 0.6 + medRtt * 0.4
     );
     ui.pingBadge.textContent = `Ping: ${state.rttMs}ms`;
     ui.dbgRtt.textContent = `${state.rttMs} ms / +/-${state.jitterMs} ms`;
 
+    const isPeerSample =
+      msg.type === 'peer_pong' ||
+      (msg.type === 'wire_rtt' && state.peerConnected);
     if (
-      msg.type === 'peer_pong' &&
+      isPeerSample &&
       ui.inputDelaySelect.value === 'auto' &&
       state.engine
     ) {

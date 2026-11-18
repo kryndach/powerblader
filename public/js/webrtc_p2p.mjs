@@ -208,9 +208,7 @@ export function createNetTransport(state, ui, onIncomingMessage) {
         if (!state.ws || state.ws.readyState !== 1) return;
         state.ws.send(raw);
         const sendAux =
-          (pkt.startFrame & 1) === 0 ||
-          (pkt.inputs && pkt.inputs.length > 1) ||
-          pkt.hashFrame !== undefined;
+          (pkt.startFrame & 1) === 0 || pkt.hashFrame !== undefined;
         if (sendAux && state.wsAux && state.wsAux.readyState === 1) {
           try { state.wsAux.send(raw); } catch {}
         }
