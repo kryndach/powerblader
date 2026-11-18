@@ -1,5 +1,6 @@
 // Regression Tests: Dual-WS Skew Dedup, 0f High-RTT Smoothness & 502 Upload
 import assert from 'assert';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import http from 'http';
 import os from 'os';
@@ -8,6 +9,7 @@ import WebSocket from 'ws';
 import * as jsnesModule from 'jsnes';
 import { NesNetplayEngine, INPUT_BITS } from '../src/netplay_engine.mjs';
 import { createCoopServer } from '../server/relay_server.mjs';
+import { resolveSshBin } from '../server/tunnel_manager.mjs';
 import { createProtocolHandlers } from '../public/js/net_protocol_handlers.mjs';
 import { createTelemetryReporter } from '../public/js/telemetry_reporter.mjs';
 import { uploadStripedRom } from '../public/js/rom_fast_transfer.mjs';
@@ -264,6 +266,28 @@ async function testTunnelAutoProbeFailoverAndGuard() {
   } finally {
     await app.close();
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+
+  // 4. 32-bit WoW64 Node on Windows MUST resolve Sysnative\OpenSSH\ssh.exe
+  //    AND missing ssh binary must return clean 502 JSON (never crash Node!)
+  const sshPath = resolveSshBin('ssh');
+  execFileSync(sshPath, ['-V'], { stdio: 'pipe' });
+
+  const tmpErr = fs.mkdtempSync(path.join(os.tmpdir(), 'nes_ssh_err_'));
+  const errApp = createCoopServer({
+    logAccess: false, logsDir: tmpErr,
+    probeTcpFn: async () => 8, sshBin: '__missing_ssh_binary_for_test__'
+  });
+  const errPort = await errApp.listen(0, '127.0.0.1');
+  try {
+    const badRes = await httpReqJson(
+      errPort, '/api/tunnel-routes', 'POST', { route: 'lhr' }
+    );
+    assert.strictEqual(badRes.status, 502);
+    assert.strictEqual(badRes.json.ok, false);
+  } finally {
+    await errApp.close();
+    fs.rmSync(tmpErr, { recursive: true, force: true });
   }
 }
 

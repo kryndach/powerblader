@@ -44,6 +44,7 @@ if ($existingConns) {
     if ($pidToKill -and $pidToKill -gt 4) {
       Write-Host "[1/4] Stopping old server on port $Port ($pidToKill)..." `
         -ForegroundColor Yellow
+      cmd /c "taskkill /PID $pidToKill /T /F >nul 2>&1"
       Stop-Process -Id $pidToKill -Force -ErrorAction SilentlyContinue
     }
   }
@@ -60,6 +61,7 @@ if (!(Test-Path $logsDir)) {
   New-Item -ItemType Directory -Path $logsDir | Out-Null
 }
 
+$env:PORT = "$Port"
 $nodeProc = Start-Process -FilePath "node" `
   -ArgumentList "server/relay_server.mjs" `
   -WorkingDirectory $RootDir `
@@ -185,7 +187,8 @@ try {
         $lastShownPublicUrl = $curUrl
         $newBro = "$curUrl$pathSuffix"
         try { Set-Clipboard -Value $newBro } catch {}
-        Write-Host "[UI ROUTE SWITCH] $($inf.tunnelInfo.routeLabel) -> $newBro"`
+        Write-Host `
+          "[UI ROUTE SWITCH] $($inf.tunnelInfo.routeLabel) -> $newBro" `
           -ForegroundColor Green
       }
     } catch {}
@@ -194,6 +197,7 @@ try {
   Write-Host "`nShutting down Node.js Server and SSH Tunnel..." `
     -ForegroundColor Yellow
   if ($nodeProc -and !$nodeProc.HasExited) {
+    cmd /c "taskkill /PID $($nodeProc.Id) /T /F >nul 2>&1"
     Stop-Process -Id $nodeProc.Id -Force -ErrorAction SilentlyContinue
   }
 }

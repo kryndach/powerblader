@@ -78,18 +78,35 @@ function defaultProbeTcp(host, port = 443, timeoutMs = 1300) {
   );
 }
 
+export function resolveSshBin(name = 'ssh') {
+  if (process.platform === 'win32') {
+    const winRoot = process.env.SystemRoot || 'C:\\Windows';
+    const candidates = [
+      path.join(winRoot, 'Sysnative', 'OpenSSH', `${name}.exe`),
+      path.join(winRoot, 'System32', 'OpenSSH', `${name}.exe`),
+      path.join('C:\\Program Files\\Git\\usr\\bin', `${name}.exe`)
+    ];
+    const hit = candidates.find((p) => fs.existsSync(p));
+    if (hit) return hit;
+  }
+  return name;
+}
+
 function ensurePinggyKey(logsDir) {
   fs.mkdirSync(logsDir, { recursive: true });
   const keyPath = path.join(logsDir, 'pinggy_ed25519');
   if (!fs.existsSync(keyPath)) {
     execFileSync(
-      'ssh-keygen', ['-t', 'ed25519', '-f', keyPath, '-q', '-N', '']
+      resolveSshBin('ssh-keygen'),
+      ['-t', 'ed25519', '-f', keyPath, '-q', '-N', '']
     );
   }
   return keyPath;
 }
 
-async function defaultSpawnSshTunnel(route, localPort, logsDir, onDrop) {
+async function defaultSpawnSshTunnel(
+  route, localPort, logsDir, onDrop, sshBinOpt = null
+) {
   const args = route.tunnel === 'pinggy'
     ? [
       '-T', '-p', '443', '-i', ensurePinggyKey(logsDir),
@@ -108,8 +125,10 @@ async function defaultSpawnSshTunnel(route, localPort, logsDir, onDrop) {
   fs.mkdirSync(logsDir, { recursive: true });
   try { fs.writeFileSync(outPath, ''); fs.writeFileSync(errPath, ''); } catch {}
 
-  const proc = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-  let buf = '', killedByUs = false;
+  const sshCmd = sshBinOpt || resolveSshBin('ssh');
+  let buf = '', killedByUs = false, spawnErr = null;
+  const proc = spawn(sshCmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  proc.on('error', (err) => { spawnErr = err; });
   proc.stdout.on('data', (c) => {
     const s = String(c); buf += s;
     try { fs.appendFileSync(outPath, s); } catch {}
@@ -118,7 +137,7 @@ async function defaultSpawnSshTunnel(route, localPort, logsDir, onDrop) {
     const s = String(c); buf += s;
     try { fs.appendFileSync(errPath, s); } catch {}
   });
-  proc.once('exit', () => { if (!killedByUs) onDrop?.(); });
+  proc.once('exit', () => { if (!killedByUs && !spawnErr) onDrop?.(); });
 
   const kill = () => {
     killedByUs = true;
@@ -127,8 +146,10 @@ async function defaultSpawnSshTunnel(route, localPort, logsDir, onDrop) {
 
   let waitedSecond = false;
   for (let i = 0; i < 42; i++) {
+    if (spawnErr) break;
     if (proc.exitCode !== null) break;
     await sleep(320);
+    if (spawnErr) break;
     const found = [...new Set(buf.match(URL_RE) || [])];
     if (found.length >= 1) {
       if (route.tunnel === 'pinggy' && found.length < 2 && !waitedSecond) {
@@ -143,6 +164,7 @@ async function defaultSpawnSshTunnel(route, localPort, logsDir, onDrop) {
     }
   }
   kill();
+  if (spawnErr) throw spawnErr;
   throw new Error(`Tunnel ${route.id} (${route.host}) timed out`);
 }
 
@@ -211,7 +233,9 @@ export function createTunnelManager(
         };
         const h = customSpawn
           ? await customSpawn(route, port, logsDir, onDrop)
-          : await defaultSpawnSshTunnel(route, port, logsDir, onDrop);
+          : await defaultSpawnSshTunnel(
+            route, port, logsDir, onDrop, options.sshBin || null
+          );
         if (mySeq !== switchSeq || stopped) { h.kill?.(); break; }
         activeHandle = h;
         Object.assign(tunnelInfo, {
