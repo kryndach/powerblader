@@ -2,11 +2,16 @@
 import { base64ToUint8 } from './rom_sync.mjs';
 import { handleRomTransferMessage } from './rom_archive.mjs';
 import { getCachedRomByCrc } from './rom_fast_transfer.mjs';
+import { createInputRouter } from './input_router.mjs';
+import {
+  clearActiveRomTransfers, resetPingWindow, resetPeerSessionState
+} from './session_store.mjs';
 
 export function createProtocolHandlers(
   state, ui, romSync, transport, telemetry
 ) {
   const { pushGameplayTelemetryToServer, handlePongAndAutoDelay } = telemetry;
+  const inputRouter = createInputRouter(state);
 
   function sendWs(obj) {
     if (state.ws && state.ws.readyState === 1) {
@@ -14,14 +19,7 @@ export function createProtocolHandlers(
     }
   }
 
-  function clearActiveRomTransfers() {
-    state.activeRomAbortCtrl?.abort();
-    state.activeRomAbortCtrl = null;
-    state.activeRomDownload = null;
-    state.incomingRomTransfer = null;
-    state.sendingRomSessionId = null;
-    ui.resetSendRomButtons?.();
-  }
+  function clearTransfers() { clearActiveRomTransfers(state, ui); }
 
   function maybeAutoLoadCachedPartnerRom(crc, romName) {
     if (!crc || crc === state.romCrc32 || state.loadingCachedRomCrc === crc) {
@@ -41,7 +39,7 @@ export function createProtocolHandlers(
 
   function applyImportedSyncState(syncState, bannerText) {
     if (!syncState || !state.engine) return;
-    clearActiveRomTransfers();
+    clearTransfers();
     state.engine.localPlayer = state.localPlayerIndex;
     state.engine.online = true;
     state.engine.enableRiftPacing = false;
@@ -134,24 +132,7 @@ export function createProtocolHandlers(
   function handleIncomingNetMessage(msg) {
     if (msg.type === 'aux_bound') return;
     if (msg.type === 'netplay_input') {
-      const firstIn = Array.isArray(msg.inputs) ? msg.inputs[0] : 0;
-      const dedupKey = `${msg.sessionId || ''}:${msg.startFrame}:` +
-        `${firstIn}:${msg.hashFrame || ''}`;
-      let seen = state.rxInputDedupSet;
-      if (!seen) seen = state.rxInputDedupSet = new Set();
-      if (seen.has(dedupKey)) return;
-      seen.add(dedupKey);
-      if (seen.size > 128) seen.delete(seen.keys().next().value);
-      state.rxCountThisSec++;
-      const nowPerf = performance.now();
-      if (state.lastRxInputAt > 0) {
-        const gap = Math.round(nowPerf - state.lastRxInputAt);
-        if (gap > state.maxRxGapMs && gap < 10000) state.maxRxGapMs = gap;
-      }
-      state.lastRxInputAt = nowPerf;
-      if (state.engine && state.peerConnected) {
-        state.engine.receiveRemoteInputPacket(msg, nowPerf);
-      }
+      inputRouter.routeNetplayInput(msg);
       return;
     }
 
@@ -169,6 +150,7 @@ export function createProtocolHandlers(
 
     if (msg.type === 'peer_joined') {
       state.peerConnected = true;
+      resetPingWindow(state);
       state.peerNick = msg.peer?.nick || 'Partner';
       state.partnerRomName = msg.peer?.romName || state.partnerRomName;
       state.partnerRomCrc32 = msg.peer?.romCrc32 || state.partnerRomCrc32;
@@ -191,11 +173,7 @@ export function createProtocolHandlers(
     }
 
     if (msg.type === 'peer_left') {
-      clearActiveRomTransfers();
-      state.peerConnected = false;
-      state.partnerRomName = null;
-      state.partnerRomCrc32 = null;
-      state.matchStarted = false;
+      resetPeerSessionState(state, ui);
       transport.closeWebRtc();
       if (state.engine) {
         state.engine.online = false;
@@ -234,7 +212,7 @@ export function createProtocolHandlers(
         state.romBinaryString &&
         (!msg.romCrc32 || msg.romCrc32 === state.romCrc32)
       ) {
-        clearActiveRomTransfers();
+        clearTransfers();
         state.partnerRomName = msg.romName || state.romName;
         state.partnerRomCrc32 = msg.romCrc32 || state.romCrc32;
         state.nes.loadROM(state.romBinaryString);
@@ -272,7 +250,7 @@ export function createProtocolHandlers(
           clearTimeout(state.syncAckTimeout);
           state.syncAckTimeout = null;
         }
-        clearActiveRomTransfers();
+        clearTransfers();
         state.engine.syncPaused = false;
         state.matchStarted = true;
         state.lastRxInputAt = 0;

@@ -11,50 +11,11 @@ import { createViewportAndSpeedController } from './viewport_and_speed.mjs';
 import { setupRomDropAndPicker } from './rom_archive.mjs';
 import { setupHostTunnelController } from './tunnel_ui.mjs';
 import { startConsoleFrameLoop } from './frame_loop.mjs';
+import {
+  createConsoleState, resetPeerSessionState
+} from './session_store.mjs';
 
-const state = {
-  nes: null,
-  engine: null,
-  romBinaryString: null,
-  romUint8: null,
-  romName: null,
-  romCrc32: null,
-  isAutoDefaultRom: false,
-  customRomsMap: new Map(),
-  ws: null,
-  wsAux: null,
-  localClientId: null,
-  lastRxInputDedupKey: '',
-  rtcPeer: null,
-  rtcChannel: null,
-  roomCode: null,
-  localPlayerIndex: 1,
-  peerConnected: false,
-  peerNick: 'Player 2',
-  partnerRomName: null,
-  partnerRomCrc32: null,
-  matchStarted: false,
-  syncAckTimeout: null,
-  incomingRomTransfer: null,
-  lastAutoResyncTime: 0,
-  rttMs: 0,
-  jitterMs: 0,
-  autoDelayCandidate: 3,
-  autoDelayStreak: 0,
-  lastAutoDelayChangeAt: 0,
-  txCountThisSec: 0,
-  rxCountThisSec: 0,
-  txPerSec: 0,
-  rxPerSec: 0,
-  lastFpsVal: 0,
-  lastRxInputAt: 0,
-  maxRxGapMs: 0,
-  simLagMs: 0,
-  simLossPct: 0,
-  canvasDirty: false,
-  telemetrySamples: [],
-  telemetryEvents: []
-};
+const state = createConsoleState();
 
 const ui = createConsoleUI(state);
 const audio = createAudioDrcEngine({
@@ -145,14 +106,7 @@ function connectToRoom() {
   ws.onclose = () => {
     if (state.ws !== ws) return;
     ui.dbgWssState.textContent = 'Disconnected';
-    state.activeRomAbortCtrl?.abort();
-    state.activeRomAbortCtrl = null; state.activeRomDownload = null;
-    state.incomingRomTransfer = null; state.sendingRomSessionId = null;
-    ui.resetSendRomButtons?.();
-    state.peerConnected = false;
-    state.partnerRomName = null;
-    state.partnerRomCrc32 = null;
-    state.matchStarted = false;
+    resetPeerSessionState(state, ui);
     if (state.wsAux) {
       try {
         state.wsAux.close();

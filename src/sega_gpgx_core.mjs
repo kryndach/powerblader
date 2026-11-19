@@ -1,14 +1,8 @@
 // Sega (Genesis Plus GX) & Super Nintendo (Snes9x) Libretro WASM Cores
 import { INPUT_BITS, crc32Bytes } from './crc32.mjs';
-
-const RGB565_TO_BGR24 = new Uint32Array(65536);
-for (let p = 0; p < 65536; p++) {
-  const r5 = (p >>> 11) & 0x1f;
-  const g6 = (p >>> 5) & 0x3f;
-  const b5 = p & 0x1f;
-  RGB565_TO_BGR24[p] = (((b5 << 3) | (b5 >>> 2)) << 16) |
-    (((g6 << 2) | (g6 >>> 4)) << 8) | ((r5 << 3) | (r5 >>> 2));
-}
+import {
+  RGB565_TO_BGR24, loadNodeVendorWasm
+} from './wasm_runtime_loader.mjs';
 
 const RUNTIMES = {
   gpgx: { file: 'genesis_plus_gx_libretro', factory: null, wasmBinary: null },
@@ -35,19 +29,9 @@ export async function ensureLibretroRuntime(coreKey = 'gpgx') {
       rt.factory = ns.default;
       rt.wasmBinary = new Uint8Array(await res.arrayBuffer());
     } else {
-      const fs = await import('node:fs');
-      const path = await import('node:path');
-      const url = await import('node:url');
-      const vDir = path.resolve(
-        path.dirname(url.fileURLToPath(import.meta.url)), '..', 'public/vendor'
-      );
-      const ns = await import(url.pathToFileURL(
-        path.join(vDir, `${rt.file}.js`)
-      ).href);
-      rt.factory = ns.default;
-      rt.wasmBinary = new Uint8Array(
-        fs.readFileSync(path.join(vDir, `${rt.file}.wasm`))
-      );
+      const { factory, wasmBytes } = await loadNodeVendorWasm(rt.file);
+      rt.factory = factory;
+      rt.wasmBinary = wasmBytes;
     }
     return { factory: rt.factory, wasmBinary: rt.wasmBinary };
   })().catch((err) => { rt.promise = null; throw err; });

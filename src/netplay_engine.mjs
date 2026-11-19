@@ -15,6 +15,10 @@ import {
   resetEngineTimeline, wrapNesNetplayCallbacks, processRemoteInputPacket,
   buildNetplayInputPacket, buildNetplayTelemetry
 } from './netplay_packets.mjs';
+import {
+  computeRecommendedInputDelay, cleanupOldHashes,
+  verifyConfirmedHashes, executeRollbackIfNeeded
+} from './netplay_rollback.mjs';
 
 export {
   INPUT_BITS, SEGA_MD_INPUT_BITS, N3DS_INPUT_BITS, CONSOLE_PROFILES,
@@ -34,8 +38,7 @@ export class RollbackNetplayEngine {
     this.inputDelayFrames = options.inputDelayFrames ?? 2;
     this.maxRollbackFrames = options.maxRollbackFrames ?? 25;
     this.enableRiftPacing = Boolean(options.enableRiftPacing);
-    this.enableVisualSmoothing =
-      options.enableVisualSmoothing ?? (this.systemId !== 'arcade');
+    this.enableVisualSmoothing = Boolean(options.enableVisualSmoothing);
     this.historySize = 256;
     this.saveBufferSize =
       options.saveBufferSize ?? (this.systemId === 'arcade' ? 36 : 64);
@@ -57,22 +60,8 @@ export class RollbackNetplayEngine {
   resetTimeline(startFrame = 0, newSessionId = null) {
     resetEngineTimeline(this, startFrame, newSessionId);
   }
-  static computeRecommendedInputDelay(
-    rttMs, jitterMs = 0, rxClumpFrames = 0, currentDelay = null
-  ) {
-    if (!Number.isFinite(rttMs) || rttMs <= 0) return 2;
-    const clumpMs = Math.min(25, Math.max(0, (rxClumpFrames || 0) - 1) * 5);
-    const eff = rttMs + Math.min(35, Math.max(0, jitterMs) * 0.5) + clumpMs;
-    const base = eff <= 85 ? 2 : eff <= 165 ? 3 : eff <= 310 ? 4 : 5;
-    if (!Number.isFinite(currentDelay) || base === currentDelay) return base;
-    const b = [0, 0, 85, 165, 310, 9999];
-    if (base > currentDelay && currentDelay >= 2 && currentDelay <= 4) {
-      return eff > b[currentDelay] + 15 ? base : currentDelay;
-    }
-    if (base < currentDelay && currentDelay >= 3 && currentDelay <= 5) {
-      return eff < b[currentDelay - 1] - 20 ? base : currentDelay;
-    }
-    return base;
+  static computeRecommendedInputDelay(rttMs, jitterMs, rxClump, curDelay) {
+    return computeRecommendedInputDelay(rttMs, jitterMs, rxClump, curDelay);
   }
   setInputDelay(frames) {
     const nextDelay = Math.max(0, Math.min(8, Math.floor(frames)));
@@ -124,93 +113,28 @@ export class RollbackNetplayEngine {
   _buildInputPacket(latestScheduledFrame) {
     return buildNetplayInputPacket(this, latestScheduledFrame);
   }
-  _cleanupOldHashes() {
-    while (this.localHashes.size > 40) {
-      this.localHashes.delete(this.localHashes.keys().next().value);
-    }
-    while (this.remoteHashes.size > 40) {
-      this.remoteHashes.delete(this.remoteHashes.keys().next().value);
-    }
-  }
-  _verifyConfirmedHashes() {
-    if (this.earliestMispredictedFrame !== null) return;
-    for (const [frame, remoteHash] of this.remoteHashes.entries()) {
-      if (frame <= this.lastConfirmedRemoteFrame &&
-          frame <= this.currentFrame &&
-          this.localHashes.has(frame) && frame > this.lastVerifiedFrame) {
-        const localHash = this.localHashes.get(frame);
-        this.lastVerifiedFrame = frame;
-        this.lastLocalHash = localHash;
-        this.lastRemoteHash = remoteHash;
-        this.syncStatus = localHash === remoteHash ? 'SYNC_OK' : 'DESYNC';
-        if (localHash !== remoteHash) this.desyncCount++;
-      }
-    }
-  }
+  _cleanupOldHashes() { cleanupOldHashes(this); }
+  _verifyConfirmedHashes() { verifyConfirmedHashes(this); }
+  _executeRollbackIfNeeded() { executeRollbackIfNeeded(this); }
 
-  _executeRollbackIfNeeded() {
-    const minRb = Math.max(
-      this.timelineStartFrame, this.currentFrame - (this.saveBufferSize - 4)
-    );
-    let rbFrame =
-      this.earliestMispredictedFrame !== null &&
-      this.earliestMispredictedFrame < this.currentFrame
-        ? Math.max(minRb, this.earliestMispredictedFrame) : null;
-    this.earliestMispredictedFrame = null;
-
-    for (let f = minRb; f < this.currentFrame; f++) {
-      if (rbFrame !== null && f >= rbFrame) break;
-      const idx = f % this.historySize;
-      if (this.simulatedFrameTag[idx] === f &&
-          (this.getPlayerInput(1, f) !== this.p1Simulated[idx] ||
-           this.getPlayerInput(2, f) !== this.p2Simulated[idx])) {
-        rbFrame = f;
-        break;
-      }
-    }
-    if (rbFrame === null || rbFrame >= this.currentFrame) return;
-    while (rbFrame > minRb &&
-           this.saveRing[rbFrame % this.saveBufferSize]?.frame !== rbFrame) {
-      rbFrame--;
-    }
-    const slot = this.saveRing[rbFrame % this.saveBufferSize];
-    if (!slot || slot.frame !== rbFrame) return;
-
-    const depth = this.currentFrame - rbFrame;
-    this.rollbacksTotal++;
-    this.rollbacksThisSec++;
-    this.lastRollbackDepth = depth;
-    if (depth > this.maxRollbackDepthSeen) this.maxRollbackDepthSeen = depth;
-    const curFb = this.core.getFrameBuffer();
-    if (this.enableVisualSmoothing && depth >= 4 && curFb) {
-      this._preRollbackBuffer.set(curFb);
-      this.lastRollbackBlendAlpha = depth >= 6 ? 0.25 : 0.18;
-    }
-    this._rollbackDeclickL = this._lastEmittedAudioL || 0;
-    this._rollbackDeclickR = this._lastEmittedAudioR || 0;
-    this._rollbackDeclickSamples = 48;
-
-    this.core.loadState(slot);
-    for (const k of this.localHashes.keys()) {
-      if (k > rbFrame) this.localHashes.delete(k);
-    }
-    this.suppressCallbacks = true;
-    for (let f = rbFrame; f < this.currentFrame; f++) {
-      if (f > rbFrame && f >= this.lastConfirmedRemoteFrame) {
-        this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
-      }
-      const m1 = this.getPlayerInput(1, f);
-      const m2 = this.getPlayerInput(2, f);
-      const idx = f % this.historySize;
-      this.p1Simulated[idx] = m1;
-      this.p2Simulated[idx] = m2;
-      this.simulatedFrameTag[idx] = f;
-      this.core.stepFrame(m1, m2, true);
-      if ((f + 1) % 30 === 0) {
-        this.localHashes.set(f + 1, this.core.computeHash());
-      }
+  _stepOfflineFrame(localMask, p2Mask, t0) {
+    const f = this.currentFrame, idx = f % this.historySize;
+    const m1 = localMask >>> 0, m2 = p2Mask >>> 0;
+    this._setPlayerInput(1, f, m1, true);
+    this._setPlayerInput(2, f, m2, true);
+    this.p1Simulated[idx] = m1; this.p2Simulated[idx] = m2;
+    this.simulatedFrameTag[idx] = f;
+    this.lastConfirmedRemoteFrame = f; this.lastLocalScheduledFrame = f;
+    if (this.systemId === 'nes') {
+      this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
     }
     this.suppressCallbacks = false;
+    this.core.stepFrame(m1, m2, false);
+    this.currentFrame++;
+    this.lastStepMs = performance.now() - t0;
+    return {
+      stepped: true, stalled: false, packetToSend: null, p1Mask: m1, p2Mask: m2
+    };
   }
 
   stepNetplayFrame(localButtonsMask, p2LocalButtonsMask = 0, options = null) {
@@ -228,29 +152,8 @@ export class RollbackNetplayEngine {
       };
     }
     if (!this.online) {
-      const f = this.currentFrame;
-      const idx = f % this.historySize;
-      const m1 = localButtonsMask >>> 0, m2 = p2LocalButtonsMask >>> 0;
-      this._setPlayerInput(1, f, m1, true);
-      this._setPlayerInput(2, f, m2, true);
-      this.p1Simulated[idx] = m1;
-      this.p2Simulated[idx] = m2;
-      this.simulatedFrameTag[idx] = f;
-      this.lastConfirmedRemoteFrame = f;
-      this.lastLocalScheduledFrame = f;
-      if (this.systemId === 'nes') {
-        this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
-      }
-      this.suppressCallbacks = false;
-      this.core.stepFrame(m1, m2, false);
-      this.currentFrame++;
-      this.lastStepMs = performance.now() - t0;
-      return {
-        stepped: true, stalled: false, packetToSend: null,
-        p1Mask: m1, p2Mask: m2
-      };
+      return this._stepOfflineFrame(localButtonsMask, p2LocalButtonsMask, t0);
     }
-
     if (!options?.skipRollback) this._executeRollbackIfNeeded();
     const turbo = Math.max(1, options?.turboSpeed || 1);
     const maxAhead = turbo > 1
@@ -260,21 +163,20 @@ export class RollbackNetplayEngine {
     if (this.currentFrame - this.lastConfirmedRemoteFrame > maxAhead) {
       this.stallFrames++;
       this._verifyConfirmedHashes();
-      const packetToSend = options?.skipPacket
+      const pkt = options?.skipPacket
         ? null : this._buildInputPacket(this.lastLocalScheduledFrame);
       this.lastStepMs = performance.now() - t0;
       return {
-        stepped: false, stalled: true, packetToSend,
+        stepped: false, stalled: true, packetToSend: pkt,
         p1Mask: this.getPlayerInput(1, prevF),
         p2Mask: this.getPlayerInput(2, prevF)
       };
     }
     const clumpPad = Math.min(4.5, (this.rxClumpFrames || 0) * 1.25);
     if (this.enableRiftPacing && this.riftFrames > (1.75 + clumpPad) * turbo) {
-      const cooldownTarget = this.riftFrames > 5 * turbo ? 4 : 10;
-      if (this._riftCooldown >= cooldownTarget) {
-        this._riftCooldown = 0;
-        this.riftWaitFrames++;
+      const target = this.riftFrames > 5 * turbo ? 4 : 10;
+      if (this._riftCooldown >= target) {
+        this._riftCooldown = 0; this.riftWaitFrames++;
         this._verifyConfirmedHashes();
         const pkt = options?.skipPacket
           ? null : this._buildInputPacket(this.lastLocalScheduledFrame);
@@ -297,15 +199,19 @@ export class RollbackNetplayEngine {
     }
     const f = this.currentFrame, idx = f % this.historySize;
     this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
+    if (this.systemId === 'arcade' && f > this.timelineStartFrame &&
+        f % 30 === 0) {
+      this.localHashes.set(f, this.core.computeHash());
+      this._cleanupOldHashes();
+    }
     const p1Mask = this.getPlayerInput(1, f);
     const p2Mask = this.getPlayerInput(2, f);
-    this.p1Simulated[idx] = p1Mask;
-    this.p2Simulated[idx] = p2Mask;
+    this.p1Simulated[idx] = p1Mask; this.p2Simulated[idx] = p2Mask;
     this.simulatedFrameTag[idx] = f;
     this.suppressCallbacks = false;
     this.core.stepFrame(p1Mask, p2Mask, Boolean(options?.skipPacket));
     this.currentFrame++;
-    if (this.currentFrame % 30 === 0) {
+    if (this.systemId !== 'arcade' && this.currentFrame % 30 === 0) {
       this.localHashes.set(this.currentFrame, this.core.computeHash());
       this._cleanupOldHashes();
     }

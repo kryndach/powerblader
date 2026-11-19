@@ -140,6 +140,7 @@ export function startConsoleFrameLoop(
       accumulatorMs = Math.min(accumulatorMs + dt, effectiveFrameMs * 2);
     }
 
+    let ticksInRaf = 0;
     while (accumulatorMs >= effectiveFrameMs) {
       accumulatorMs -= effectiveFrameMs;
       const stepStartMs = performance.now();
@@ -152,7 +153,7 @@ export function startConsoleFrameLoop(
           if (state.nes.ppu) state.nes.ppu._headlessFrame = !isLast;
           const res = state.engine.stepNetplayFrame(combinedMask, 0, {
             turboSpeed: effSpeed,
-            skipRollback: s > 0,
+            skipRollback: s > 0 || ticksInRaf > 0,
             skipPacket: !isLast
           });
           if (state.nes.ppu) state.nes.ppu._headlessFrame = false;
@@ -170,7 +171,8 @@ export function startConsoleFrameLoop(
           }
         }
       }
-      if (performance.now() - stepStartMs > 11) {
+      ticksInRaf++;
+      if (performance.now() - stepStartMs > 14.2) {
         accumulatorMs = 0;
         break;
       }

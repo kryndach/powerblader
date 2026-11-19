@@ -2,6 +2,9 @@
 import {
   createWireRttProber, relayRawNetplayInput
 } from './wire_rtt_prober.mjs';
+import {
+  handleAutotestReportWs, handleGameplayTelemetryWs
+} from './telemetry_relay_handlers.mjs';
 
 const FORWARD_TYPES = new Set([
   'netplay_input', 'state_sync', 'sync_ack', 'resync_request', 'console_reset',
@@ -24,10 +27,7 @@ function seenInputKey(peer, key) {
 
 export function createRoomManager(trackers, options = {}) {
   const rooms = new Map();
-  const {
-    autotestSession, gameplayTelemetrySession, recordAccess,
-    saveGameplayTelemetryToDisk, saveAutotestReportToDisk
-  } = trackers;
+  const { recordAccess } = trackers;
 
   function getOrCreateRoom(roomCode) {
     if (!rooms.has(roomCode)) rooms.set(roomCode, new Map());
@@ -152,37 +152,14 @@ export function createRoomManager(trackers, options = {}) {
     }
 
     if (msg.type === 'autotest_report_ws' && msg.report) {
-      const pIdx = msg.report.playerIndex || peer.playerIndex || 1;
-      if (pIdx === 2) autotestSession.pc2 = msg.report;
-      else autotestSession.pc1 = msg.report;
-      saveAutotestReportToDisk();
-      if (msg.report.isFinal && options.logAccess !== false) {
-        console.log(
-          `[AUTOTEST] Saved final report from PC ${pIdx}` +
-            ' to logs/autotest_latest.txt'
-        );
-      }
-      const syncMsg = {
-        type: 'autotest_combined_text',
-        combinedText: autotestSession.combinedText
-      };
-      if (msg.report.isFinal) {
-        sendToPeer(peer, syncMsg);
-        broadcastToRoom(peer.roomCode, peer.clientId, syncMsg);
-      } else if (peer.playerIndex === 1) {
-        sendToPeer(peer, syncMsg);
-      }
-      return;
+      return handleAutotestReportWs(
+        peer, msg, trackers, options, sendToPeer, broadcastToRoom
+      );
     }
 
     if (msg.type === 'gameplay_telemetry_ws' &&
         (msg.telemetry || msg.payload)) {
-      const telObj = msg.telemetry || msg.payload;
-      const pIdx = telObj.playerIndex || peer.playerIndex || 1;
-      if (pIdx === 2) gameplayTelemetrySession.pc2 = telObj;
-      else gameplayTelemetrySession.pc1 = telObj;
-      saveGameplayTelemetryToDisk();
-      return;
+      return handleGameplayTelemetryWs(peer, msg, trackers);
     }
 
     if (msg.type === 'rom_info' ||

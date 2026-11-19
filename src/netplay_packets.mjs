@@ -44,6 +44,7 @@ export function resetEngineTimeline(
   engine.lastRollbackSecTick = Date.now();
   engine.lastRollbackDepth = 0;
   engine.maxRollbackDepthSeen = 0;
+  engine._lastRollbackAtFrame = startFrame - 10;
   engine.stallFrames = 0;
   engine.riftFrames = 0;
   engine.riftWaitFrames = 0;

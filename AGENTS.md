@@ -74,41 +74,41 @@ rules before committing:
   One-click Windows launcher (`pinggy.io` Asia-Pacific edge, auto clipboard +
   browser open). UI includes a top-bar switch between Game (`/`) & `/autotest`.
 - **`src/` (Universal Deterministic Multi-Console Netplay Engine):**
-  - `src/netplay_engine.mjs` & `src/netplay_packets.mjs` —
-    `RollbackNetplayEngine` (`NesNetplayEngine`) GGPO rollback, 32-bit input
-    masks, asymmetric input delay (`0f..5f`), clock-rift pacing, and smoothing.
-  - `src/core_adapter.mjs`, `src/sega_gpgx_core.mjs` &
-    `src/fbneo_arcade_core.mjs` — Multi-console adapter (`NesCoreAdapter` +
-    `GenericCoreAdapter`), `CONSOLE_PROFILES`, and WASM cores (`Genesis Plus GX`
-    Sega MD/SMS, `Snes9x` SNES, and `FinalBurn Neo` Arcade `local/arcade/`,
-    e.g., `tgm2p.zip`) with ZRLE sparse state sync.
-  - `src/jsnes_ppu_patches.mjs`, `src/jsnes_mapper_and_sprite_patches.mjs` &
-    `src/ppu_register_tables.mjs` — `patchJsnes8x16Sprites` (HBlank `$2006` /
-    `$2005` / `$2000` scanline flush, 8x16 sprites, 16-sprite scanline limit,
-    and deterministic post-render anti-lag CPU overclock).
+  - `src/netplay_engine.mjs`, `src/netplay_rollback.mjs` &
+    `src/netplay_packets.mjs` — `RollbackNetplayEngine` facade, isolated
+    rollback/coalescing engine, `ack`-windowed packets, and clock-rift pacing.
+  - `src/core_adapter.mjs`, `src/wasm_runtime_loader.mjs`,
+    `src/sega_gpgx_core.mjs` & `src/fbneo_arcade_core.mjs` — Multi-console
+    adapter, shared DRY WASM/RGB565/ZIP loader, and WASM cores (`Genesis Plus
+    GX`, `Snes9x`, `FinalBurn Neo`) with ZRLE sparse state sync.
+  - `src/jsnes_ppu_patches.mjs`, `src/ppu_hblank_and_headless.mjs`,
+    `src/ppu_sprite_and_overclock.mjs`, `src/mapper_bank_cache.mjs` &
+    `src/ppu_register_tables.mjs` — Composable `jsnes` PPU HBlank/late-`$2000`
+    flush, 8x16/16-sprite overflow, headless fast-path, and bank caching.
   - `src/fast_savestate.mjs` — Zero-GC binary snapshots (`saveFastState` /
     `loadFastState`), dirty-epoch CHR-RAM, and compact `exportSyncState`.
   - `src/crc32.mjs` — Precomputed CRC32, hex formatting, and RAM/VRAM hashing.
 - **`public/` (Browser Frontend):**
-  - `public/index.html`, `public/css/`, `public/js/` — Main NES Netplay Console,
-    5-slot fast save/load (`save_slots.mjs`), custom keybinds & Z/X swap
-    (`key_bindings.mjs`), fullscreen/auto-center & 1x..8x turbo speed
-    (`viewport_and_speed.mjs`), drag-drop & `.zip`/`.rar`/`.7z` loader
-    (`rom_archive.mjs`), 8x striped HTTP `Range` + IndexedDB CRC32 cache
-    (`rom_fast_transfer.mjs`, `rom_idb_cache.mjs`), unified live transfer UI
-    (`transfer_status_ui.mjs`), 48kHz DRC audio, Dual-WSS + WebRTC, Lobby.
+  - `public/index.html`, `public/css/`, `public/js/` — Main Console with
+    isolated `session_store.mjs`, `input_router.mjs`, `save_slots.mjs`,
+    `key_bindings.mjs`, `viewport_and_speed.mjs`, `rom_archive.mjs`,
+    `rom_fast_transfer.mjs`, `rom_idb_cache.mjs`, `transfer_status_ui.mjs`,
+    `telemetry_reporter.mjs`, `tunnel_ui.mjs`, 48kHz DRC audio, Dual-WSS.
   - `public/autotest.html` & `public/net_debug.html` — Zero-click 8-stage
     2-PC full-stack benchmark (`/autotest`) & network workbench (`/nettest`).
 - **`server/` (FIFO WebSocket & HTTP Relay Server):**
   - `server/relay_server.mjs`, `server/room_manager.mjs`,
-    `server/wire_rtt_prober.mjs`, `server/tunnel_manager.mjs`,
-    `server/archive_extractor.mjs`, `server/room_rom_and_save_api.mjs` — Node
-    HTTP/WSS server, auto-route SSH tunnel manager, C++ RFC 6455 `wire_rtt`
-    prober, `.zip`/`.rar`/`.7z` unpacker, `206` Range ROM cache, Dual-WS.
-- **`tools/` (Automated QA, Real-Browser E2E & Release Smoke Gate):**
-  - `npm test` — Runs `test_coop_qa.mjs`, `test_net_diagnostics.mjs`,
-    `test_real_roms.mjs`, `test_perf_and_edge_cases.mjs`, real 2-tab Chrome E2E
-    `test_browser_e2e.mjs`, and `verify_release_smoke.mjs` (`verify:release`).
+    `server/telemetry_relay_handlers.mjs`, `server/wire_rtt_prober.mjs`,
+    `server/tunnel_manager.mjs`, `server/archive_extractor.mjs`,
+    `server/room_rom_and_save_api.mjs` — Node HTTP/WSS server, auto-route SSH
+    tunnel manager, C++ RFC 6455 `wire_rtt` prober, `.zip`/`.rar`/`.7z`
+    unpacker, `206` Range ROM cache, Dual-WS.
+- **`tools/` (Automated QA, Visual, Netem E2E & Release Smoke Gate):**
+  - `npm test` — Runs `test_module_contracts.mjs`, `test_visual_accuracy.mjs`,
+    `test_coop_qa.mjs`, `test_net_diagnostics.mjs`, `test_real_roms.mjs`,
+    `test_perf_and_edge_cases.mjs`, 2-tab Chrome E2E `test_browser_e2e.mjs`,
+    240ms Pinggy Netem `test_real_life_smoothness.mjs` (`netem_proxy.mjs`), and
+    `verify_release_smoke.mjs` (`verify:release`).
   - `npm run check:style` — Verifies 80-char width and 350-line file limits.
 
 ## 4. Deep-Dive Reference Docs (Read On Demand)

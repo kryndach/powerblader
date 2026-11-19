@@ -121,9 +121,7 @@ export function createTelemetryReporter(state, ui, romSync) {
     state.jitterMs = Math.round(
       state.jitterMs * 0.7 + Math.abs(sampleRtt - medRtt) * 0.3
     );
-    state.rttMs = Math.round(
-      state.rttMs === 0 ? medRtt : state.rttMs * 0.6 + medRtt * 0.4
-    );
+    state.rttMs = medRtt;
     ui.pingBadge.textContent = `Ping: ${state.rttMs}ms`;
     ui.dbgRtt.textContent = `${state.rttMs} ms / +/-${state.jitterMs} ms`;
 
