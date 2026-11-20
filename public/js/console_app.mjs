@@ -39,10 +39,16 @@ const transport = createNetTransport(state, ui, (msg, src) => {
 const romSync = createRomSyncManager(state, ui, audio);
 const saveSlots = createSaveSlotsManager(state, ui, romSync);
 const keyBindings = createKeyBindingsManager(state, ui);
-const viewportCtrl = createViewportAndSpeedController(state, ui);
+const viewportCtrl = createViewportAndSpeedController(state, ui, romSync);
 state.onRomLoaded = () => {
+  viewportCtrl.applyOverclockToCore();
   saveSlots.updateSlotSelectLabels();
   if (!state.isAutoDefaultRom) viewportCtrl.centerGameScreen({ smooth: true });
+};
+state.onOverclockStateSynced = (en) => {
+  viewportCtrl.setOverclockEnabled(en, {
+    syncPeer: false, persist: false, showBanner: false
+  });
 };
 state.onGameStarted = () => viewportCtrl.centerGameScreen({ smooth: true });
 state.onRemoteSpeedCtrl = (mult) => {

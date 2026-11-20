@@ -4,7 +4,9 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as jsnesMod from 'jsnes';
-import { patchJsnes8x16Sprites } from '../src/jsnes_ppu_patches.mjs';
+import {
+  patchJsnes8x16Sprites, setNesOverclockEnabled
+} from '../src/jsnes_ppu_patches.mjs';
 import { NesNetplayEngine, INPUT_BITS } from '../src/netplay_engine.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -48,6 +50,72 @@ function testBattletoadsTitleScanline87Stability() {
     `Battletoads title screen scanline 87 flashed ${flashes.length}x: ` +
       JSON.stringify(flashes.slice(0, 5))
   );
+}
+
+function runBattletoadsCharSelect(romBin, overclockOn) {
+  let curFb = null, prevFb = null;
+  const nes = new jsnes.NES({ onFrame: (fb) => { curFb = fb.slice(); } });
+  nes.loadROM(romBin);
+  patchJsnes8x16Sprites(nes);
+  assert.strictEqual(nes.ppu._overclockEnabled, false);
+  if (overclockOn) setNesOverclockEnabled(nes, true);
+
+  const glitches = [];
+  for (let f = 0; f < 1400; f++) {
+    const startBtn = (f >= 720 && f < 726) || (f >= 780 && f < 786);
+    nes.controllers[1].state[3] = startBtn ? 0x41 : 0x40;
+    nes.frame();
+    if (f >= 825 && prevFb && curFb) {
+      let diffPx = 0, minY = 240, maxY = -1;
+      for (let y = 0; y < 240; y++) {
+        for (let x = 0; x < 256; x++) {
+          if (y >= 24 && y <= 31 && x >= 44 && x <= 212) continue;
+          if ((curFb[y * 256 + x] & 0xffffff) !==
+              (prevFb[y * 256 + x] & 0xffffff)) {
+            diffPx++;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      if (diffPx > 0) glitches.push({ f, diffPx, rows: `${minY}..${maxY}` });
+    }
+    prevFb = curFb;
+  }
+  const mode = overclockOn ? 'OC=ON' : 'OC=OFF';
+  assert.strictEqual(
+    glitches.length, 0,
+    `Battletoads char select (${mode}) blinked ${glitches.length}x: ` +
+      JSON.stringify(glitches.slice(0, 4))
+  );
+  assert.strictEqual(nes.ppu._hasTightWaitLoop, false);
+}
+
+function testBattletoadsCharacterSelectStability() {
+  const romBin = findRom('battletoads');
+  if (!romBin) return;
+  runBattletoadsCharSelect(romBin, false);
+  runBattletoadsCharSelect(romBin, true);
+
+  const archonBin = findRom('archon');
+  if (!archonBin) return;
+  const n = new jsnes.NES({ onFrame: () => {} });
+  n.loadROM(archonBin);
+  patchJsnes8x16Sprites(n);
+  setNesOverclockEnabled(n, true);
+  let ocTotal = 0;
+  const origEnd = n.ppu.endScanline.bind(n.ppu);
+  n.ppu.endScanline = function () {
+    const prev = this._overclockScanlines || 0;
+    const res = origEnd();
+    if ((this._overclockScanlines || 0) > prev) ocTotal++;
+    return res;
+  };
+  for (let f = 0; f < 650; f++) {
+    n.controllers[1].state[3] = f >= 60 && f < 65 ? 0x41 : 0x40;
+    n.frame();
+  }
+  assert.ok(ocTotal <= 240, `Archon runaway overclock: ${ocTotal} scanlines`);
 }
 
 function testBattletoadsRollbackCrispPaletteNoFading() {
@@ -163,12 +231,13 @@ function testPowerBlade2HudSplitZeroJitter() {
 export function runVisualAccuracySuite() {
   console.log('=== Visual Pixel-Stability & Sprite Accuracy Suite ===\n');
   testBattletoadsTitleScanline87Stability();
+  testBattletoadsCharacterSelectStability();
   testBattletoadsRollbackCrispPaletteNoFading();
   testOverflow12SpritesPerScanlineAllVisible();
   testPowerBlade2HudSplitZeroJitter();
   console.log(
-    '[PASS] Battletoads Title Y=87, Crisp Rollbacks, 12-Sprite Overflow & ' +
-      'Power Blade 2 Visual Gates Verified'
+    '[PASS] Battletoads Title/CharSelect, Crisp Rollbacks, 12-Sprite ' +
+      'Overflow & Power Blade 2 Visual Gates Verified'
   );
 }
 

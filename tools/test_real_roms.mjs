@@ -245,6 +245,8 @@ async function runRealRomsSuite() {
     nes2.loadROM(bin);
     const eng1 = new NesNetplayEngine(nes1, { localPlayer: 1, online: true });
     const eng2 = new NesNetplayEngine(nes2, { localPlayer: 2, online: true });
+    assert.strictEqual(nes1.ppu._overclockEnabled, false);
+    nes1.ppu._overclockEnabled = nes2.ppu._overclockEnabled = true;
 
     let savedSlot1 = null;
     for (let f = 0; f < 650; f++) {
@@ -256,21 +258,19 @@ async function runRealRomsSuite() {
       if (r2.packetToSend) eng1.receiveRemoteInputPacket(r2.packetToSend);
       if (f === 320) savedSlot1 = eng1.exportSyncState();
     }
-
     assert.strictEqual(nes1.ppu._hasTightWaitLoop, true);
     assert.strictEqual(nes1.ppu._noSpriteLimit, true);
     assert.ok(savedSlot1 && savedSlot1.frame === 321);
-
     const resumeState = { ...savedSlot1, sessionId: 'slot1_loaded' };
     eng1.importSyncState(resumeState, { preserveLocalInputDelay: true });
     eng2.importSyncState(resumeState, { preserveLocalInputDelay: true });
+    assert.strictEqual(nes1.ppu._overclockEnabled, true);
     assert.strictEqual(
       computeDeterministicHash(nes1), computeDeterministicHash(nes2)
     );
-    let turboPkts = 0;
+    let turboPkts = 0, p1Out = null, p2Out = null;
     for (let tick = 0; tick < 15; tick++) {
-      let p1Out = null;
-      let p2Out = null;
+      p1Out = p2Out = null;
       for (let s = 0; s < 4; s++) {
         const opts = { turboSpeed: 4, skipRollback: s > 0, skipPacket: s < 3 };
         const r1 = eng1.stepNetplayFrame(INPUT_BITS.RIGHT, 0, opts);

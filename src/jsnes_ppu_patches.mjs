@@ -1,9 +1,11 @@
 // Composable Facade for jsnes PPU Accuracy, Sprite Overflow & Mapper Caching
 import { patchFastMapperBankSwitching } from './mapper_bank_cache.mjs';
 import {
-  patch8x16SpriteRenderer, patchPostRenderOverclock
+  patch8x16SpriteRenderer, patchPostRenderOverclock, setNesOverclockEnabled
 } from './ppu_sprite_and_overclock.mjs';
 import { patchPpuHblankAndHeadless } from './ppu_hblank_and_headless.mjs';
+
+export { setNesOverclockEnabled };
 
 function tagVromTiles(rom) {
   if (!rom || rom._vromRefTagged || !(rom.vromCount > 0) ||
@@ -20,6 +22,14 @@ function tagVromTiles(rom) {
   }
 }
 
+function resetOverclockRuntimeFlags(ppu) {
+  if (!ppu) return;
+  ppu._hasTightWaitLoop = false;
+  ppu._overclockScanlines = 0;
+  ppu._inOverclock = false;
+  ppu._overclockCapped = false;
+}
+
 export function patchJsnes8x16Sprites(nes) {
   if (!nes) return;
 
@@ -29,6 +39,7 @@ export function patchJsnes8x16Sprites(nes) {
       const origLoadROM = nes.loadROM.bind(nes);
       nes.loadROM = function (data) {
         const res = origLoadROM(data);
+        resetOverclockRuntimeFlags(this.ppu);
         patchJsnes8x16Sprites(this);
         return res;
       };
@@ -37,6 +48,7 @@ export function patchJsnes8x16Sprites(nes) {
       const origReset = nes.reset.bind(nes);
       nes.reset = function () {
         const res = origReset();
+        resetOverclockRuntimeFlags(this.ppu);
         patchJsnes8x16Sprites(this);
         return res;
       };

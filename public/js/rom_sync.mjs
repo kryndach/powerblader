@@ -91,7 +91,8 @@ export function createRomSyncManager(state, ui, audio) {
     state.ws.send(JSON.stringify({
       type: 'match_start_req', sessionId: newSessionId,
       romCrc32: state.romCrc32, romName: state.romName,
-      inputDelayFrames: state.engine.inputDelayFrames, reason
+      inputDelayFrames: state.engine.inputDelayFrames,
+      overclockEnabled: Boolean(state.nesOverclockEnabled), reason
     }));
     ui.logDebug(
       `Initiated Frame #0 lockstep (${reason}) for "${state.romName}" ` +
@@ -241,7 +242,8 @@ export function createRomSyncManager(state, ui, audio) {
       state.engine.resetTimeline(0, newSessionId);
       syncState = {
         resetToZero: true, sessionId: newSessionId, frame: 0,
-        inputDelayFrames: state.engine.inputDelayFrames
+        inputDelayFrames: state.engine.inputDelayFrames,
+        overclockEnabled: Boolean(state.nesOverclockEnabled)
       };
     } else {
       state.engine.sessionId = newSessionId;

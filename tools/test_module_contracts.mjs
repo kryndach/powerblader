@@ -16,6 +16,9 @@ import {
 import {
   handleAutotestReportWs, handleGameplayTelemetryWs
 } from '../server/telemetry_relay_handlers.mjs';
+import {
+  isCpuInTightWaitLoop, setNesOverclockEnabled
+} from '../src/ppu_sprite_and_overclock.mjs';
 import { extractRomFromFile } from '../server/archive_extractor.mjs';
 
 function testSessionStoreContracts() {
@@ -130,15 +133,39 @@ function testServerTelemetryRelayHandlers() {
   assert.strictEqual(trackers.gameplayTelemetrySession.pc1.rttMs, 215);
 }
 
+function testOverclockWaitLoopContract() {
+  const mkCpu = (pc, bytes, sp = 0xfa) => {
+    const mem = new Uint8Array(0x10000);
+    for (let i = 0; i < bytes.length; i++) mem[(pc + i) & 0xffff] = bytes[i];
+    return { REG_PC: (pc - 1) & 0xffff, REG_SP: sp, mem };
+  };
+  const wait = (pc, bytes) => isCpuInTightWaitLoop(mkCpu(pc, bytes));
+  // True wait loops: JMP self, LDA zp + BNE -4, BIT abs + BPL -5
+  assert.strictEqual(wait(0x8057, [0x4c, 0x57, 0x80]), true);
+  assert.strictEqual(wait(0xc1ed, [0xa5, 0x2f, 0xd0, 0xfc]), true);
+  assert.strictEqual(wait(0x8000, [0x2c, 0x02, 0x20, 0x10, 0xfb]), true);
+  // False positives rejected: Battletoads SBC $52; BCS -4 and DEC $10; BNE -4
+  assert.strictEqual(wait(0x8c09, [0xe5, 0x52, 0xb0, 0xfc]), false);
+  assert.strictEqual(wait(0x8c0b, [0xb0, 0xfc]), false);
+  assert.strictEqual(wait(0x9000, [0xc6, 0x10, 0xd0, 0xfc]), false);
+
+  const mock = { ppu: { _overclockEnabled: false, _hasTightWaitLoop: true } };
+  assert.strictEqual(setNesOverclockEnabled(mock, true), true);
+  assert.strictEqual(mock.ppu._overclockEnabled, true);
+  assert.strictEqual(setNesOverclockEnabled(mock, false), false);
+  assert.strictEqual(mock.ppu._hasTightWaitLoop, false);
+}
+
 export function runModuleContractSuite() {
   console.log('=== SOLID Module Contract Test Suite ===\n');
   testSessionStoreContracts();
   testInputRouterDeduplicationContract();
   testRollbackDelayHysteresisAndWasmHelpers();
   testServerTelemetryRelayHandlers();
+  testOverclockWaitLoopContract();
   console.log(
-    '[PASS] SessionStore, InputRouter, RollbackPolicy, WasmLoader & ' +
-      'TelemetryRelay Contracts Verified'
+    '[PASS] SessionStore, InputRouter, RollbackPolicy, OverclockWait, ' +
+      'WasmLoader & TelemetryRelay Contracts Verified'
   );
 }
 

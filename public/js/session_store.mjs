@@ -44,6 +44,7 @@ export function createConsoleState() {
     maxRxGapMs: 0,
     simLagMs: 0,
     simLossPct: 0,
+    nesOverclockEnabled: false,
     canvasDirty: false,
     telemetrySamples: [],
     telemetryEvents: []

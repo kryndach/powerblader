@@ -1,7 +1,8 @@
-// Fullscreen Mode, Auto-Center Viewport Scroll & Turbo Speed (1x/2x/4x/8x)
+// Fullscreen Mode, Auto-Center Viewport Scroll, Turbo Speed & NES Overclock
+import { setNesOverclockEnabled } from '../../src/jsnes_ppu_patches.mjs';
 const VALID_SPEEDS = [1, 2, 4, 8];
 
-export function createViewportAndSpeedController(state, ui) {
+export function createViewportAndSpeedController(state, ui, romSync = null) {
   state.turboMultiplier = 1;
   state.holdTurboActive = false;
 
@@ -9,7 +10,15 @@ export function createViewportAndSpeedController(state, ui) {
   const canvasWrap = document.getElementById('canvasWrap');
   const fullscreenBtn = document.getElementById('fullscreenBtn');
   const centerViewBtn = document.getElementById('centerViewBtn');
+  const overclockBtn = document.getElementById('overclockToggleBtn');
   const speedBtns = Array.from(document.querySelectorAll('.speed-btn'));
+
+  try {
+    state.nesOverclockEnabled =
+      localStorage.getItem('nes_overclock_enabled') === '1';
+  } catch {
+    state.nesOverclockEnabled = false;
+  }
 
   const floatingBtn = document.createElement('button');
   floatingBtn.id = 'floatingCenterBtn';
@@ -167,14 +176,71 @@ export function createViewportAndSpeedController(state, ui) {
     centerGameScreen({ smooth: true })
   );
 
+  function syncOverclockButtonUI() {
+    if (!overclockBtn) return;
+    const on = Boolean(state.nesOverclockEnabled);
+    overclockBtn.textContent = on ? 'OC: ON' : 'OC: OFF';
+    overclockBtn.classList.toggle('active-toggle', on);
+  }
+
+  function applyOverclockToCore() {
+    if (state.nes && state.nes.ppu) {
+      setNesOverclockEnabled(state.nes, Boolean(state.nesOverclockEnabled));
+    }
+    syncOverclockButtonUI();
+  }
+
+  function setOverclockEnabled(enabled, options = {}) {
+    const next = Boolean(enabled);
+    state.nesOverclockEnabled = next;
+    if (options.persist !== false) {
+      try {
+        localStorage.setItem('nes_overclock_enabled', next ? '1' : '0');
+      } catch {}
+    }
+    applyOverclockToCore();
+    if (options.showBanner !== false) {
+      const msg = next
+        ? 'NES OVERCLOCK: ON (ANTI-LAG)'
+        : 'NES OVERCLOCK: OFF (ACCURATE)';
+      ui.showScreenBanner(msg, next ? 'warn' : 'ok', 2000);
+      ui.logDebug(msg);
+    }
+    if (
+      options.syncPeer !== false &&
+      romSync &&
+      state.ws &&
+      state.ws.readyState === 1 &&
+      state.peerConnected &&
+      state.engine &&
+      state.nes &&
+      state.nes.ppu
+    ) {
+      romSync.sendStateSyncToPeer({ resetToZero: false });
+    }
+  }
+
+  if (overclockBtn) {
+    overclockBtn.addEventListener('click', () => {
+      setOverclockEnabled(!state.nesOverclockEnabled, {
+        persist: true,
+        syncPeer: true,
+        showBanner: true
+      });
+    });
+  }
+
   updateSpeedButtonsUI();
   syncFullscreenButtonUI();
+  syncOverclockButtonUI();
 
   return {
     getEffectiveSpeed,
     setSpeedMultiplier,
     setHoldTurbo,
     toggleFullscreen,
-    centerGameScreen
+    centerGameScreen,
+    applyOverclockToCore,
+    setOverclockEnabled
   };
 }

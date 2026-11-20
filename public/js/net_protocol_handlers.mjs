@@ -46,11 +46,18 @@ export function createProtocolHandlers(
     state.engine.inputDelayFrames = romSync.resolveDesiredInputDelay();
     if (syncState.resetToZero && state.nes && state.romBinaryString) {
       state.nes.loadROM(state.romBinaryString);
+      if (typeof syncState.overclockEnabled === 'boolean') {
+        state.onOverclockStateSynced?.(syncState.overclockEnabled);
+      }
       state.engine.resetTimeline(0, syncState.sessionId);
     } else {
       state.engine.importSyncState(
         syncState, { preserveLocalInputDelay: true }
       );
+      if (state.nes && state.nes.ppu) {
+        const oc = Boolean(state.nes.ppu._overclockEnabled);
+        state.onOverclockStateSynced?.(oc);
+      }
     }
     state.engine.syncPaused = false;
     state.matchStarted = true;
@@ -216,6 +223,9 @@ export function createProtocolHandlers(
         state.partnerRomName = msg.romName || state.romName;
         state.partnerRomCrc32 = msg.romCrc32 || state.romCrc32;
         state.nes.loadROM(state.romBinaryString);
+        if (typeof msg.overclockEnabled === 'boolean') {
+          state.onOverclockStateSynced?.(msg.overclockEnabled);
+        }
         state.engine.localPlayer = state.localPlayerIndex;
         state.engine.online = true;
         state.engine.enableRiftPacing = false;

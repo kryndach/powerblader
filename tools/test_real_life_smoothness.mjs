@@ -238,10 +238,32 @@ async function testChromePinggy250msNetemSmoothness() {
       `Displayed ping out of bounds on 240ms netem: ${m1.ping}`
     );
     assert.ok(m1.freezes <= 3, `Tab 1 had ${m1.freezes} >45ms freezes`);
+
+    // Verify Overclock toggle defaults OFF & syncs cleanly P1 -> P2 over 240ms
+    const ocDefault1 = await tab1.evaluate(
+      `document.getElementById('overclockToggleBtn')?.textContent.trim()`
+    );
+    const ocDefault2 = await tab2.evaluate(
+      `document.getElementById('overclockToggleBtn')?.textContent.trim()`
+    );
+    assert.strictEqual(ocDefault1, 'OC: OFF', 'P1 OC should default OFF');
+    assert.strictEqual(ocDefault2, 'OC: OFF', 'P2 OC should default OFF');
+    await tab1.evaluate(
+      `document.getElementById('overclockToggleBtn').click(); true`
+    );
+    await waitFor(() => tab2.evaluate(
+      `document.getElementById('overclockToggleBtn')?.textContent.trim() ` +
+        `=== 'OC: ON'`
+    ), 6000, 'P2 synced OC: ON from P1');
+    const desyncAfterOc = await tab1.evaluate(
+      `document.getElementById('dbgDesyncs')?.textContent || '0'`
+    );
+    assert.strictEqual(desyncAfterOc, '0', 'OC toggle caused desync');
+
     console.log(
       `[PASS] Real Chrome 240ms Pinggy Netem E2E: ${m1.ping}, ` +
         `Wire=${avgKbps}KB/s, F=${m1.frame}/${m2.frame}, ` +
-        `Freezes=${m1.freezes}, 0 Desyncs`
+        `Freezes=${m1.freezes}, OC-Sync OK, 0 Desyncs`
     );
     try { tab1.close(); tab2.close(); } catch {}
   } finally {

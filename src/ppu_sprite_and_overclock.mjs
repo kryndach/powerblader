@@ -1,5 +1,8 @@
 // jsnes 8x16/Overflow Sprite Renderer & Deterministic Post-Render CPU Overclock
 const MAX_POST_RENDER_OVERCLOCK_SCANLINES = 240;
+const WAIT_BRANCH_OPS = new Set([0x10, 0x30, 0xd0, 0xf0]);
+const WAIT_READ_ZP_OPS = new Set([0x24, 0xa4, 0xa5, 0xa6, 0xc4, 0xc5, 0xe4]);
+const WAIT_READ_ABS_OPS = new Set([0x2c, 0xac, 0xad, 0xae, 0xcc, 0xcd, 0xec]);
 
 function renderSingleSpriteRow(ppu, scan, i, sprY, sprTile, sprAttr, sprX) {
   const mmap = ppu.nes.mmap;
@@ -95,6 +98,18 @@ export function patch8x16SpriteRenderer(ppu) {
   };
 }
 
+function isReadOnlyWaitBranch(m, branchAddr) {
+  if (!WAIT_BRANCH_OPS.has(m[branchAddr])) return false;
+  const rel = m[(branchAddr + 1) & 0xffff];
+  if (rel === 0xfc) {
+    return WAIT_READ_ZP_OPS.has(m[(branchAddr - 2) & 0xffff]);
+  }
+  if (rel === 0xfb) {
+    return WAIT_READ_ABS_OPS.has(m[(branchAddr - 3) & 0xffff]);
+  }
+  return false;
+}
+
 export function isCpuInTightWaitLoop(cpu) {
   const pc = (cpu.REG_PC + 1) & 0xffff;
   const m = cpu.mem;
@@ -102,16 +117,14 @@ export function isCpuInTightWaitLoop(cpu) {
   if (m[p0] === 0x4c && (m[p0 + 1] | (m[p0 + 2] << 8)) === p0) return true;
   if (m[p3] === 0x4c && (m[p3 + 1] | (m[p3 + 2] << 8)) === p3) return true;
 
-  const b0 = pc, b1 = (pc - 2) & 0xffff;
-  const b2 = (pc + 2) & 0xffff, b3 = (pc + 3) & 0xffff;
-  if ((m[b0] & 0x1f) === 0x10 && (m[b0 + 1] === 0xfc || m[b0 + 1] === 0xfb)) {
+  if (
+    isReadOnlyWaitBranch(m, pc) ||
+    isReadOnlyWaitBranch(m, (pc - 2) & 0xffff) ||
+    isReadOnlyWaitBranch(m, (pc + 2) & 0xffff) ||
+    isReadOnlyWaitBranch(m, (pc + 3) & 0xffff)
+  ) {
     return true;
   }
-  if ((m[b1] & 0x1f) === 0x10 && (m[b1 + 1] === 0xfc || m[b1 + 1] === 0xfb)) {
-    return true;
-  }
-  if ((m[b2] & 0x1f) === 0x10 && m[(b2 + 1) & 0xffff] === 0xfc) return true;
-  if ((m[b3] & 0x1f) === 0x10 && m[(b3 + 1) & 0xffff] === 0xfb) return true;
 
   for (let off = -3; off <= 36; off++) {
     const a = (pc + off) & 0xffff;
@@ -126,6 +139,18 @@ export function isCpuInTightWaitLoop(cpu) {
     }
   }
   return false;
+}
+
+export function setNesOverclockEnabled(nes, enabled) {
+  const ppu = nes && nes.ppu;
+  if (!ppu) return false;
+  const next = Boolean(enabled);
+  ppu._overclockEnabled = next;
+  ppu._overclockScanlines = 0;
+  ppu._inOverclock = false;
+  ppu._overclockCapped = false;
+  if (!next) ppu._hasTightWaitLoop = false;
+  return next;
 }
 
 export function patchPostRenderOverclock(nes) {
@@ -146,13 +171,19 @@ export function patchPostRenderOverclock(nes) {
   const ppu = nes.ppu;
   if (!ppu || ppu._patchedOverclockEndScanline) return;
   ppu._patchedOverclockEndScanline = true;
+  if (typeof ppu._overclockEnabled !== 'boolean') {
+    ppu._overclockEnabled = false;
+  }
   ppu._hasTightWaitLoop = false;
   ppu._overclockScanlines = 0;
   ppu._inOverclock = false;
+  ppu._overclockCapped = false;
 
   const origEndScanline = ppu.endScanline.bind(ppu);
   ppu.endScanline = function () {
     if (
+      this._overclockEnabled &&
+      !this._overclockCapped &&
       this.scanline === 261 &&
       this.f_nmiOnVblank === 1 &&
       (this.f_bgVisibility === 1 || this.f_spVisibility === 1)
@@ -160,15 +191,16 @@ export function patchPostRenderOverclock(nes) {
       const waiting = isCpuInTightWaitLoop(this.nes.cpu);
       if (waiting) {
         this._hasTightWaitLoop = true;
-      } else if (
-        this._hasTightWaitLoop &&
-        this._overclockScanlines < MAX_POST_RENDER_OVERCLOCK_SCANLINES
-      ) {
-        this._overclockScanlines++;
-        this._inOverclock = true;
-        this.regsToAddress();
-        this.cntsToAddress();
-        return;
+      } else if (this._hasTightWaitLoop) {
+        if (this._overclockScanlines < MAX_POST_RENDER_OVERCLOCK_SCANLINES) {
+          this._overclockScanlines++;
+          this._inOverclock = true;
+          this.regsToAddress();
+          this.cntsToAddress();
+          return;
+        }
+        this._overclockCapped = true;
+        this._hasTightWaitLoop = false;
       }
     }
     this._overclockScanlines = 0;

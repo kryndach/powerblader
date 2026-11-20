@@ -255,6 +255,8 @@ export function runStage5PowerBladeHudAndAudio(romFiles, localRomsDir) {
   engPb.resetTimeline(0, 'pb_hud_session_1');
 
   assert.strictEqual(nesPb.ppu._patched8x16, true);
+  assert.strictEqual(nesPb.ppu._overclockEnabled, false);
+  nesPb.ppu._overclockEnabled = true;
   assert.strictEqual(nesPb.mmap._fastBankPatched, true);
   assert.strictEqual(nesPb.rom._vromRefTagged, true);
 
