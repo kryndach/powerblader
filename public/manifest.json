@@ -1,0 +1,8 @@
+{
+  "name": "NES Netplay Deck",
+  "short_name": "NES Online",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0e131f",
+  "theme_color": "#1a2438"
+}

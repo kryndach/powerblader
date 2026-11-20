@@ -11,7 +11,8 @@ let fbneoFactory = null, fbneoWasmModule = null, fbneoLoadPromise = null;
 async function ensureFbneoFactoryOnly() {
   if (fbneoFactory) return fbneoFactory;
   if (!globalThis.process?.versions?.node) {
-    const ns = await import('/vendor/fbneo_arcade.js?v=3');
+    const jsUrl = new URL('../vendor/fbneo_arcade.js?v=3', import.meta.url);
+    const ns = await import(jsUrl.href);
     fbneoFactory = ns.default;
   } else {
     const { factory } = await loadNodeVendorFactory('fbneo_arcade');
@@ -33,12 +34,17 @@ export async function ensureFbneoRuntime(
   fbneoLoadPromise = (async () => {
     onProgress?.(0, { pct: 0 });
     if (!globalThis.process?.versions?.node) {
+      const jsUrl = new URL('../vendor/fbneo_arcade.js?v=3', import.meta.url);
+      const xferUrl = new URL('../js/rom_fast_transfer.mjs', import.meta.url);
       const [ns, xfer] = await Promise.all([
-        import('/vendor/fbneo_arcade.js?v=3'),
-        import('/js/rom_fast_transfer.mjs')
+        import(jsUrl.href),
+        import(xferUrl.href)
       ]);
       fbneoFactory = ns.default;
-      const wasmUrl = '/vendor/fbneo_arcade.wasm?v=3', key = 'WASM_FBNEO_V3';
+      const wasmUrl = new URL(
+        '../vendor/fbneo_arcade.wasm?v=3', import.meta.url
+      ).href;
+      const key = 'WASM_FBNEO_V3';
       const hit = await xfer.getCachedRomByCrc(key);
       let u8 = hit?.u8?.byteLength > 1000000 ? hit.u8 : null;
       if (!u8) {

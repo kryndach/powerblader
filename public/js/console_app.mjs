@@ -12,6 +12,7 @@ import { setupRomDropAndPicker } from './rom_archive.mjs';
 import { setupHostTunnelController } from './tunnel_ui.mjs';
 import { createRouteOptimizer } from './route_optimizer.mjs';
 import { setupRomCacheFolderUi } from './rom_cache_ui.mjs';
+import { setupHybridConnectionUi } from './hybrid_connect.mjs';
 import {
   resolveServerEndpoints, buildApiUrl, buildWsUrl
 } from './server_endpoint.mjs';
@@ -21,7 +22,7 @@ import {
 } from './session_store.mjs';
 import {
   createShadowRollbackHost
-} from '/src/shadow_rollback_host.mjs';
+} from '../src/shadow_rollback_host.mjs';
 
 const state = createConsoleState();
 Object.assign(state, resolveServerEndpoints());
@@ -86,6 +87,45 @@ if (params.get('debug') === '1') {
   ui.debugToggleBtn.classList.add('active-toggle');
 }
 
+let hybridConn = null;
+
+function attachSocketLifecycle(ws, code, nick) {
+  state.ws = ws;
+  ws.onopen = () => {
+    ui.dbgWssState.textContent = ws.isServerlessP2p
+      ? 'Connected (P2P)' : 'Connected';
+    ui.connectBtn.textContent = 'Reconnect';
+    ws.send(JSON.stringify({
+      type: 'join_room', roomCode: code, nick,
+      romCrc32: state.romCrc32, romName: state.romName,
+      isAutoDefaultRom: state.isAutoDefaultRom,
+      roomAuth: state.roomAuth || '',
+      routeOptimized: Boolean(state.routeOptimizer?.isClientOptimized?.())
+    }));
+  };
+  ws.onmessage = (ev) => {
+    try {
+      protocol.handleIncomingNetMessage(JSON.parse(ev.data), 'wss');
+    } catch {}
+  };
+  ws.onclose = () => {
+    if (state.ws !== ws) return;
+    ui.dbgWssState.textContent = 'Disconnected';
+    resetPeerSessionState(state, ui);
+    if (state.wsAux) {
+      try { state.wsAux.close(); } catch {}
+      state.wsAux = null;
+    }
+    transport.closeWebRtc();
+    if (state.engine) {
+      state.engine.online = false;
+      state.engine.syncPaused = false;
+    }
+    ui.updateStatusStrip();
+    hybridConn?.schedulePinggyAutoReconnect?.();
+  };
+}
+
 function connectToRoom() {
   audio.initAudio();
   if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
@@ -95,57 +135,31 @@ function connectToRoom() {
   const code = (ui.roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
   ui.roomInput.value = code;
   if (ui.autoBenchLink) {
-    ui.autoBenchLink.href = `/autotest?gameRoom=${encodeURIComponent(code)}`;
+    const q = encodeURIComponent(code);
+    ui.autoBenchLink.href = `./autotest.html?gameRoom=${q}`;
   }
   const nick = (ui.nickInput.value || 'Player').trim().slice(0, 14);
-  const wsUrl = buildWsUrl(state, '/ws');
-
   ui.dbgWssState.textContent = 'Connecting...';
-  const ws = new WebSocket(wsUrl);
-  state.ws = ws;
+  attachSocketLifecycle(new WebSocket(buildWsUrl(state, '/ws')), code, nick);
+}
 
-  ws.onopen = () => {
-    ui.dbgWssState.textContent = 'Connected';
-    ui.connectBtn.textContent = 'Reconnect';
-    ws.send(
-      JSON.stringify({
-        type: 'join_room',
-        roomCode: code,
-        nick,
-        romCrc32: state.romCrc32,
-        romName: state.romName,
-        isAutoDefaultRom: state.isAutoDefaultRom,
-        routeOptimized: Boolean(state.routeOptimizer?.isClientOptimized?.())
-      })
-    );
-  };
-
-  ws.onmessage = (ev) => {
-    try {
-      protocol.handleIncomingNetMessage(JSON.parse(ev.data), 'wss');
-    } catch {}
-  };
-
-  ws.onclose = () => {
-    if (state.ws !== ws) return;
-    ui.dbgWssState.textContent = 'Disconnected';
-    resetPeerSessionState(state, ui);
+hybridConn = setupHybridConnectionUi(state, ui, {
+  connectStandardWs: connectToRoom,
+  onServerDiscovered: () => romSync.discoverLocalRoms(),
+  attachCustomSocket(customWs, code, nick) {
+    audio.initAudio();
+    if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
     if (state.wsAux) {
-      try {
-        state.wsAux.close();
-      } catch {}
+      try { state.wsAux.close(); } catch {}
       state.wsAux = null;
     }
     transport.closeWebRtc();
-    if (state.engine) {
-      state.engine.online = false;
-      state.engine.syncPaused = false;
-    }
-    ui.updateStatusStrip();
-  };
-}
+    ui.dbgWssState.textContent = 'P2P Signaling...';
+    attachSocketLifecycle(customWs, code, nick);
+  }
+});
 
-ui.connectBtn.addEventListener('click', connectToRoom);
+ui.connectBtn.addEventListener('click', () => hybridConn.smartConnect());
 const tunnelCtrl = setupHostTunnelController(state, ui, {
   onOptimizeRoute: () =>
     state.routeOptimizer?.triggerOptimization({ auto: false })
@@ -318,7 +332,11 @@ startConsoleFrameLoop(
 );
 ui.autoBenchLink?.addEventListener('click', () => {
   const c = (ui.roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
-  ui.autoBenchLink.href = `/autotest?gameRoom=${encodeURIComponent(c)}`;
+  const q = encodeURIComponent(c);
+  ui.autoBenchLink.href = `./autotest.html?gameRoom=${q}`;
 });
-await romSync.discoverLocalRoms();
-if (params.get('room')) connectToRoom();
+const isStatic = await hybridConn.whenReady();
+if (!isStatic || state.apiBaseUrl) await romSync.discoverLocalRoms();
+if (params.get('room') || params.get('server')) {
+  hybridConn.smartConnect();
+}

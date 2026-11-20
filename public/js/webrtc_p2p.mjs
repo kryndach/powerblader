@@ -70,6 +70,7 @@ export function createNetTransport(state, ui, onIncomingMessage) {
   }
 
   async function startWebRtcSession(isInitiator) {
+    if (state.ws?.isServerlessP2p) return;
     closeWebRtc();
     if (typeof RTCPeerConnection === 'undefined') {
       ui.dbgRtcState.textContent = 'Unsupported';
@@ -165,6 +166,7 @@ export function createNetTransport(state, ui, onIncomingMessage) {
   }
 
   function connectAuxWebSocket(code, cid) {
+    if (state.ws?.isServerlessP2p) return;
     if (state.wsAux) {
       try {
         state.wsAux.close();

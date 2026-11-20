@@ -24,10 +24,9 @@ export function createRomSyncManager(state, ui, audio) {
     const sysId = sysIdOverride || state.engine?.core?.systemId || 'nes';
     const arcMin = state.rttMs >= 160 ? 5 : 4;
     if (val === 'auto') {
+      const clump = state.engine ? state.engine.rxClumpFrames : 0;
       const rec = NesNetplayEngine.computeRecommendedInputDelay(
-        state.rttMs,
-        state.jitterMs,
-        state.engine ? state.engine.rxClumpFrames : 0
+        state.rttMs, state.jitterMs, clump
       );
       return sysId === 'arcade' && state.peerConnected
         ? Math.max(arcMin, rec) : rec;
@@ -126,6 +125,7 @@ export function createRomSyncManager(state, ui, audio) {
     if (options?.serverCachedCrc === state.romCrc32) {
       state.roomRomUploadedCrc = state.romCrc32;
     } else if (!state.localServerRomKey && !isAutoDefault &&
+               !state.isStaticOrigin && !state.ws?.isServerlessP2p &&
                isLocalHostRuntime()) {
       uploadRomToServerCache(state);
     }
@@ -163,9 +163,7 @@ export function createRomSyncManager(state, ui, audio) {
         }
       });
       ui.setConsoleResolution(state.nes.width, state.nes.height);
-    } else if (
-      sysId === 'sega_md' || sysId === 'sega_sms' || sysId === 'snes'
-    ) {
+    } else if (['sega_md', 'sega_sms', 'snes'].includes(sysId)) {
       state.nes = await createSegaGpgxCore({
         romBytes: u8, romName: state.romName,
         systemId: sysId, onFrame, onAudioSample
@@ -174,7 +172,6 @@ export function createRomSyncManager(state, ui, audio) {
       state.nes = new jsnes.NES({ onFrame, onAudioSample });
       state.nes.loadROM(state.romBinaryString);
     }
-
     const isOnline = Boolean(
       state.ws && state.ws.readyState === 1 && state.peerConnected
     );
@@ -235,8 +232,8 @@ export function createRomSyncManager(state, ui, audio) {
     if (!state.peerConnected) {
       return ui.showScreenBanner('WAITING FOR PARTNER TO JOIN', 'warn', 3500);
     }
-    const newSessionId =
-      `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    const rnd = Math.random().toString(36).slice(2, 7);
+    const newSessionId = `${Date.now().toString(36)}_${rnd}`;
     state.engine.localPlayer = state.localPlayerIndex;
     state.engine.online = true;
     state.engine.inputDelayFrames = resolveDesiredInputDelay();
@@ -295,22 +292,23 @@ export function createRomSyncManager(state, ui, audio) {
 
   async function discoverLocalRoms() {
     try {
-      const res = await fetch(buildApiUrl(state, '/api/local-roms'));
+      const a = state.roomAuth
+        ? `?auth=${encodeURIComponent(state.roomAuth)}` : '';
+      const res = await fetch(buildApiUrl(state, `/api/local-roms${a}`));
       if (res.ok) {
         const data = await res.json();
-        ui.localRomSelect.innerHTML =
-          '<option value="">-- Select Game --</option>';
+        const sel = ui.localRomSelect;
+        sel.innerHTML = '<option value="">-- Select Game --</option>';
         for (const f of data.files || []) {
           serverRomsSet.add(f);
           const opt = document.createElement('option');
           opt.value = f;
-          const slash = f.indexOf('/');
-          opt.textContent = slash > 0
-            ? `[${f.slice(0, slash).toUpperCase()}] ${f.slice(slash + 1)}`
-            : f;
-          ui.localRomSelect.appendChild(opt);
+          const s = f.indexOf('/');
+          opt.textContent = s > 0
+            ? `[${f.slice(0, s).toUpperCase()}] ${f.slice(s + 1)}` : f;
+          sel.appendChild(opt);
         }
-        ui.localRomSelect.value = '';
+        sel.value = '';
       }
     } catch (e) { ui.logDebug(`Local ROM check failed: ${e.message}`); }
     ui.updateStatusStrip();
@@ -325,15 +323,15 @@ export function createRomSyncManager(state, ui, audio) {
         );
       }
       state.localServerRomKey = fileName;
+      const a = state.roomAuth
+        ? `&auth=${encodeURIComponent(state.roomAuth)}` : '';
       const url = buildApiUrl(
-        state, `/api/local-rom?file=${encodeURIComponent(fileName)}`
+        state, `/api/local-rom?file=${encodeURIComponent(fileName)}${a}`
       );
-      const loaded = await fetchRomBytesWithProgress(
-        url, 'LOADING', fileName, ui
-      );
-      if (!loaded) return;
-      await loadRomFromUint8(loaded.u8, loaded.romName, {
-        ...options, dropdownKey: fileName, serverCachedCrc: loaded.romCrc32
+      const ld = await fetchRomBytesWithProgress(url, 'LOADING', fileName, ui);
+      if (!ld) return;
+      await loadRomFromUint8(ld.u8, ld.romName, {
+        ...options, dropdownKey: fileName, serverCachedCrc: ld.romCrc32
       });
     } catch (e) {
       ui.logDebug(`Failed to load ${fileName}: ${e.message}`);

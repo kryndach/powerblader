@@ -1,5 +1,5 @@
 // 60.0988 Hz NTSC Fixed-Timestep Loop, Sub-Frame Time-Sync & Input Polling
-import { INPUT_BITS } from '/src/netplay_engine.mjs';
+import { INPUT_BITS } from '../src/netplay_engine.mjs';
 
 const KEY_MAP = {
   KeyZ: INPUT_BITS.A,

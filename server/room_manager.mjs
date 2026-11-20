@@ -5,6 +5,7 @@ import {
 import {
   handleAutotestReportWs, handleGameplayTelemetryWs
 } from './telemetry_relay_handlers.mjs';
+import { isLocalHostRequest } from './tunnel_candidates.mjs';
 
 const FORWARD_TYPES = new Set([
   'netplay_input', 'state_sync', 'sync_ack', 'resync_request', 'console_reset',
@@ -217,6 +218,7 @@ export function createRoomManager(trackers, options = {}) {
   function attachWebSocketServer(wss) {
     wss.on('connection', (ws, req) => {
       ws._socket?.setNoDelay?.(true);
+      ws._isLocalHost = isLocalHostRequest(req);
       recordAccess(req, 'WS_CONNECTED /ws');
       ws.peerSession = null;
       wireProber.attachPongHandler(ws);
@@ -252,6 +254,19 @@ export function createRoomManager(trackers, options = {}) {
         }
         if (msg.type === 'join_room') {
           const roomCode = normCode(msg.roomCode);
+          const reqAuth = options.getRequiredRoomAuth?.();
+          if (
+            !ws._isLocalHost && reqAuth?.authToken &&
+            msg.roomAuth !== reqAuth.authToken
+          ) {
+            try {
+              ws.send(JSON.stringify({
+                type: 'auth_required', roomCode,
+                reason: 'Room password required or incorrect'
+              }));
+            } catch {}
+            return;
+          }
           const randSuffix = Math.random().toString(36).slice(2, 7);
           const clientId = String(
             msg.clientId || `ws_${Date.now()}_${randSuffix}`

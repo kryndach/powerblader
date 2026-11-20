@@ -115,7 +115,9 @@ export async function streamRomToPeer(
   state.sendingRomSessionId = sessionId;
   const chunkSize = 64 * 1024, totalBytes = state.romUint8.length;
   const totalChunks = Math.ceil(totalBytes / chunkSize);
-  const inBrw = (typeof window !== 'undefined' || Boolean(state.apiBaseUrl)) &&
+  const isP2p = Boolean(state.ws?.isServerlessP2p);
+  const inBrw = !isP2p &&
+    (typeof window !== 'undefined' || Boolean(state.apiBaseUrl)) &&
     typeof fetch === 'function';
   const localRomKey = !forceChunks && inBrw ? state.localServerRomKey : null;
   const setXfer = (phase, pct, info = null) => {
@@ -250,11 +252,13 @@ export function handleRomTransferMessage(
         romCrc32: msg.romCrc32, syncState: msg.syncState, lastInfo: null
       };
       state.activeRomDownload = dlSt;
-      const q = `room=${encodeURIComponent(
-        msg.roomRomKey
-      )}&crc=${encodeURIComponent(msg.romCrc32 || '')}`;
+      const authQ = state.roomAuth
+        ? `&auth=${encodeURIComponent(state.roomAuth)}` : '';
+      const q = `room=${encodeURIComponent(msg.roomRomKey)}` +
+        `&crc=${encodeURIComponent(msg.romCrc32 || '')}${authQ}`;
+      const fKey = encodeURIComponent(msg.localRomKey || '');
       const url = msg.localRomKey
-        ? `${base}/api/local-rom?file=${encodeURIComponent(msg.localRomKey)}`
+        ? `${base}/api/local-rom?file=${fKey}${authQ}`
         : `${base}/api/room-rom?${q}`;
       const fb = () => {
         state.activeRomDownload = null;

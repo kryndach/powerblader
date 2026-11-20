@@ -8,7 +8,8 @@ async function createPlatformTransport(onMessage, onError) {
   const sendWith = (w) => (m, x) =>
     (x?.length ? w.postMessage(m, x) : w.postMessage(m));
   if (!globalThis.process?.versions?.node) {
-    const w = new Worker('/js/fbneo_shadow_worker.mjs', { type: 'module' });
+    const wUrl = new URL('../js/fbneo_shadow_worker.mjs', import.meta.url);
+    const w = new Worker(wUrl, { type: 'module' });
     w.onmessage = (ev) => onMessage(ev.data);
     w.onerror = (err) => onError(err);
     return { postMessage: sendWith(w), terminate: () => w.terminate() };

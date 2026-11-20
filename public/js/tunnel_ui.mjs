@@ -74,9 +74,10 @@ export function setupHostTunnelController(state, ui, hooks = {}) {
   const isHost = !state.isExternalServer && isLocalHostRuntime();
   if (!isHost || !ui.tunnelRouteSelect) return api;
 
-  ui.tunnelRouteSelect.style.display = '';
-  const deckGroup = ui.tunnelRouteSelect.parentElement;
-  if (deckGroup && !document.getElementById('optimizeRouteBtn')) {
+  function revealHostControls() {
+    ui.tunnelRouteSelect.style.display = '';
+    const deckGroup = ui.tunnelRouteSelect.parentElement;
+    if (!deckGroup || document.getElementById('optimizeRouteBtn')) return;
     const optBtn = document.createElement('button');
     optBtn.id = 'optimizeRouteBtn';
     optBtn.textContent = 'Best Route';
@@ -94,10 +95,16 @@ export function setupHostTunnelController(state, ui, hooks = {}) {
     ui.tunnelRouteSelect.insertAdjacentElement('afterend', optBtn);
   }
 
-  fetch('/api/tunnel-routes')
-    .then((r) => (r.ok ? r.json() : null))
-    .then((data) => applyRoutesResponse(data))
-    .catch(() => {});
+  if (!state.isStaticOrigin) {
+    fetch('./api/tunnel-routes')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data?.ok) return;
+        revealHostControls();
+        applyRoutesResponse(data);
+      })
+      .catch(() => {});
+  }
 
   ui.tunnelRouteSelect.addEventListener('change', async () => {
     const chosen = ui.tunnelRouteSelect.value || 'auto';

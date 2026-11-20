@@ -20,7 +20,7 @@ export function applyPublicApiCors(req, res, pathname) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'Content-Type, Range, X-Accept-Raw-Gz, X-Rom-Encoding'
+    'Content-Type, Range, X-Accept-Raw-Gz, X-Rom-Encoding, X-Room-Auth'
   );
   res.setHeader(
     'Access-Control-Expose-Headers',

@@ -144,13 +144,17 @@ export function createProtocolHandlers(
 
   function handleIncomingNetMessage(msg) {
     if (msg.type === 'aux_bound') return;
+    if (msg.type === 'auth_required') {
+      ui.dbgWssState.textContent = 'Auth Failed';
+      return ui.showScreenBanner(
+        `PASSWORD REQUIRED (${msg.reason || 'Check Pass'})`, 'err', 5000
+      );
+    }
     if (msg.type.startsWith('route_')) {
-      state.routeOptimizer?.handleRouteMessage?.(msg);
-      return;
+      return state.routeOptimizer?.handleRouteMessage?.(msg);
     }
     if (msg.type === 'netplay_input') {
-      inputRouter.routeNetplayInput(msg);
-      return;
+      return inputRouter.routeNetplayInput(msg);
     }
 
     state.rxCountThisSec++;
@@ -225,11 +229,8 @@ export function createProtocolHandlers(
     }
 
     if (msg.type === 'match_start_req') {
-      if (
-        state.romUint8 &&
-        state.romBinaryString &&
-        (!msg.romCrc32 || msg.romCrc32 === state.romCrc32)
-      ) {
+      if (state.romUint8 && state.romBinaryString &&
+          (!msg.romCrc32 || msg.romCrc32 === state.romCrc32)) {
         clearTransfers();
         state.partnerRomName = msg.romName || state.romName;
         state.partnerRomCrc32 = msg.romCrc32 || state.romCrc32;
@@ -263,10 +264,8 @@ export function createProtocolHandlers(
     }
 
     if (msg.type === 'match_start_ack' || msg.type === 'sync_ack') {
-      if (
-        state.engine &&
-        (!msg.sessionId || msg.sessionId === state.engine.sessionId)
-      ) {
+      if (state.engine &&
+          (!msg.sessionId || msg.sessionId === state.engine.sessionId)) {
         if (state.syncAckTimeout) {
           clearTimeout(state.syncAckTimeout);
           state.syncAckTimeout = null;

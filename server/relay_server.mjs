@@ -13,7 +13,7 @@ import {
 import {
   handleRoomRomApi, handleSaveSlotApi, sendBinaryWithRange, applyPublicApiCors
 } from './room_rom_and_save_api.mjs';
-import { createTunnelManager } from './tunnel_manager.mjs';
+import { createTunnelManager, isLocalHostRequest } from './tunnel_manager.mjs';
 import { createRendezvousBeacon } from './rendezvous_beacon.mjs';
 const vendorMemCache = new Map();
 
@@ -74,6 +74,9 @@ function resolveStaticAsset(pathname, req, recordAccess) {
   if (pathname === '/join' || pathname === '/join.html') {
     return path.join(ROOT_DIR, 'public', 'join.html');
   }
+  if (pathname === '/manifest.json') {
+    return path.join(ROOT_DIR, 'public', 'manifest.json');
+  }
   if (pathname.startsWith('/src/') && pathname.endsWith('.mjs')) {
     return path.join(ROOT_DIR, 'src', path.basename(pathname));
   }
@@ -97,13 +100,16 @@ export function createCoopServer(options = {}) {
     accessLog, tunnelInfo, autotestSession, gameplayTelemetrySession,
     recordAccess, saveGameplayTelemetryToDisk, saveAutotestReportToDisk
   } = trackers;
-  const roomMgr = createRoomManager(trackers, options);
+  let server = null;
+  const beacon = createRendezvousBeacon(ROOT_DIR, options);
+  const roomMgr = createRoomManager(trackers, {
+    ...options,
+    getRequiredRoomAuth: () => beacon.getRoomAuthStatus()
+  });
   const {
     rooms, getOrCreateRoom, getRoomPeersInfo, joinOrUpdatePeerSession,
     handlePeerMessage, attachWebSocketServer, stopCleanup
   } = roomMgr;
-  let server = null;
-  const beacon = createRendezvousBeacon(ROOT_DIR, options);
   const tunnelMgr = createTunnelManager(
     ROOT_DIR, tunnelInfo, () => server?.address()?.port || 8080, {
       ...options,
@@ -187,27 +193,17 @@ export function createCoopServer(options = {}) {
     if (pathname === '/api/http-tunnel' && req.method === 'POST') {
       readJsonBody(req, res, 8 * 1024 * 1024, (payload) => {
         const roomCode = String(payload.roomCode || 'NOVA')
-          .trim()
-          .toUpperCase()
-          .slice(0, 12);
+          .trim().toUpperCase().slice(0, 12);
         const clientId = String(payload.clientId || '');
         if (!clientId) {
-          sendJson(res, 400, { ok: false, error: 'Missing clientId' });
-          return;
+          return sendJson(res, 400, { ok: false, error: 'Missing clientId' });
         }
-
         const roomMap = getOrCreateRoom(roomCode);
         const existed = roomMap.has(clientId);
-        const peer = joinOrUpdatePeerSession(
-          roomCode,
-          clientId,
-          {
-            nick: payload.nick,
-            httpActive: true,
-            forceRoomJoined: Boolean(payload.join)
-          },
-          null
-        );
+        const peer = joinOrUpdatePeerSession(roomCode, clientId, {
+          nick: payload.nick, httpActive: true,
+          forceRoomJoined: Boolean(payload.join)
+        }, null);
 
         if (!existed || payload.join) {
           recordAccess(
@@ -234,17 +230,27 @@ export function createCoopServer(options = {}) {
       return;
     }
 
+    const checkRomAuth = () => {
+      const reqAuth = beacon.getRoomAuthStatus();
+      if (!reqAuth.authToken || isLocalHostRequest(req)) return true;
+      const got = urlObj.searchParams.get('auth') || req.headers['x-room-auth'];
+      if (got === reqAuth.authToken) return true;
+      sendJson(res, 403, { ok: false, error: 'Room password required' }, true);
+      return false;
+    };
     if (pathname === '/api/local-roms') {
-      return handleLocalRomsApi(res, ROOT_DIR, sendJson);
+      return checkRomAuth() && handleLocalRomsApi(res, ROOT_DIR, sendJson);
     }
     if (pathname === '/api/local-rom') {
-      return handleLocalRomDownloadApi(req, urlObj, res, ROOT_DIR, sendJson);
+      return checkRomAuth() &&
+        handleLocalRomDownloadApi(req, urlObj, res, ROOT_DIR, sendJson);
     }
     if (pathname === '/api/extract-rom' && req.method === 'POST') {
-      return handleExtractRomPostApi(req, urlObj, res, sendJson);
+      return checkRomAuth() &&
+        handleExtractRomPostApi(req, urlObj, res, sendJson);
     }
     if (pathname === '/api/room-rom') {
-      return handleRoomRomApi(req, urlObj, res, sendJson);
+      return checkRomAuth() && handleRoomRomApi(req, urlObj, res, sendJson);
     }
     if (pathname === '/api/save-slot') {
       return handleSaveSlotApi(

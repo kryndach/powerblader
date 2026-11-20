@@ -28,11 +28,16 @@ export function createSaveSlotsManager(state, ui, romSync) {
     return null;
   }
 
+  function canUseServerApi() {
+    if (typeof fetch !== 'function' || state.ws?.isServerlessP2p) return false;
+    return !state.isStaticOrigin || Boolean(state.apiBaseUrl);
+  }
+
   function writeSlotEntry(romCrc32, slot, entry) {
     const key = makeStorageKey(romCrc32, slot);
     memorySlots.set(key, entry);
     diskSavedKeys.add(key);
-    if (typeof fetch === 'function') {
+    if (canUseServerApi()) {
       fetch(buildApiUrl(state, '/api/save-slot'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -90,7 +95,7 @@ export function createSaveSlotsManager(state, ui, romSync) {
 
   function updateSlotSelectLabels() {
     renderSlotOptions();
-    if (!state.romCrc32 || typeof fetch !== 'function') return;
+    if (!state.romCrc32 || !canUseServerApi()) return;
     const crc = state.romCrc32;
     fetch(buildApiUrl(state, `/api/save-slot?crc=${encodeURIComponent(crc)}`))
       .then((r) => (r.ok ? r.json() : null))
@@ -202,7 +207,7 @@ export function createSaveSlotsManager(state, ui, romSync) {
     }
     const slot = getCurrentSlot();
     let entry = readSlotEntry(state.romCrc32, slot);
-    if (!entry && typeof fetch === 'function') {
+    if (!entry && canUseServerApi()) {
       try {
         const q = `crc=${encodeURIComponent(state.romCrc32)}&slot=${slot}`;
         const res = await fetch(buildApiUrl(state, `/api/save-slot?${q}`));

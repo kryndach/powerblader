@@ -6,6 +6,9 @@ import WebSocket from 'ws';
 import {
   deriveRendezvousKeys, createSignedBeaconEvent
 } from './nostr_crypto.mjs';
+import {
+  normalizeRoomCode, deriveRoomSecret, deriveRoomAuthToken
+} from '../src/room_auth.mjs';
 import { isLocalHostRequest } from './tunnel_candidates.mjs';
 
 export const DEFAULT_RENDEZVOUS_RELAYS = [
@@ -68,22 +71,38 @@ function publishEventToRelay(relayUrl, ev, timeoutMs = 4500) {
 export function createRendezvousBeacon(rootDir, options = {}) {
   const secretPath = options.secretPath ||
     path.join(rootDir, 'local', 'rendezvous_secret.txt');
+  const passPath = options.roomPasswordPath ||
+    path.join(rootDir, 'local', 'room_password.txt');
   const relays = Array.isArray(options.rendezvousRelays)
     ? options.rendezvousRelays : DEFAULT_RENDEZVOUS_RELAYS;
   const enabled = options.enableRendezvous !== false;
   const secret = options.rendezvousSecret || loadOrCreateSecret(secretPath);
   const keys = deriveRendezvousKeys(secret);
+  let activeRoom = normalizeRoomCode(options.defaultRoom || 'NOVA');
+  let roomPassword = String(
+    options.roomPassword ?? process.env.NES_ROOM_PASSWORD ?? ''
+  ).trim();
+  if (!roomPassword && !options.roomPasswordPath && fs.existsSync(passPath)) {
+    try { roomPassword = fs.readFileSync(passPath, 'utf8').trim(); } catch {}
+  }
+  let roomAuthToken = '';
+  let passKeys = null;
+  const syncPasswordDerived = async () => {
+    const rs = deriveRoomSecret(activeRoom, roomPassword);
+    passKeys = rs ? deriveRendezvousKeys(rs) : null;
+    roomAuthToken = await deriveRoomAuthToken(activeRoom, roomPassword);
+  };
+  const initPromise = syncPasswordDerived().catch(() => {});
+
   const status = {
-    enabled,
-    okRelays: [],
-    failRelays: [],
-    lastPublishedAt: null,
-    lastCandidateCount: 0
+    enabled, okRelays: [], failRelays: [],
+    lastPublishedAt: null, lastCandidateCount: 0
   };
   let lastTunnelInfo = null;
   let lastExtraCandidates = [];
 
   async function publishTunnelState(tunnelInfo, extraCandidates = []) {
+    await initPromise;
     lastTunnelInfo = tunnelInfo;
     lastExtraCandidates = extraCandidates;
     if (!enabled || !tunnelInfo?.publicUrl || relays.length === 0) {
@@ -104,33 +123,53 @@ export function createRendezvousBeacon(rootDir, options = {}) {
       pushUnique(c.candId || c.id || 'cand', c.label || 'Alt', c.url);
     }
     const payload = {
-      v: 1,
-      room: String(options.defaultRoom || 'NOVA').toUpperCase(),
-      ts: Date.now(),
-      candidates
+      v: 1, room: activeRoom, ts: Date.now(),
+      authRequired: Boolean(roomAuthToken), candidates
     };
-    const ev = createSignedBeaconEvent(payload, keys);
-    const results = await Promise.all(
-      relays.map((u) => publishEventToRelay(u, ev, options.relayTimeoutMs))
+    const evList = [createSignedBeaconEvent(payload, keys)];
+    if (passKeys) evList.push(createSignedBeaconEvent(payload, passKeys));
+    const allRes = await Promise.all(
+      evList.flatMap((ev) =>
+        relays.map((u) => publishEventToRelay(u, ev, options.relayTimeoutMs))
+      )
     );
-    status.okRelays = results.filter((r) => r.ok).map((r) => r.relayUrl);
-    status.failRelays = results.filter((r) => !r.ok).map((r) => r.relayUrl);
+    const okSet = new Set(allRes.filter((r) => r.ok).map((r) => r.relayUrl));
+    status.okRelays = [...okSet];
+    status.failRelays = relays.filter((u) => !okSet.has(u));
     status.lastPublishedAt = new Date().toISOString();
     status.lastCandidateCount = candidates.length;
     return status;
   }
 
-  function buildStandaloneJoinHtml(roomCode = 'NOVA') {
+  async function setRoomPassword(room, password) {
+    activeRoom = normalizeRoomCode(room || activeRoom);
+    roomPassword = String(password || '').trim().slice(0, 64);
+    try {
+      fs.mkdirSync(path.dirname(passPath), { recursive: true });
+      if (roomPassword) fs.writeFileSync(passPath, `${roomPassword}\n`, 'utf8');
+      else if (fs.existsSync(passPath)) fs.unlinkSync(passPath);
+    } catch {}
+    await syncPasswordDerived();
+    if (lastTunnelInfo?.publicUrl) {
+      publishTunnelState(lastTunnelInfo, lastExtraCandidates).catch(() => {});
+    }
+    return getRoomAuthStatus();
+  }
+
+  function getRoomAuthStatus() {
+    return {
+      hasPassword: Boolean(roomPassword),
+      room: activeRoom,
+      authToken: roomAuthToken
+    };
+  }
+
+  function buildStandaloneJoinHtml(roomCode = activeRoom) {
     const tmplPath = path.join(rootDir, 'public', 'join.html');
     const tmpl = fs.readFileSync(tmplPath, 'utf8');
-    const safeRoom = String(roomCode || 'NOVA')
-      .trim().toUpperCase().slice(0, 12) || 'NOVA';
+    const safeRoom = normalizeRoomCode(roomCode || activeRoom);
     const cfg = {
-      secret,
-      pubkey: keys.pubkey,
-      dTag: keys.dTag,
-      room: safeRoom,
-      relays
+      secret, pubkey: keys.pubkey, dTag: keys.dTag, room: safeRoom, relays
     };
     const safeJson = JSON.stringify(cfg).replace(/</g, '\\u003c');
     return tmpl.replace('/*__NES_JOIN_CONFIG__*/null', safeJson);
@@ -140,27 +179,33 @@ export function createRendezvousBeacon(rootDir, options = {}) {
     if (!isLocalHostRequest(req)) {
       return sendJson(res, 403, { ok: false, error: 'Host-only API' }, true);
     }
-    if (urlObj.pathname === '/api/rendezvous-info' && req.method === 'GET') {
+    const p = urlObj.pathname;
+    if (p === '/api/rendezvous-info' && req.method === 'GET') {
       return sendJson(res, 200, {
-        ok: true, pubkey: keys.pubkey, dTag: keys.dTag, relays, status
+        ok: true, pubkey: keys.pubkey, dTag: keys.dTag, relays, status,
+        hasPassword: Boolean(roomPassword), authRoom: activeRoom
       }, true);
     }
-    if (urlObj.pathname === '/api/join-file' && req.method === 'GET') {
+    if (p === '/api/rendezvous-password' && req.method === 'POST') {
+      readJsonBody(req, res, 4096, (body) => {
+        setRoomPassword(body.room, body.password)
+          .then((st) => sendJson(res, 200, { ok: true, ...st }, true))
+          .catch((e) => sendJson(res, 500, { ok: false, error: e.message }));
+      });
+      return;
+    }
+    if (p === '/api/join-file' && req.method === 'GET') {
       try {
-        const room = urlObj.searchParams.get('room') || 'NOVA';
-        const html = buildStandaloneJoinHtml(room);
+        const html = buildStandaloneJoinHtml(urlObj.searchParams.get('room'));
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
           'Content-Disposition': 'attachment; filename="join_nes.html"',
           'Cache-Control': 'no-store'
         });
         res.end(html);
-      } catch (e) {
-        sendJson(res, 500, { ok: false, error: e.message }, true);
-      }
+      } catch (e) { sendJson(res, 500, { ok: false, error: e.message }, true); }
       return;
     }
-    const p = urlObj.pathname;
     if (p === '/api/rendezvous-publish' && req.method === 'POST') {
       publishTunnelState(lastTunnelInfo, lastExtraCandidates)
         .then((st) => sendJson(res, 200, { ok: true, status: st }, true))
@@ -171,7 +216,7 @@ export function createRendezvousBeacon(rootDir, options = {}) {
   }
 
   return {
-    keys, secret, relays, status,
+    keys, secret, relays, status, setRoomPassword, getRoomAuthStatus,
     publishTunnelState, buildStandaloneJoinHtml, handleRendezvousApi
   };
 }

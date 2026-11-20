@@ -1,0 +1,279 @@
+// Serverless Browser-to-Browser WebRTC Virtual WebSocket via Encrypted Nostr
+import {
+  deriveUniversalKeys, decryptJsonAesGcm, signUniversalNostrEvent
+} from '../../src/nostr_browser_crypto.mjs';
+import { deriveRoomSecret, normalizeRoomCode } from '../../src/room_auth.mjs';
+
+export const DEFAULT_NOSTR_RELAYS = [
+  'wss://relay.damus.io',
+  'wss://nos.lol',
+  'wss://relay.primal.net',
+  'wss://relay.snort.social'
+];
+
+const DEFAULT_ICE = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun.nextcloud.com:443' },
+  { urls: 'stun:stun.cloudflare.com:3478' }
+];
+
+function waitForIceComplete(rtc, maxMs = 1500) {
+  if (rtc.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise((resolve) => {
+    const t = setTimeout(() => {
+      rtc.removeEventListener('icegatheringstatechange', chk);
+      resolve();
+    }, maxMs);
+    function chk() {
+      if (rtc.iceGatheringState === 'complete') {
+        clearTimeout(t);
+        rtc.removeEventListener('icegatheringstatechange', chk);
+        resolve();
+      }
+    }
+    rtc.addEventListener('icegatheringstatechange', chk);
+  });
+}
+
+export async function publishEncryptedNostr(relays, keys, payloadObj) {
+  const ev = await signUniversalNostrEvent(payloadObj, keys);
+  const sendOne = (url) => new Promise((resolve) => {
+    let done = false, ws = null;
+    const end = (ok) => {
+      if (done) return;
+      done = true; clearTimeout(tmr);
+      try { ws?.close(); } catch {}
+      resolve(ok);
+    };
+    const tmr = setTimeout(() => end(false), 4000);
+    try {
+      ws = new WebSocket(url);
+      ws.onopen = () => ws.send(JSON.stringify(['EVENT', ev]));
+      ws.onmessage = (e) => {
+        try {
+          const m = JSON.parse(e.data);
+          if (m[0] === 'OK' && m[1] === ev.id) end(Boolean(m[2]));
+        } catch {}
+      };
+      ws.onerror = () => end(false);
+    } catch { end(false); }
+  });
+  const res = await Promise.all((relays || DEFAULT_NOSTR_RELAYS).map(sendOne));
+  return res.filter(Boolean).length;
+}
+
+export function subscribeEncryptedNostr(relays, keys, onPayload) {
+  const socks = [];
+  let closed = false;
+  const seenIds = new Set();
+  const filter = { kinds: [30078], '#d': [keys.dTag], limit: 4 };
+  for (const url of relays || DEFAULT_NOSTR_RELAYS) {
+    try {
+      const ws = new WebSocket(url);
+      socks.push(ws);
+      ws.onopen = () => {
+        if (!closed) {
+          ws.send(JSON.stringify(['REQ', `s_${Date.now()}`, filter]));
+        }
+      };
+      ws.onmessage = async (e) => {
+        if (closed) return;
+        try {
+          const m = JSON.parse(e.data);
+          if (m[0] !== 'EVENT' || !m[2]?.content || seenIds.has(m[2].id)) {
+            return;
+          }
+          seenIds.add(m[2].id);
+          const data = await decryptJsonAesGcm(m[2].content, keys.aesRaw);
+          onPayload(data, m[2]);
+        } catch {}
+      };
+    } catch {}
+  }
+  return () => {
+    closed = true;
+    for (const s of socks) { try { s.close(); } catch {} }
+  };
+}
+
+export function createServerlessP2pSocket({
+  role = 'host', roomCode = 'NOVA', password = '', nick = 'Player',
+  relays = DEFAULT_NOSTR_RELAYS, iceServers = DEFAULT_ICE,
+  existingOffer = null, onStatus = null
+}) {
+  const room = normalizeRoomCode(roomCode);
+  const myIndex = role === 'host' ? 1 : 2;
+  const peerIndex = myIndex === 1 ? 2 : 1;
+  const clientId = `p2p_${myIndex}_${Math.random().toString(36).slice(2, 7)}`;
+  const sid = existingOffer?.sid ||
+    `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+
+  let rtc = null, ctrlDc = null, inputDc = null;
+  let stopSub = null, closed = false, peerInfo = null;
+  let localJoinInfo = { nick, romCrc32: null, romName: null };
+
+  const sock = {
+    isServerlessP2p: true,
+    readyState: 0,
+    onopen: null, onmessage: null, onclose: null, onerror: null,
+    get bufferedAmount() { return ctrlDc?.bufferedAmount || 0; },
+    send(rawStr) {
+      if (closed || !ctrlDc || ctrlDc.readyState !== 'open') return;
+      let msg = null;
+      try { msg = JSON.parse(rawStr); } catch { return; }
+      if (msg.type === 'join_room') {
+        localJoinInfo = {
+          nick: msg.nick || nick, romCrc32: msg.romCrc32 || null,
+          romName: msg.romName || null,
+          isAutoDefaultRom: Boolean(msg.isAutoDefaultRom)
+        };
+        ctrlDc.send(JSON.stringify({
+          type: 'p2p_hello', clientId, playerIndex: myIndex, ...localJoinInfo
+        }));
+        const peers = [{ clientId, playerIndex: myIndex, ...localJoinInfo }];
+        if (peerInfo) peers.push(peerInfo);
+        emitLocal({
+          type: 'room_joined', roomCode: room, clientId,
+          playerIndex: myIndex, peers
+        });
+        return;
+      }
+      if (msg.type === 'netplay_input' && inputDc?.readyState === 'open') {
+        try { inputDc.send(rawStr); return; } catch {}
+      }
+      try { ctrlDc.send(rawStr); } catch {}
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      sock.readyState = 3;
+      try { stopSub?.(); } catch {}
+      try { ctrlDc?.close(); } catch {}
+      try { inputDc?.close(); } catch {}
+      try { rtc?.close(); } catch {}
+      sock.onclose?.();
+    }
+  };
+
+  function emitLocal(obj) {
+    if (!closed) sock.onmessage?.({ data: JSON.stringify(obj) });
+  }
+
+  function handlePeerChannelData(rawStr) {
+    let msg = null;
+    try { msg = JSON.parse(rawStr); } catch { return; }
+    if (msg.type === 'p2p_hello') {
+      peerInfo = {
+        clientId: msg.clientId || 'p2p_peer', playerIndex: peerIndex,
+        nick: msg.nick || `Player ${peerIndex}`,
+        romCrc32: msg.romCrc32 || null, romName: msg.romName || null,
+        isAutoDefaultRom: Boolean(msg.isAutoDefaultRom)
+      };
+      emitLocal({ type: 'peer_joined', peer: peerInfo });
+      return;
+    }
+    emitLocal(msg);
+  }
+
+  function attachCtrlChannel(dc) {
+    ctrlDc = dc;
+    dc.onopen = () => {
+      if (closed) return;
+      try { stopSub?.(); stopSub = null; } catch {}
+      sock.readyState = 1;
+      onStatus?.('WebRTC P2P Direct Link OPEN!');
+      sock.onopen?.();
+    };
+    dc.onmessage = (ev) => handlePeerChannelData(ev.data);
+    dc.onclose = () => sock.close();
+  }
+
+  function attachInputChannel(dc) {
+    inputDc = dc;
+    dc.onmessage = (ev) => handlePeerChannelData(ev.data);
+  }
+
+  (async () => {
+    try {
+      const secret = deriveRoomSecret(room, password);
+      if (!secret) throw new Error('Password required for Serverless P2P');
+      const offerKeys = await deriveUniversalKeys(secret, '_p2p_offer');
+      const ansKeys = await deriveUniversalKeys(secret, '_p2p_answer');
+      rtc = new RTCPeerConnection({ iceServers });
+      rtc.onconnectionstatechange = () => {
+        const st = rtc?.connectionState;
+        if (st === 'failed' || st === 'disconnected' || st === 'closed') {
+          sock.close();
+        }
+      };
+      if (role === 'host') {
+        attachCtrlChannel(rtc.createDataChannel('ctrl', { ordered: true }));
+        attachInputChannel(rtc.createDataChannel('input', {
+          ordered: false, maxRetransmits: 0
+        }));
+        const offer = await rtc.createOffer();
+        await rtc.setLocalDescription(offer);
+        onStatus?.('Gathering ICE candidates for P2P Host...');
+        await waitForIceComplete(rtc, 1500);
+        if (closed) return;
+        let answered = false;
+        stopSub = subscribeEncryptedNostr(relays, ansKeys, async (ans) => {
+          if (closed || answered || ans?.sid !== sid || !ans.sdp) return;
+          answered = true;
+          onStatus?.('Partner answered! Opening direct P2P channel...');
+          try { await rtc.setRemoteDescription(ans.sdp); } catch {}
+        });
+        const sdpOut = {
+          type: rtc.localDescription.type, sdp: rtc.localDescription.sdp
+        };
+        const okCnt = await publishEncryptedNostr(relays, offerKeys, {
+          type: 'p2p_offer', sid, room, nick, sdp: sdpOut, ts: Date.now()
+        });
+        onStatus?.(
+          okCnt > 0
+            ? `P2P Host online (${okCnt} relays) — waiting for partner...`
+            : 'Failed to reach Nostr relays'
+        );
+      } else {
+        rtc.ondatachannel = (ev) => {
+          if (ev.channel.label === 'input') attachInputChannel(ev.channel);
+          else attachCtrlChannel(ev.channel);
+        };
+        const acceptOffer = async (off) => {
+          if (closed || !off?.sdp) return;
+          onStatus?.('Found P2P Host! Sending encrypted answer...');
+          await rtc.setRemoteDescription(off.sdp);
+          const ans = await rtc.createAnswer();
+          await rtc.setLocalDescription(ans);
+          await waitForIceComplete(rtc, 1500);
+          if (closed) return;
+          const ansOut = {
+            type: rtc.localDescription.type, sdp: rtc.localDescription.sdp
+          };
+          await publishEncryptedNostr(relays, ansKeys, {
+            type: 'p2p_answer', sid: off.sid, room, nick,
+            sdp: ansOut, ts: Date.now()
+          });
+        };
+        if (existingOffer?.sdp) {
+          await acceptOffer(existingOffer);
+        } else {
+          let handled = false;
+          stopSub = subscribeEncryptedNostr(relays, offerKeys, (off) => {
+            if (handled || !off?.sdp) return;
+            if (Date.now() - (off.ts || 0) > 300000) return;
+            handled = true;
+            acceptOffer(off).catch(() => sock.close());
+          });
+        }
+      }
+    } catch (e) {
+      onStatus?.(`P2P Error: ${e.message}`);
+      sock.onerror?.(e);
+      sock.close();
+    }
+  })();
+
+  return sock;
+}

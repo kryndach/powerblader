@@ -22,9 +22,11 @@ export async function ensureLibretroRuntime(coreKey = 'gpgx') {
   if (rt.promise) return rt.promise;
   rt.promise = (async () => {
     if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      const jsUrl = new URL(`../vendor/${rt.file}.js?v=2`, import.meta.url);
+      const wasmUrl = new URL(`../vendor/${rt.file}.wasm?v=2`, import.meta.url);
       const [ns, res] = await Promise.all([
-        import(`/vendor/${rt.file}.js?v=2`),
-        fetch(`/vendor/${rt.file}.wasm?v=2`)
+        import(jsUrl.href),
+        fetch(wasmUrl.href)
       ]);
       rt.factory = ns.default;
       rt.wasmBinary = new Uint8Array(await res.arrayBuffer());

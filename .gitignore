@@ -9,6 +9,8 @@
 *.fc0
 local/saves/
 local/rendezvous_secret.txt
+local/room_password.txt
+dist-pages/
 saves/
 
 # Dependencies & build artifacts

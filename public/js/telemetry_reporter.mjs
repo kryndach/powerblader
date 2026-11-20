@@ -70,6 +70,8 @@ export function createTelemetryReporter(state, ui, romSync) {
 
   async function pushGameplayTelemetryToServer() {
     if (!state.ws || state.ws.readyState !== 1) return;
+    if (state.ws.isServerlessP2p) return;
+    if (state.isStaticOrigin && !state.apiBaseUrl) return;
     const telemetry = buildGameplayTelemetryPayload();
     if (typeof fetch === 'function') {
       if (telemetryPostInFlight) return;
