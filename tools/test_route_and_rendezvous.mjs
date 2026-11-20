@@ -66,7 +66,7 @@ function testCryptoAndPolicyUnitContracts() {
   assert.strictEqual(
     migrated, 'https://fast.a.pinggy-free.link/?room=NOVA&nick=Bro&optimized=1'
   );
-  console.log('[PASS] 1/4 BIP-340 Schnorr, AES-GCM & Route Scoring Contracts');
+  console.log('[PASS] 1/5 BIP-340 Schnorr, AES-GCM & Route Scoring Contracts');
 }
 
 async function testCandidatePoolLifecycle() {
@@ -104,7 +104,7 @@ async function testCandidatePoolLifecycle() {
   assert.ok(killed.includes('sg1'), 'Old active not killed after grace delay');
   pool.cleanupAll();
   console.log(
-    '[PASS] 2/4 Candidate Pool Open, Alt-Domain Promotion & Grace Kill'
+    '[PASS] 2/5 Candidate Pool Open, Alt-Domain Promotion & Grace Kill'
   );
 }
 
@@ -166,27 +166,18 @@ async function runChromeRouteAndRendezvousE2E() {
   const killedHandles = [];
   try {
     app = createCoopServer({
-      logAccess: false,
-      logsDir: path.join(tmpDir, 'logs'),
+      logAccess: false, logsDir: path.join(tmpDir, 'logs'),
       savesDir: path.join(tmpDir, 'saves'),
       secretPath: path.join(tmpDir, 'secret.txt'),
-      rendezvousRelays: [relayUrl],
-      candidateGraceMs: 600,
+      rendezvousRelays: [relayUrl], candidateGraceMs: 600,
       probeTcpFn: async (host) => (host.includes('ap.1') ? 4 : 40),
-      spawnTunnelFn: async (route) => {
-        if (route.id === 'sg1') {
-          return {
-            publicUrl: `http://127.0.0.2:${slowProxy.port}`,
-            altUrl: null,
-            kill: () => killedHandles.push('sg1')
-          };
-        }
-        return {
-          publicUrl: `http://127.0.0.2:${fastProxy.port}`,
-          altUrl: null,
-          kill: () => killedHandles.push(route.id)
-        };
-      }
+      spawnTunnelFn: async (route) => ({
+        publicUrl: `http://127.0.0.2:${
+          route.id === 'sg1' ? slowProxy.port : fastProxy.port
+        }`,
+        altUrl: null,
+        kill: () => killedHandles.push(route.id)
+      })
     });
     const hostPort = await app.listen(0, '127.0.0.1');
     slowProxy = await startNetemProxy(hostPort, { rttMs: 180 });
@@ -227,7 +218,7 @@ async function runChromeRouteAndRendezvousE2E() {
     assert.strictEqual(tab1.exceptions.length, 0, tab1.exceptions.join('; '));
     assert.strictEqual(tab2.exceptions.length, 0, tab2.exceptions.join('; '));
     console.log(
-      '[PASS] 3/4 Real Chrome Phase 1: Auto 2-Way Probe (180ms -> 10ms) & ' +
+      '[PASS] 3/5 Real Chrome Phase 1: Auto 2-Way Probe (180ms -> 10ms) & ' +
         'Zero-Copy Redirect Verified'
     );
     try { tab2.close(); } catch {}
@@ -258,10 +249,79 @@ async function runChromeRouteAndRendezvousE2E() {
       tabJoin.exceptions.length, 0, tabJoin.exceptions.join('; ')
     );
     console.log(
-      '[PASS] 4/4 Real Chrome Phase 2: Encrypted Nostr Beacon & ' +
+      '[PASS] 4/5 Real Chrome Phase 2: Encrypted Nostr Beacon & ' +
         'file:// join_nes.html Zero-Link Auto-Join Verified'
     );
-    try { tab1.close(); tabJoin.close(); } catch {}
+    try { tabJoin.close(); } catch {}
+
+    // Stage 5: Cross-origin ?server= fixed origin + 0-byte CRC32 cache hit!
+    const staticApp = createCoopServer({
+      logAccess: false, logsDir: path.join(tmpDir, 'slogs'),
+      savesDir: path.join(tmpDir, 'ssaves'), enableRendezvous: false
+    });
+    const staticPort = await staticApp.listen(0, '127.0.0.1');
+    try {
+      const fixUrl1 = `http://127.0.0.1:${staticPort}/` +
+        `?server=${encodeURIComponent(`http://127.0.0.2:${fastProxy.port}`)}` +
+        '&room=ROUTE1&nick=BroFix&optimized=1&debug=1';
+      const tabFix1 = await createCdpTab(browser.debugPort, fixUrl1);
+      await waitFor(() => tab1.evaluate(
+        `document.getElementById('lobbyP2Name')?.textContent.includes('BroFix')`
+      ), 10000, 'Cross-origin ?server= client joined Host room');
+      const hasCacheBtn = await tabFix1.evaluate(
+        `Boolean(document.getElementById('cacheFolderBtn'))`
+      );
+      assert.strictEqual(hasCacheBtn, true, 'Missing Cache Folder button!');
+
+      // Host picks Battletoads & sends once -> cached in staticPort origin IDB
+      await tab1.evaluate(`(() => {
+        const s = document.getElementById('localRomSelect');
+        const p = [...s.options].map((o) => o.value)
+          .find((v) => v.toLowerCase().includes('battletoads'));
+        s.value = p; s.dispatchEvent(new Event('change', { bubbles: true }));
+      })()`);
+      await waitFor(() => tab1.evaluate(
+        `document.getElementById('romBadge')?.textContent` +
+          `.toLowerCase().includes('battletoads')`
+      ), 15000, 'Host loaded Battletoads');
+      await tab1.evaluate(`document.getElementById('topSendRomBtn').click()`);
+      await waitFor(() => tabFix1.evaluate(
+        `Number(document.getElementById('dbgFrame')?.textContent || 0) >= 20`
+      ), 15000, 'Cross-origin client downloaded & started Battletoads');
+      await sleep(300);
+      try { tabFix1.close(); } catch {}
+      await sleep(300);
+
+      // Reconnect via DIFFERENT Pinggy URL (slowProxy) on SAME fixed origin!
+      slowProxy.setProfile({ rttMs: 10 });
+      slowProxy.resetStats();
+      const fixUrl2 = `http://127.0.0.1:${staticPort}/` +
+        `?server=${encodeURIComponent(`http://127.0.0.2:${slowProxy.port}`)}` +
+        '&room=ROUTE1&nick=BroFix2&optimized=1&debug=1';
+      const tabFix2 = await createCdpTab(browser.debugPort, fixUrl2);
+      await waitFor(() => tabFix2.evaluate(
+        `Number(document.getElementById('dbgFrame')?.textContent || 0) >= 20`
+      ), 15000, 'Fixed-origin client auto-loaded cached ROM on new Pinggy URL');
+      const wireKb = Math.round(slowProxy.getStats().bytesDown / 1024);
+      const fixLog = await tabFix2.evaluate(
+        `document.getElementById('dbgLog')?.textContent || ''`
+      );
+      assert.ok(
+        fixLog.includes('cache hit') && wireKb < 120,
+        `Expected 0-byte ROM cache hit (<120KB vs 189KB gz), got ${wireKb}KB`
+      );
+      assert.strictEqual(
+        tabFix2.exceptions.length, 0, tabFix2.exceptions.join(';')
+      );
+      console.log(
+        '[PASS] 5/5 Real Chrome Cross-Origin ?server= & 0-Byte CRC32 Cache ' +
+          `Across New Pinggy URL Verified (Wire=${wireKb}KB vs 189KB gz)`
+      );
+      try { tabFix2.close(); } catch {}
+    } finally {
+      await staticApp.close();
+    }
+    try { tab1.close(); } catch {}
   } finally {
     if (browser?.proc) {
       try { browser.proc.kill('SIGKILL'); } catch {}

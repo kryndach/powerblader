@@ -11,6 +11,10 @@ import { createViewportAndSpeedController } from './viewport_and_speed.mjs';
 import { setupRomDropAndPicker } from './rom_archive.mjs';
 import { setupHostTunnelController } from './tunnel_ui.mjs';
 import { createRouteOptimizer } from './route_optimizer.mjs';
+import { setupRomCacheFolderUi } from './rom_cache_ui.mjs';
+import {
+  resolveServerEndpoints, buildApiUrl, buildWsUrl
+} from './server_endpoint.mjs';
 import { startConsoleFrameLoop } from './frame_loop.mjs';
 import {
   createConsoleState, resetPeerSessionState
@@ -20,6 +24,7 @@ import {
 } from '/src/shadow_rollback_host.mjs';
 
 const state = createConsoleState();
+Object.assign(state, resolveServerEndpoints());
 
 const ui = createConsoleUI(state);
 const audio = createAudioDrcEngine({
@@ -93,8 +98,7 @@ function connectToRoom() {
     ui.autoBenchLink.href = `/autotest?gameRoom=${encodeURIComponent(code)}`;
   }
   const nick = (ui.nickInput.value || 'Player').trim().slice(0, 14);
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${proto}//${window.location.host}/ws`;
+  const wsUrl = buildWsUrl(state, '/ws');
 
   ui.dbgWssState.textContent = 'Connecting...';
   const ws = new WebSocket(wsUrl);
@@ -147,6 +151,14 @@ const tunnelCtrl = setupHostTunnelController(state, ui, {
     state.routeOptimizer?.triggerOptimization({ auto: false })
 });
 state.routeOptimizer = createRouteOptimizer(state, ui, tunnelCtrl);
+const cacheFolderUi = setupRomCacheFolderUi(state, ui, () => {
+  if (state.partnerRomCrc32) {
+    protocol?.maybeAutoLoadCachedPartnerRom?.(
+      state.partnerRomCrc32, state.partnerRomName, true
+    );
+  }
+});
+state.onCacheUpdated = () => cacheFolderUi?.refreshLabel?.();
 
 ui.resetBtn.addEventListener('click', () => {
   if (!state.nes || !state.engine) return;
@@ -242,7 +254,7 @@ ui.forceResyncBtn.addEventListener('click', () => {
 ui.copyTelemetryBtn.addEventListener('click', async () => {
   try {
     telemetry.pushGameplayTelemetryToServer();
-    const res = await fetch('/api/gameplay-telemetry');
+    const res = await fetch(buildApiUrl(state, '/api/gameplay-telemetry'));
     if (res.ok) {
       const data = await res.json();
       const txt =

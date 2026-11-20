@@ -1,4 +1,11 @@
-// Persistent IndexedDB & In-Memory Fallback ROM/WASM Binary Cache by CRC32
+// Persistent Disk Folder, IndexedDB & In-Memory ROM/WASM Cache by CRC32
+import {
+  getCachedFileFromFolder, putCachedFileToFolder, deleteCachedFileFromFolder,
+  attachCacheDirectory, getFolderCacheInfo, clearFolderCacheForTests
+} from './rom_folder_cache.mjs';
+
+export { attachCacheDirectory, getFolderCacheInfo, clearFolderCacheForTests };
+
 const IDB_NAME = 'nes_online_rom_cache_v1';
 const IDB_STORE = 'roms';
 const memCacheFallback = new Map();
@@ -23,6 +30,10 @@ export async function getCachedRomByCrc(crc) {
   const key = String(crc || '').trim().toUpperCase();
   if (!key) return null;
   if (memCacheFallback.has(key)) return memCacheFallback.get(key);
+  const diskHit = await getCachedFileFromFolder(key);
+  if (diskHit?.u8) {
+    return { romName: diskHit.romName, u8: diskHit.u8, source: 'folder' };
+  }
   const db = await openRomIdb();
   if (!db) return null;
   return new Promise((resolve) => {
@@ -32,7 +43,9 @@ export async function getCachedRomByCrc(crc) {
       req.onsuccess = () => {
         const val = req.result;
         if (val?.u8) {
-          resolve({ romName: val.romName, u8: new Uint8Array(val.u8) });
+          const u8 = new Uint8Array(val.u8);
+          putCachedFileToFolder(key, val.romName, u8).catch(() => {});
+          resolve({ romName: val.romName, u8, source: 'idb' });
         } else resolve(null);
       };
       req.onerror = () => resolve(null);
@@ -43,6 +56,7 @@ export async function getCachedRomByCrc(crc) {
 export async function putCachedRomByCrc(crc, romName, u8) {
   const key = String(crc || '').trim().toUpperCase();
   if (!key || !u8?.byteLength) return;
+  await putCachedFileToFolder(key, romName, u8).catch(() => {});
   if (typeof indexedDB === 'undefined') {
     memCacheFallback.set(key, { romName, u8: new Uint8Array(u8) });
     return;
@@ -59,6 +73,7 @@ export async function deleteCachedRomByCrc(crc) {
   const key = String(crc || '').trim().toUpperCase();
   if (!key) return;
   memCacheFallback.delete(key);
+  await deleteCachedFileFromFolder(key).catch(() => {});
   const db = await openRomIdb();
   if (!db) return;
   try {
@@ -69,4 +84,5 @@ export async function deleteCachedRomByCrc(crc) {
 
 export function clearMemRomCacheForTests() {
   memCacheFallback.clear();
+  clearFolderCacheForTests();
 }

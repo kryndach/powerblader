@@ -3,6 +3,34 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 
+const HOST_ONLY_PATHS = new Set([
+  '/api/join-file', '/api/tunnel-routes',
+  '/api/tunnel-candidates', '/api/tunnel-promote'
+]);
+
+export function applyPublicApiCors(req, res, pathname) {
+  if (
+    !pathname.startsWith('/api/') ||
+    HOST_ONLY_PATHS.has(pathname) ||
+    pathname.startsWith('/api/rendezvous-')
+  ) {
+    return false;
+  }
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Range, X-Accept-Raw-Gz, X-Rom-Encoding'
+  );
+  res.setHeader(
+    'Access-Control-Expose-Headers',
+    'Content-Range, Content-Length, Accept-Ranges, ' +
+      'X-Rom-Filename, X-Rom-Crc32, X-Payload-Encoding'
+  );
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return true; }
+  return false;
+}
+
 const roomRomCache = new Map();
 const pendingMultipart = new Map();
 

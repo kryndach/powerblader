@@ -1,5 +1,6 @@
 // Live Gameplay Telemetry Builder, Auto-Delay Hysteresis & Debug Inspector
 import { NesNetplayEngine } from '../../src/netplay_engine.mjs';
+import { buildApiUrl } from './server_endpoint.mjs';
 
 export function createTelemetryReporter(state, ui, romSync) {
   function buildGameplayTelemetryPayload() {
@@ -74,7 +75,7 @@ export function createTelemetryReporter(state, ui, romSync) {
       if (telemetryPostInFlight) return;
       telemetryPostInFlight = true;
       try {
-        await fetch('/api/gameplay-telemetry', {
+        await fetch(buildApiUrl(state, '/api/gameplay-telemetry'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(telemetry)

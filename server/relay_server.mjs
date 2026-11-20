@@ -11,7 +11,7 @@ import {
   handleLocalRomsApi, handleLocalRomDownloadApi, handleExtractRomPostApi
 } from './archive_extractor.mjs';
 import {
-  handleRoomRomApi, handleSaveSlotApi, sendBinaryWithRange
+  handleRoomRomApi, handleSaveSlotApi, sendBinaryWithRange, applyPublicApiCors
 } from './room_rom_and_save_api.mjs';
 import { createTunnelManager } from './tunnel_manager.mjs';
 import { createRendezvousBeacon } from './rendezvous_beacon.mjs';
@@ -117,18 +117,9 @@ export function createCoopServer(options = {}) {
     const hostHdr = req.headers.host || 'localhost';
     const urlObj = new URL(req.url, `http://${hostHdr}`);
     const pathname = urlObj.pathname;
-
+    if (applyPublicApiCors(req, res, pathname)) return;
     if (pathname === '/api/edge-ping') {
-      const hdrs = {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, OPTIONS',
-        'Cache-Control': 'no-store'
-      };
-      if (req.method === 'OPTIONS') {
-        res.writeHead(204, hdrs); return res.end();
-      }
-      res.writeHead(200, { ...hdrs, 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ ok: true, t: Date.now() }));
+      return sendJson(res, 200, { ok: true, t: Date.now() }, true);
     }
     if (pathname === '/api/health') {
       return sendJson(res, 200, {

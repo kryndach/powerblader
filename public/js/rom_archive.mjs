@@ -185,10 +185,12 @@ export function handleRomTransferMessage(
     const isCore = msg.stage === 'loading-core' || msg.pct >= 100;
     const phase = isCore ? 'partner-core' : 'sending';
     const pct = Math.max(0, Math.min(100, Math.round(Number(msg.pct) || 0)));
-    const detail = msg.stage === 'loading-core'
-      ? `Loading Emulator Engine (${formatTransferProgress(msg)})`
-      : msg.pct >= 100 ? 'Starting game at Frame #0...'
-        : formatTransferProgress(msg);
+    const detail = msg.stage === 'cache-hit'
+      ? 'Loaded from cache (0 KB)!'
+      : msg.stage === 'loading-core'
+        ? `Loading Emulator Engine (${formatTransferProgress(msg)})`
+        : msg.pct >= 100 ? 'Starting game at Frame #0...'
+          : formatTransferProgress(msg);
     if (ui.setTransferStatus) {
       ui.setTransferStatus({ phase, romName: state.romName, pct, detail });
     } else {
@@ -208,6 +210,13 @@ export function handleRomTransferMessage(
     });
     state.partnerRomName = rName; state.partnerRomCrc32 = state.romCrc32;
     applyImportedSyncState(syncSt, `ONLINE SYNCED - PLAYING "${rName}"`);
+  };
+  const applyCacheHit = (hit, dropKey, syncSt) => {
+    sendWs({ type: 'rom_transfer_progress', stage: 'cache-hit', pct: 100 });
+    ui.logDebug?.(`ROM CRC32 ${msg.romCrc32} cache hit - 0 KB downloaded!`);
+    return finishLoad(
+      hit.u8, msg.romName, msg.isAutoDefaultRom, dropKey, syncSt
+    );
   };
   if (msg.type === 'rom_chunk_start') {
     const act = state.activeRomDownload;
@@ -253,13 +262,7 @@ export function handleRomTransferMessage(
       };
       (async () => {
         const hit = msg.romCrc32 ? await getCachedRomByCrc(msg.romCrc32) : null;
-        if (hit?.u8) {
-          sendWs({ type: 'rom_transfer_progress', pct: 100 });
-          return finishLoad(
-            hit.u8, msg.romName, msg.isAutoDefaultRom,
-            msg.localRomKey, dlSt.syncState
-          );
-        }
+        if (hit?.u8) return applyCacheHit(hit, msg.localRomKey, dlSt.syncState);
         const r = await fetchRomBytesWithProgress(
           url, 'DOWNLOADING', msg.romName, ui,
           (pct, info) => {
@@ -282,6 +285,14 @@ export function handleRomTransferMessage(
       syncState: msg.syncState, chunks: new Map(), endSeen: false,
       t0: performance.now(), lastUiAt: 0
     };
+    if (msg.romCrc32) {
+      getCachedRomByCrc(msg.romCrc32).then((hit) => {
+        const cur = state.incomingRomTransfer;
+        if (!hit?.u8 || cur?.sessionId !== msg.sessionId) return;
+        state.incomingRomTransfer = null;
+        applyCacheHit(hit, null, msg.syncState);
+      }).catch(() => {});
+    }
     return true;
   }
   const xfer = state.incomingRomTransfer;

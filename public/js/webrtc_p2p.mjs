@@ -1,4 +1,5 @@
 // WebRTC P2P DataChannel & Dual-WebSocket (ws + wsAux) Transport Manager
+import { buildWsUrl } from './server_endpoint.mjs';
 const STUN_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -172,8 +173,7 @@ export function createNetTransport(state, ui, onIncomingMessage) {
     }
     if (!code || !cid) return;
     try {
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const auxUrl = `${proto}//${window.location.host}/ws?aux=1`;
+      const auxUrl = buildWsUrl(state, '/ws?aux=1');
       const aux = new WebSocket(auxUrl);
       state.wsAux = aux;
       aux.onopen = () => {

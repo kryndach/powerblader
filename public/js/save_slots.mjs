@@ -1,4 +1,5 @@
 // Fast Save & Load Slot Manager (Slots 1-5), Disk Persistence & Local Save File
+import { buildApiUrl } from './server_endpoint.mjs';
 const SAVE_PREFIX = 'nes_save_v1_';
 const ACTIVE_SLOT_KEY = 'nes_active_save_slot';
 const TOTAL_SLOTS = 5;
@@ -32,7 +33,7 @@ export function createSaveSlotsManager(state, ui, romSync) {
     memorySlots.set(key, entry);
     diskSavedKeys.add(key);
     if (typeof fetch === 'function') {
-      fetch('/api/save-slot', {
+      fetch(buildApiUrl(state, '/api/save-slot'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ romCrc32, slot, entry })
@@ -91,7 +92,7 @@ export function createSaveSlotsManager(state, ui, romSync) {
     renderSlotOptions();
     if (!state.romCrc32 || typeof fetch !== 'function') return;
     const crc = state.romCrc32;
-    fetch(`/api/save-slot?crc=${encodeURIComponent(crc)}`)
+    fetch(buildApiUrl(state, `/api/save-slot?crc=${encodeURIComponent(crc)}`))
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!data || !Array.isArray(data.savedSlots)) return;
@@ -204,7 +205,7 @@ export function createSaveSlotsManager(state, ui, romSync) {
     if (!entry && typeof fetch === 'function') {
       try {
         const q = `crc=${encodeURIComponent(state.romCrc32)}&slot=${slot}`;
-        const res = await fetch(`/api/save-slot?${q}`);
+        const res = await fetch(buildApiUrl(state, `/api/save-slot?${q}`));
         if (res.ok) {
           const data = await res.json();
           if (data?.entry?.syncState) {

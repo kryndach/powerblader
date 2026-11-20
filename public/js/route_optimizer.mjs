@@ -98,7 +98,12 @@ export function probeCandidateUrls(
 export function buildMigratedClientUrl(targetBaseUrl, currentHref) {
   const base = String(targetBaseUrl || '').replace(/\/+$/, '');
   const cur = new URL(currentHref);
-  const next = new URL(`${base}/`);
+  const keepFixed = cur.searchParams.has('server') ||
+    cur.searchParams.has('host');
+  const next = keepFixed
+    ? new URL(cur.origin + cur.pathname)
+    : new URL(`${base}/`);
+  if (keepFixed) next.searchParams.set('server', base);
   const room = cur.searchParams.get('room');
   const nick = cur.searchParams.get('nick');
   const dbg = cur.searchParams.get('debug');
@@ -161,7 +166,7 @@ export function createRouteOptimizer(state, ui, tunnelCtrl) {
   }
 
   async function triggerOptimization({ auto = false } = {}) {
-    if (!isLocalHostRuntime() || activeProbe) return;
+    if (state.isExternalServer || !isLocalHostRuntime() || activeProbe) return;
     if (!state.ws || state.ws.readyState !== 1 || !state.peerConnected) {
       if (!auto) {
         ui.showScreenBanner('CONNECT PARTNER TO PROBE ROUTES', 'warn', 2600);
@@ -263,8 +268,8 @@ export function createRouteOptimizer(state, ui, tunnelCtrl) {
   function onPeerJoined(peerInfo) {
     state.peerRouteOptimized = Boolean(peerInfo?.routeOptimized);
     if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
-    if (!isLocalHostRuntime() || state.localPlayerIndex !== 1) return;
-    if (state.peerRouteOptimized) return;
+    if (state.isExternalServer || !isLocalHostRuntime()) return;
+    if (state.localPlayerIndex !== 1 || state.peerRouteOptimized) return;
     autoTimer = setTimeout(() => {
       autoTimer = null;
       triggerOptimization({ auto: true });

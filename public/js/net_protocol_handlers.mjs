@@ -21,16 +21,21 @@ export function createProtocolHandlers(
 
   function clearTransfers() { clearActiveRomTransfers(state, ui); }
 
-  function maybeAutoLoadCachedPartnerRom(crc, romName) {
+  function maybeAutoLoadCachedPartnerRom(crc, romName, forceOnP2 = false) {
     if (!crc || crc === state.romCrc32 || state.loadingCachedRomCrc === crc) {
       return;
     }
-    if (!state.isAutoDefaultRom && state.romUint8) return;
+    const allow = forceOnP2 || state.localPlayerIndex === 2 ||
+      state.isAutoDefaultRom || !state.romUint8;
+    if (!allow) return;
     state.loadingCachedRomCrc = crc;
     getCachedRomByCrc(crc).then(async (hit) => {
       if (!hit?.u8 || state.romCrc32 === crc) return;
+      ui.logDebug?.(
+        `ROM CRC32 ${crc} cache hit (${hit.source || 'cache'}) - 0 KB!`
+      );
       await romSync.loadRomFromUint8(hit.u8, romName || hit.romName, {
-        broadcastToPeer: true, isAutoDefault: false
+        broadcastToPeer: true, isAutoDefault: false, fromCache: true
       });
     }).finally(() => {
       if (state.loadingCachedRomCrc === crc) state.loadingCachedRomCrc = null;
@@ -339,5 +344,5 @@ export function createProtocolHandlers(
     }
   }
 
-  return { handleIncomingNetMessage };
+  return { handleIncomingNetMessage, maybeAutoLoadCachedPartnerRom };
 }

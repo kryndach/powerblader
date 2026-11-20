@@ -12,6 +12,7 @@ import {
   isLocalHostRuntime, putCachedRomByCrc, formatTransferProgress,
   fetchRomBytesWithProgress, uploadRomToServerCache
 } from './rom_fast_transfer.mjs';
+import { buildApiUrl } from './server_endpoint.mjs';
 
 export { base64ToUint8 };
 const jsnes = globalThis.window?.jsnes;
@@ -40,13 +41,11 @@ export function createRomSyncManager(state, ui, audio) {
   function ensureRomInDropdown(name, u8) {
     if (!name) return;
     if (u8) state.customRomsMap.set(name, u8);
-    let existing = Array.from(ui.localRomSelect.options).find(
-      (o) => o.value === name
-    );
+    let existing = Array.from(ui.localRomSelect.options)
+      .find((o) => o.value === name);
     if (!existing) {
       existing = document.createElement('option');
-      existing.value = name;
-      existing.textContent = name;
+      existing.value = name; existing.textContent = name;
       ui.localRomSelect.appendChild(existing);
     }
     ui.localRomSelect.value = name;
@@ -120,7 +119,10 @@ export function createRomSyncManager(state, ui, audio) {
     state.sendingRomSessionId = null;
 
     ensureRomInDropdown(options.dropdownKey || state.romName, u8);
-    if (!isAutoDefault) putCachedRomByCrc(state.romCrc32, state.romName, u8);
+    if (!isAutoDefault) {
+      Promise.resolve(putCachedRomByCrc(state.romCrc32, state.romName, u8))
+        .then(() => state.onCacheUpdated?.());
+    }
     if (options?.serverCachedCrc === state.romCrc32) {
       state.roomRomUploadedCrc = state.romCrc32;
     } else if (!state.localServerRomKey && !isAutoDefault &&
@@ -199,9 +201,10 @@ export function createRomSyncManager(state, ui, audio) {
     );
 
     if (!isAutoDefault) {
-      ui.showScreenBanner(
-        `LOADED "${state.romName}" [${state.romCrc32}]`, 'ok', 2800
-      );
+      const msg = options.fromCache
+        ? `LOADED "${state.romName}" FROM CACHE (0 KB)!`
+        : `LOADED "${state.romName}" [${state.romCrc32}]`;
+      ui.showScreenBanner(msg, 'ok', 2800);
     }
     ui.resetSendRomButtons?.();
 
@@ -292,28 +295,24 @@ export function createRomSyncManager(state, ui, audio) {
 
   async function discoverLocalRoms() {
     try {
-      const res = await fetch('/api/local-roms');
+      const res = await fetch(buildApiUrl(state, '/api/local-roms'));
       if (res.ok) {
         const data = await res.json();
         ui.localRomSelect.innerHTML =
           '<option value="">-- Select Game --</option>';
-        if (Array.isArray(data.files) && data.files.length > 0) {
-          for (const f of data.files) {
-            serverRomsSet.add(f);
-            const opt = document.createElement('option');
-            opt.value = f;
-            const slash = f.indexOf('/');
-            opt.textContent = slash > 0
-              ? `[${f.slice(0, slash).toUpperCase()}] ${f.slice(slash + 1)}`
-              : f;
-            ui.localRomSelect.appendChild(opt);
-          }
+        for (const f of data.files || []) {
+          serverRomsSet.add(f);
+          const opt = document.createElement('option');
+          opt.value = f;
+          const slash = f.indexOf('/');
+          opt.textContent = slash > 0
+            ? `[${f.slice(0, slash).toUpperCase()}] ${f.slice(slash + 1)}`
+            : f;
+          ui.localRomSelect.appendChild(opt);
         }
         ui.localRomSelect.value = '';
       }
-    } catch (e) {
-      ui.logDebug(`Local ROM check failed: ${e.message}`);
-    }
+    } catch (e) { ui.logDebug(`Local ROM check failed: ${e.message}`); }
     ui.updateStatusStrip();
   }
 
@@ -321,13 +320,14 @@ export function createRomSyncManager(state, ui, audio) {
     try {
       state.localServerRomKey = serverRomsSet.has(fileName) ? fileName : null;
       if (state.customRomsMap.has(fileName)) {
-        await loadRomFromUint8(
+        return await loadRomFromUint8(
           state.customRomsMap.get(fileName), fileName, options
         );
-        return;
       }
       state.localServerRomKey = fileName;
-      const url = `/api/local-rom?file=${encodeURIComponent(fileName)}`;
+      const url = buildApiUrl(
+        state, `/api/local-rom?file=${encodeURIComponent(fileName)}`
+      );
       const loaded = await fetchRomBytesWithProgress(
         url, 'LOADING', fileName, ui
       );

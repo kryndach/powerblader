@@ -25,6 +25,15 @@ import {
   createShadowWorkerController
 } from '../src/shadow_rollback_worker_core.mjs';
 import { createShadowRollbackHost } from '../src/shadow_rollback_host.mjs';
+import { computeRomCrc32 } from '../src/crc32.mjs';
+import {
+  attachCacheDirectory, getCachedRomByCrc, putCachedRomByCrc,
+  clearMemRomCacheForTests
+} from '../public/js/rom_idb_cache.mjs';
+import {
+  resolveServerEndpoints, buildApiUrl, buildWsUrl
+} from '../public/js/server_endpoint.mjs';
+import { buildMigratedClientUrl } from '../public/js/route_optimizer.mjs';
 
 function testSessionStoreContracts() {
   const st = createConsoleState();
@@ -248,6 +257,75 @@ async function testShadowRollbackContracts() {
   e1.destroy();
 }
 
+async function testRomFolderCacheAndCrossOriginEndpoints() {
+  clearMemRomCacheForTests();
+  const files = new Map();
+  const mkFile = (name) => ({
+    kind: 'file', name,
+    async getFile() {
+      const b = files.get(name);
+      return {
+        size: b.byteLength,
+        arrayBuffer: async () =>
+          b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)
+      };
+    },
+    async createWritable() {
+      const parts = [];
+      return {
+        write: async (d) => parts.push(new Uint8Array(d)),
+        close: async () => { files.set(name, Buffer.concat(parts)); }
+      };
+    }
+  });
+  const rawRom = new Uint8Array([0x4e, 0x45, 0x53, 0x1a, 1, 2, 3, 4, 5, 6]);
+  const rawCrc = computeRomCrc32(rawRom);
+  files.set('Battletoads.nes', rawRom);
+  const mockDir = {
+    name: 'NES_Cache',
+    async *values() { for (const k of files.keys()) yield mkFile(k); },
+    getFileHandle: async (n) => mkFile(n),
+    removeEntry: async (n) => files.delete(n)
+  };
+  const origIdb = globalThis.indexedDB;
+  globalThis.indexedDB = {};
+  try {
+    const info = await attachCacheDirectory(mockDir, { persist: false });
+    assert.strictEqual(info.connected && info.count === 1, true);
+    const hit1 = await getCachedRomByCrc(rawCrc);
+    assert.strictEqual(hit1?.source, 'folder');
+    assert.deepStrictEqual(hit1.u8, rawRom);
+    const wasmBytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+    await putCachedRomByCrc('WASM_FBNEO_V3', 'fbneo_arcade.wasm', wasmBytes);
+    assert.ok(files.has('WASM_FBNEO_V3.wasm'), 'WASM file missing');
+    const hitW = await getCachedRomByCrc('WASM_FBNEO_V3');
+    assert.deepStrictEqual(hitW?.u8, wasmBytes);
+  } finally {
+    clearMemRomCacheForTests();
+    globalThis.indexedDB = origIdb;
+  }
+
+  const loc = {
+    origin: 'https://egor.github.io', protocol: 'https:', host: 'egor.github.io'
+  };
+  const ep = resolveServerEndpoints(
+    '?server=https://abc.run.pinggy-free.link/&room=NOVA', loc
+  );
+  assert.strictEqual(ep.isExternalServer, true);
+  assert.strictEqual(
+    buildApiUrl(ep, '/api/local-roms'),
+    'https://abc.run.pinggy-free.link/api/local-roms'
+  );
+  assert.strictEqual(
+    buildWsUrl(ep, '/ws'), 'wss://abc.run.pinggy-free.link/ws'
+  );
+  const prevUrl =
+    'https://egor.github.io/nes/?server=https://slow.pinggy-free.link&room=NOVA';
+  const mig = buildMigratedClientUrl('https://fast.pinggy-free.link', prevUrl);
+  assert.ok(mig.startsWith('https://egor.github.io/nes/?server='));
+  assert.ok(mig.includes('fast.pinggy-free.link') && mig.includes('optimized'));
+}
+
 export async function runModuleContractSuite() {
   console.log('=== SOLID Module Contract Test Suite ===\n');
   testSessionStoreContracts();
@@ -256,9 +334,10 @@ export async function runModuleContractSuite() {
   testServerTelemetryRelayHandlers();
   testOverclockWaitLoopContract();
   await testShadowRollbackContracts();
+  await testRomFolderCacheAndCrossOriginEndpoints();
   console.log(
     '[PASS] SessionStore, InputRouter, RollbackPolicy, OverclockWait, ' +
-      'ShadowRollback, WasmLoader & TelemetryRelay Contracts Verified'
+      'ShadowRollback, FolderCache, ServerEndpoint & Telemetry Verified'
   );
 }
 

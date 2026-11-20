@@ -71,7 +71,8 @@ export function setupHostTunnelController(state, ui, hooks = {}) {
   });
 
   const api = { buildInviteUrl, applyRoutesResponse };
-  if (!isLocalHostRuntime() || !ui.tunnelRouteSelect) return api;
+  const isHost = !state.isExternalServer && isLocalHostRuntime();
+  if (!isHost || !ui.tunnelRouteSelect) return api;
 
   ui.tunnelRouteSelect.style.display = '';
   const deckGroup = ui.tunnelRouteSelect.parentElement;

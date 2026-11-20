@@ -177,7 +177,10 @@ async function handleBeaconPayload(payload) {
   const room = rawRoom.trim().toUpperCase();
   try { localStorage.setItem('nes_join_nick', nick); } catch {}
   const base = win.url.replace(/\/+$/, '');
-  const u = new URL(base + '/');
+  const appParam = qp.get('app') || cfg.appUrl || '';
+  const useFixed = /^https?:\/\//i.test(appParam);
+  const u = useFixed ? new URL(appParam) : new URL(base + '/');
+  if (useFixed) u.searchParams.set('server', base);
   u.searchParams.set('room', room);
   u.searchParams.set('nick', nick);
   const edgeIds = cands.map((c) => String(c.id).replace(/__alt$/, ''));
