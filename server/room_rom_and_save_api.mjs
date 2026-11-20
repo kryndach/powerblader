@@ -184,8 +184,10 @@ export function handleRoomRomApi(req, urlObj, res, sendJson) {
   sendJson(res, 405, { ok: false, error: 'Method not allowed' });
 }
 
-export function handleSaveSlotApi(req, urlObj, res, rootDir, sendJson) {
-  const savesDir = path.join(rootDir, 'local', 'saves');
+export function handleSaveSlotApi(
+  req, urlObj, res, rootDir, sendJson, savesDirOverride = null
+) {
+  const savesDir = savesDirOverride || path.join(rootDir, 'local', 'saves');
   if (req.method === 'GET') {
     const crc = cleanCrc(urlObj.searchParams.get('crc'));
     const slotParam = urlObj.searchParams.get('slot');

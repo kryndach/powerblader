@@ -114,8 +114,10 @@ async function runRealRomsSuite() {
     );
   }
 
-  // Stage 2: Pinggy 250ms + Asymmetric TCP Clumping 2-PC Rollback Torture Test
+  // Stage 2: Pinggy 250ms + TCP Clumping (Real Prod Config: 0f & 2f Delay)
+  let romIdx = 0;
   for (const fileName of romFiles) {
+    const delayCfg = (romIdx++ & 1) === 0 ? 2 : 0;
     const fullPath = path.join(LOCAL_ROMS_DIR, fileName);
     const bin = fs.readFileSync(fullPath).toString('binary');
 
@@ -132,12 +134,12 @@ async function runRealRomsSuite() {
     nes2.loadROM(bin);
 
     const eng1 = new NesNetplayEngine(nes1, {
-      localPlayer: 1, online: true, inputDelayFrames: 3,
-      enableRiftPacing: true, enableVisualSmoothing: true
+      localPlayer: 1, online: true, inputDelayFrames: delayCfg,
+      enableRiftPacing: false, enableVisualSmoothing: false
     });
     const eng2 = new NesNetplayEngine(nes2, {
-      localPlayer: 2, online: true, inputDelayFrames: 3,
-      enableRiftPacing: true, enableVisualSmoothing: true
+      localPlayer: 2, online: true, inputDelayFrames: delayCfg,
+      enableRiftPacing: false, enableVisualSmoothing: false
     });
 
     const q12 = [];
@@ -218,16 +220,12 @@ async function runRealRomsSuite() {
     assert.strictEqual(finalHash1, finalHash2);
     assert.ok(t2.rxClumpFrames > 0);
     assert.ok(p1VisualFrames > 220 && typeof lastVisualFirstPixel === 'number');
-    if (t1.maxRollbackDepthSeen >= 4) {
-      assert.ok(t1.smoothedFramesCount > 0);
-    }
+    assert.strictEqual(t1.smoothedFramesCount, 0);
 
     console.log(
-      `[PASS] Stage 2 Pinggy Torture (${fileName}): ` +
-        `Rollbacks P1=${t1.rollbacksTotal} (max=${t1.maxRollbackDepthSeen}f, ` +
-        `smoothed=${t1.smoothedFramesCount}), P2=${t2.rollbacksTotal} ` +
-        `(max=${t2.maxRollbackDepthSeen}f, clump=${t2.rxClumpFrames}f) | ` +
-        `0 Desyncs | Final Hash=${finalHash1}`
+      `[PASS] Stage 2 Pinggy (${fileName}, ${delayCfg}f): ` +
+        `RB P1=${t1.rollbacksTotal}(max=${t1.maxRollbackDepthSeen}f), ` +
+        `P2=${t2.rollbacksTotal}(clump=${t2.rxClumpFrames}f) | 0 Desyncs`
     );
   }
 

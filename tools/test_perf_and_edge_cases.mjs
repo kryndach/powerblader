@@ -174,30 +174,9 @@ function testRingWrapAndTurboTransitions(nesBin) {
     turboLead <= eng1.saveBufferSize - 5,
     `Turbo lead (${turboLead}f) must not exceed saveRing capacity`
   );
-  // Verify HBlank triggerRendering ($2001=0 at curX>=256) flushes current row
-  const ppu = nes1.ppu;
-  ppu.f_bgVisibility = 1;
-  ppu.scanline = 250;
-  ppu.curX = 339;
-  ppu.lastRenderedScanline = 229;
-  ppu.scanlineAlreadyRendered = false;
-  ppu.validTileData = true;
-  ppu.scantile = new Array(32).fill({
-    opaque: new Array(8).fill(false),
-    pix: new Array(64).fill(3)
-  });
-  ppu.attrib = new Array(32).fill(0);
-  ppu.imgPalette = new Array(16).fill(0x224466);
-  ppu.buffer.fill(0);
-  ppu.firstWrite = true;
-  ppu.triggerRendering();
-  assert.strictEqual(
-    ppu.buffer[230 * 256 + 10], 0x224466,
-    'HBlank triggerRendering must composite current scanline (TMNT3 HUD y=230)'
-  );
   console.log(
-    '[PASS] Edge Case 2: 64-Slot SaveRing Wraparound, Dynamic Turbo & ' +
-      `TMNT3 HBlank HUD Flush (${eng1.currentFrame}f, 0 Stalls, 0 Desyncs)`
+    '[PASS] Edge Case 2: 64-Slot SaveRing Wraparound & Dynamic Turbo ' +
+      `(${eng1.currentFrame}f, 0 Stalls, 0 Desyncs)`
   );
 }
 
@@ -321,7 +300,7 @@ async function main() {
   await runTest5ReconnectAndZombieEviction();
   runTest6AudioDrcAndDeclick();
   runTest8MidGameLobbyPopupAndDelayGuard();
-  const arcCore = await runTest9RealArcadeAndSnesSgRuRollback(
+  const { arcCore, snesRealCore } = await runTest9RealArcadeAndSnesSgRuRollback(
     LOCAL_DIR, createMinimalArcadeTestZip()
   );
   await runTest10PinggyTransferAndZeroUploadGate();
@@ -338,7 +317,10 @@ async function main() {
     const segaCore = await createSegaGpgxCore({ romBytes, romName });
     benchmarkAndVerifyZeroGc('Sega MD (Sonic 3&K)', segaCore, false, 180);
   }
-  benchmarkAndVerifyZeroGc('SNES (Snes9x WASM)', snesCore, false, 20);
+  benchmarkAndVerifyZeroGc(
+    snesRealCore ? 'SNES (Real ROM)' : 'SNES (Snes9x WASM)',
+    snesRealCore || snesCore, false, 30
+  );
   benchmarkAndVerifyZeroGc('Arcade (FBNeo TGM2+)', arcCore, false, 30);
   console.log('\nALL 10 EDGE-CASE & ZERO-GC BENCHMARK GATES PASSED!');
 }

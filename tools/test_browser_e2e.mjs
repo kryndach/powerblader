@@ -8,6 +8,9 @@ import {
   sleep, findChromiumBinary, createCdpTab, waitFor, startRemoteProxy,
   launchHeadlessBrowser, buildMultiSliceArcadeZipBase64
 } from './browser_cdp_harness.mjs';
+import {
+  runMultiConsoleAndReloadE2E
+} from './browser_e2e_multiconsole_stages.mjs';
 
 async function runMainGameTwoTabE2E(browser, hostPort, remPort) {
   const tab1 = await createCdpTab(
@@ -206,7 +209,7 @@ async function runMainGameTwoTabE2E(browser, hostPort, remPort) {
     assert.strictEqual(tab1.exceptions.length, 0, tab1.exceptions.join('; '));
     assert.strictEqual(tab2.exceptions.length, 0, tab2.exceptions.join('; '));
     console.log(
-      `[PASS] 1/3 Real Chrome Main Game E2E (${pickedRom} + 4x Turbo + ` +
+      `[PASS] 1/4 Real Chrome Main Game E2E (${pickedRom} + 4x Turbo + ` +
       `P2->P1 Multipart .zip + Save/Load + 0 Desyncs)`
     );
   } finally {
@@ -281,7 +284,7 @@ async function runAutotestV3TwoTabE2E(browser, hostPort, remPort, logsDir) {
     })()`), 10000, 'Post-autotest auto-rejoin Room POSTAT on both tabs');
 
     console.log(
-      '[PASS] 2/3 Real Chrome Zero-Click /autotest v3.0 + Post-Autotest ' +
+      '[PASS] 3/4 Real Chrome Zero-Click /autotest v3.0 + Post-Autotest ' +
       'Auto-Rejoin E2E Verified'
     );
   } finally {
@@ -300,7 +303,7 @@ async function runAutotestV3TwoTabE2E(browser, hostPort, remPort, logsDir) {
       );
     }, 8000, '/nettest ES module boot');
     assert.strictEqual(tabNet.exceptions.length, 0);
-    console.log('[PASS] 3/3 Real Chrome /nettest Workbench Boot Verified');
+    console.log('[PASS] 4/4 Real Chrome /nettest Workbench Boot Verified');
   } finally {
     try { tabNet.close(); } catch {}
   }
@@ -313,7 +316,7 @@ async function main() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nes_e2e_chrome_'));
   const logsDir = path.join(tmpDir, 'logs');
   const app = createCoopServer({
-    logAccess: false, logsDir,
+    logAccess: false, logsDir, savesDir: path.join(tmpDir, 'saves'),
     probeTcpFn: async () => 8,
     spawnTunnelFn: async (r) => ({
       publicUrl: `https://${r.id}-e2e.run.pinggy-free.link`,
@@ -327,6 +330,7 @@ async function main() {
   try {
     browser = await launchHeadlessBrowser(bin, path.join(tmpDir, 'profile'));
     await runMainGameTwoTabE2E(browser, hostPort, remProxy.port);
+    await runMultiConsoleAndReloadE2E(browser, hostPort, remProxy.port);
     await runAutotestV3TwoTabE2E(browser, hostPort, remProxy.port, logsDir);
   } finally {
     if (browser?.proc) {

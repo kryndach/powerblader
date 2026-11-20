@@ -23,6 +23,7 @@ const audio = createAudioDrcEngine({
   volumeSlider: ui.volumeSlider,
   volumeValLabel: ui.volumeValLabel
 });
+window.__nesAudioStats = () => audio.getStats();
 
 try {
   const savedDelay = localStorage.getItem('nes_input_delay');

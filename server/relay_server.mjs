@@ -248,7 +248,9 @@ export function createCoopServer(options = {}) {
       return handleRoomRomApi(req, urlObj, res, sendJson);
     }
     if (pathname === '/api/save-slot') {
-      return handleSaveSlotApi(req, urlObj, res, ROOT_DIR, sendJson);
+      return handleSaveSlotApi(
+        req, urlObj, res, ROOT_DIR, sendJson, options.savesDir || null
+      );
     }
 
     if (pathname === '/vendor/jsnes.js') {

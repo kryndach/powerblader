@@ -105,9 +105,10 @@ rules before committing:
     unpacker, `206` Range ROM cache, Dual-WS.
 - **`tools/` (Automated QA, Visual, Netem E2E & Release Smoke Gate):**
   - `npm test` — Runs `test_module_contracts.mjs`, `test_visual_accuracy.mjs`,
-    `test_coop_qa.mjs`, `test_net_diagnostics.mjs`, `test_real_roms.mjs`,
-    `test_perf_and_edge_cases.mjs`, 2-tab Chrome E2E `test_browser_e2e.mjs`,
-    240ms Pinggy Netem `test_real_life_smoothness.mjs` (`netem_proxy.mjs`), and
+    `test_coop_qa.mjs`, `test_real_roms.mjs`, `test_perf_and_edge_cases.mjs`,
+    `test_tetris_real_life.mjs` (6-profile 2P Tetris controls/audio/spam),
+    2-tab Chrome E2E `test_browser_e2e.mjs` (Arcade/SNES/Sega + F5 reload),
+    240ms Pinggy Netem `test_real_life_smoothness.mjs`, and
     `verify_release_smoke.mjs` (`verify:release`).
   - `npm run check:style` — Verifies 80-char width and 350-line file limits.
 

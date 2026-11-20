@@ -132,14 +132,14 @@ export function runStage4AsymmetricDelay(romFiles, localRomsDir) {
   const engA = new NesNetplayEngine(nesA, {
     localPlayer: 1,
     online: true,
-    enableRiftPacing: true,
+    enableRiftPacing: false,
     inputDelayFrames: 4,
     sessionId: 'asym_delay_test'
   });
   const engB = new NesNetplayEngine(nesB, {
     localPlayer: 2,
     online: true,
-    enableRiftPacing: true,
+    enableRiftPacing: false,
     inputDelayFrames: 5,
     sessionId: 'asym_delay_test'
   });

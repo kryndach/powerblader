@@ -134,6 +134,7 @@ export function createRomSyncManager(state, ui, audio) {
     ui.setConsoleResolution(w, h);
 
     let audioSub = 0;
+    audio.resetBuffer?.();
     const onFrame = (fb) => ui.renderFrameToCanvas(fb);
     const onAudioSample = (l, r) => {
       const eff = state.holdTurboActive

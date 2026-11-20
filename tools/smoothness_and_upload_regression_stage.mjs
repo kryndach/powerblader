@@ -108,10 +108,10 @@ function testZeroDelayHighRttNoStalls(localDir) {
   const n1 = new jsnes.NES({}), n2 = new jsnes.NES({});
   n1.loadROM(bin); n2.loadROM(bin);
   const e1 = new NesNetplayEngine(n1, {
-    localPlayer: 1, online: true, inputDelayFrames: 0, enableRiftPacing: true
+    localPlayer: 1, online: true, inputDelayFrames: 0, enableRiftPacing: false
   });
   const e2 = new NesNetplayEngine(n2, {
-    localPlayer: 2, online: true, inputDelayFrames: 0, enableRiftPacing: true
+    localPlayer: 2, online: true, inputDelayFrames: 0, enableRiftPacing: false
   });
 
   const q12 = [], q21 = [];

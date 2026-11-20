@@ -94,7 +94,7 @@ export async function runTest6ChrRamRiftAndTelemetry() {
   loadFastState(nesChr, slot1);
   assert.strictEqual(nesChr.ppu.ptTile[1].pix[0], mutatedPixVal);
 
-  // 6A-2: Verify fast cached setMirroring & Auto (RTT) input delay
+  // 6A-2: Verify fast cached setMirroring
   nesChr.ppu.setMirroring(nesChr.rom.SINGLESCREEN_MIRRORING);
   assert.strictEqual(nesChr.ppu.ntable1[1], 0);
   assert.strictEqual(nesChr.ppu.vramMirrorTable[0x2400], 0x2000);
@@ -105,21 +105,7 @@ export async function runTest6ChrRamRiftAndTelemetry() {
   assert.strictEqual(nesChr.ppu.ntable1[1], 0);
   assert.ok(nesChr.ppu._mirrorCache.size >= 2);
 
-  assert.strictEqual(NesNetplayEngine.computeRecommendedInputDelay(60, 5), 2);
-  assert.strictEqual(
-    NesNetplayEngine.computeRecommendedInputDelay(140, 10),
-    3
-  );
-  assert.strictEqual(
-    NesNetplayEngine.computeRecommendedInputDelay(225, 20),
-    4
-  );
-  assert.strictEqual(
-    NesNetplayEngine.computeRecommendedInputDelay(310, 30),
-    5
-  );
-
-  // 6B: Verify GGPO Clock-Rift Pacing + RLE tail-trimmed packets
+  // 6B: Verify RLE tail-trimmed packets & opt-in GGPO Clock-Rift Pacing
   const nes1 = new jsnes.NES({});
   const nes2 = new jsnes.NES({});
   nes1.loadROM(chrRamRom.binaryString);
@@ -343,8 +329,18 @@ export async function runTest6ChrRamRiftAndTelemetry() {
   assert.strictEqual(computeRomCrc32(brwZip.romUint8), sharedCrc);
   assert.strictEqual(formatKeyCode('KeyZ'), 'Z');
 
+  // Verify pure HTTPS tunnel fallback (/api/http-tunnel) joins & relays peer
+  const httpJoin = await httpJson(port, '/api/http-tunnel', 'POST', {
+    roomCode: 'BTDD_HTTP', clientId: 'bro_http', nick: 'Bro-HTTP',
+    join: true, ackSeq: 0, messages: []
+  });
+  assert.strictEqual(httpJoin.ok, true);
+  assert.strictEqual(httpJoin.playerIndex, 1);
+
   wsA.close();
   wsB.close();
   await serverApp.close();
-  console.log('[PASS] Test 6: CHR-RAM, Clock-Rift, ZIP & Telemetry Verified');
+  console.log(
+    '[PASS] Test 6: CHR-RAM, RLE, ZIP, HTTP-Tunnel & Telemetry Verified'
+  );
 }

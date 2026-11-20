@@ -1,8 +1,9 @@
 // Dynamic Rate Control (DRC) Fractional Audio Resampler & Volume Controller
 const AUDIO_BUFFER_MASK = 8191;
-const AUDIO_PREBUFFER_SAMPLES = 1800;
-const AUDIO_TARGET_SAMPLES = 2400;
-const AUDIO_MAX_QUEUED_SAMPLES = 5200;
+const AUDIO_BLOCK_SIZE = 1024;
+const AUDIO_PREBUFFER_SAMPLES = 2800;
+const AUDIO_TARGET_SAMPLES = 3200;
+const AUDIO_MAX_QUEUED_SAMPLES = 6400;
 
 export function createAudioDrcEngine(
   { muteBtn, volumeSlider, volumeValLabel }
@@ -33,6 +34,10 @@ export function createAudioDrcEngine(
   let audioFadeInSamples = 0;
   let lastAudioSampleL = 0;
   let lastAudioSampleR = 0;
+  const stats = {
+    underruns: 0, overflows: 0, samplesPushed: 0, samplesOut: 0,
+    minStepRate: 1, maxStepRate: 1, energySum: 0, maxJump: 0
+  };
 
   function initAudio() {
     if (audioCtx) {
@@ -47,7 +52,7 @@ export function createAudioDrcEngine(
     } catch {
       audioCtx = new AudioContextClass();
     }
-    audioScriptNode = audioCtx.createScriptProcessor(2048, 0, 2);
+    audioScriptNode = audioCtx.createScriptProcessor(AUDIO_BLOCK_SIZE, 0, 2);
     audioScriptNode.onaudioprocess = (e) => {
       const outL = e.outputBuffer.getChannelData(0);
       const outR = e.outputBuffer.getChannelData(1);
@@ -84,14 +89,18 @@ export function createAudioDrcEngine(
         }
       }
 
-      const diff = queuedAtStart - AUDIO_TARGET_SAMPLES;
-      let stepRate = 1.0 + (diff / AUDIO_TARGET_SAMPLES) * 0.045;
-      if (queuedAtStart < 1200) {
-        stepRate = Math.max(0.82, (queuedAtStart / 1200) * 0.96);
+      const midQueue = queuedAtStart - (outL.length >> 1);
+      const diff = midQueue - AUDIO_TARGET_SAMPLES;
+      let stepRate = 1.0 + (diff / AUDIO_TARGET_SAMPLES) * 0.03;
+      if (queuedAtStart < outL.length + 400) {
+        stepRate = Math.max(0.88, (queuedAtStart / (outL.length + 400)) * 0.97);
       } else {
-        stepRate = Math.max(0.95, Math.min(1.05, stepRate));
+        stepRate = Math.max(0.97, Math.min(1.03, stepRate));
       }
+      if (stepRate < stats.minStepRate) stats.minStepRate = stepRate;
+      if (stepRate > stats.maxStepRate) stats.maxStepRate = stepRate;
 
+      let hitUnderrun = false;
       for (let i = 0; i < outL.length; i++) {
         const q = (audioWritePtr - audioReadPtr) & AUDIO_BUFFER_MASK;
         if (q > 1) {
@@ -110,6 +119,10 @@ export function createAudioDrcEngine(
             sR = lastAudioSampleR * (1 - fade) + sR * fade;
             audioFadeInSamples--;
           }
+          const jump = Math.abs(sL - lastAudioSampleL);
+          if (jump > stats.maxJump) stats.maxJump = jump;
+          stats.energySum += sL * sL;
+          stats.samplesOut++;
           lastAudioSampleL = sL;
           lastAudioSampleR = sR;
           outL[i] = sL;
@@ -123,6 +136,7 @@ export function createAudioDrcEngine(
             audioReadFrac -= adv;
           }
         } else {
+          if (!hitUnderrun) { stats.underruns++; hitUnderrun = true; }
           audioBuffering = true;
           audioReadFrac = 0;
           lastAudioSampleL *= 0.985;
@@ -136,8 +150,10 @@ export function createAudioDrcEngine(
   }
 
   function pushSample(l, r) {
+    stats.samplesPushed++;
     const queued = (audioWritePtr - audioReadPtr) & AUDIO_BUFFER_MASK;
     if (queued >= AUDIO_MAX_QUEUED_SAMPLES) {
+      stats.overflows++;
       audioReadPtr =
         (audioWritePtr - AUDIO_TARGET_SAMPLES) & AUDIO_BUFFER_MASK;
       audioReadFrac = 0;
@@ -149,6 +165,21 @@ export function createAudioDrcEngine(
       audioRingR[audioWritePtr] = r;
       audioWritePtr = next;
     }
+  }
+
+  function resetBuffer() {
+    audioReadPtr = audioWritePtr;
+    audioReadFrac = 0;
+    audioBuffering = true;
+    audioFadeInSamples = 64;
+  }
+
+  function getStats() {
+    const rms = stats.samplesOut > 0
+      ? Math.sqrt(stats.energySum / stats.samplesOut) : 0;
+    const queued = (audioWritePtr - audioReadPtr) & AUDIO_BUFFER_MASK;
+    const sampleRate = audioCtx ? audioCtx.sampleRate : 0;
+    return { ...stats, rms, queued, sampleRate, buffering: audioBuffering };
   }
 
   function updateAudioControlsUI() {
@@ -191,5 +222,5 @@ export function createAudioDrcEngine(
     window.addEventListener('pointerdown', () => initAudio(), { once: true });
   }
 
-  return { initAudio, pushSample };
+  return { initAudio, pushSample, resetBuffer, getStats };
 }

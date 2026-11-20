@@ -290,7 +290,7 @@ export async function runTest9RealArcadeAndSnesSgRuRollback(localDir, minZip) {
   arcRes = null;
 
   const snesDir = path.join(localDir, 'snes');
-  let snesLabel = 'Skipped';
+  let snesLabel = 'Skipped', snesRealCore = null;
   if (fs.existsSync(snesDir) && fs.readdirSync(snesDir).length > 0) {
     const sf = fs.readdirSync(snesDir).find((f) => f.endsWith('.zip'));
     if (sf) {
@@ -302,6 +302,7 @@ export async function runTest9RealArcadeAndSnesSgRuRollback(localDir, minZip) {
       assert.strictEqual(sRes.e1.desyncCount + sRes.e2.desyncCount, 0);
       assert.strictEqual(s1.computeHash(), s2.computeHash());
       snesLabel = `${romName} (p95=${sRes.p95.toFixed(2)}ms)`;
+      snesRealCore = s1;
     }
   }
   const p95Str = p95Val.toFixed(2);
@@ -310,5 +311,5 @@ export async function runTest9RealArcadeAndSnesSgRuRollback(localDir, minZip) {
       `(RB=${rb}, 0 Desyncs, p95=${p95Str}ms) & SNES ${snesLabel}`
   );
   await runTest11SmoothnessDedupAndUploadResilience(localDir);
-  return a1;
+  return { arcCore: a1, snesRealCore };
 }

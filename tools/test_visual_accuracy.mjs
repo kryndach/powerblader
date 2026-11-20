@@ -7,7 +7,10 @@ import * as jsnesMod from 'jsnes';
 import {
   patchJsnes8x16Sprites, setNesOverclockEnabled
 } from '../src/jsnes_ppu_patches.mjs';
-import { NesNetplayEngine, INPUT_BITS } from '../src/netplay_engine.mjs';
+import {
+  NesNetplayEngine, INPUT_BITS, computeRomCrc32
+} from '../src/netplay_engine.mjs';
+import { resolveSaveSlotPath } from './tetris_scenarios.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -211,21 +214,67 @@ function testOverflow12SpritesPerScanlineAllVisible() {
   );
 }
 
-function testPowerBlade2HudSplitZeroJitter() {
-  const romBin = findRom('power blade');
-  if (!romBin) return;
-  let lastFb = null;
-  const nes = new jsnes.NES({ onFrame: (fb) => { lastFb = fb.slice(); } });
-  nes.loadROM(romBin);
-  patchJsnes8x16Sprites(nes);
-
-  let hudSplitsOk = 0;
-  for (let f = 0; f < 160; f++) {
-    nes.controllers[1].state[3] = f >= 20 && f < 25 ? 0x41 : 0x40;
-    nes.frame();
-    if (f >= 40 && lastFb) hudSplitsOk++;
+function testTmnt3RealHudAndBattletoadsStage1Visuals() {
+  const tmntBin = findRom('turtles');
+  if (tmntBin) {
+    const crc = computeRomCrc32(Buffer.from(tmntBin, 'binary'));
+    const savePath = resolveSaveSlotPath(ROOT_DIR, crc, 1);
+    if (savePath) {
+      let fb = null;
+      const nes = new jsnes.NES({ onFrame: (b) => { fb = b.slice(); } });
+      nes.loadROM(tmntBin);
+      patchJsnes8x16Sprites(nes);
+      const eng = new NesNetplayEngine(nes, { localPlayer: 1, online: false });
+      const saveObj = JSON.parse(fs.readFileSync(savePath, 'utf8'));
+      eng.importSyncState(saveObj.syncState);
+      let hudBroken = 0;
+      for (let f = 0; f < 90; f++) {
+        const m1 = (f % 16 < 8 ? INPUT_BITS.RIGHT : INPUT_BITS.LEFT) |
+          (f % 12 < 3 ? INPUT_BITS.B : 0);
+        eng.stepNetplayFrame(m1, INPUT_BITS.RIGHT);
+        let hudNonBlack = 0;
+        for (let y = 200; y < 230; y++) {
+          for (let x = 20; x < 236; x++) {
+            if ((fb[y * 256 + x] & 0xffffff) !== 0) hudNonBlack++;
+          }
+        }
+        if (hudNonBlack < 500) hudBroken++;
+      }
+      assert.strictEqual(
+        hudBroken, 0,
+        `TMNT3 real Stage 1 HUD vanished/corrupted on ${hudBroken}/90 frames`
+      );
+    }
   }
-  assert.strictEqual(hudSplitsOk, 120);
+
+  const btBin = findRom('battletoads');
+  if (!btBin) return;
+  const btCrc = computeRomCrc32(Buffer.from(btBin, 'binary'));
+  const btSave = resolveSaveSlotPath(ROOT_DIR, btCrc, 1);
+  if (!btSave) return;
+  let fb = null;
+  const nes = new jsnes.NES({ onFrame: (b) => { fb = b.slice(); } });
+  nes.loadROM(btBin);
+  patchJsnes8x16Sprites(nes);
+  const eng = new NesNetplayEngine(nes, { localPlayer: 1, online: false });
+  eng.importSyncState(JSON.parse(fs.readFileSync(btSave, 'utf8')).syncState);
+  let hudVanished = 0;
+  for (let f = 0; f < 90; f++) {
+    const m1 = (f % 10 < 5 ? INPUT_BITS.RIGHT : INPUT_BITS.LEFT) |
+      (f % 8 < 2 ? INPUT_BITS.B : 0);
+    eng.stepNetplayFrame(m1, INPUT_BITS.LEFT);
+    let topHudPx = 0;
+    for (let y = 16; y < 32; y++) {
+      for (let x = 16; x < 240; x++) {
+        if ((fb[y * 256 + x] & 0xffffff) !== 0) topHudPx++;
+      }
+    }
+    if (topHudPx < 300) hudVanished++;
+  }
+  assert.strictEqual(
+    hudVanished, 0,
+    `Battletoads Stage 1 HUD vanished on ${hudVanished}/90 gameplay frames`
+  );
 }
 
 export function runVisualAccuracySuite() {
@@ -234,10 +283,10 @@ export function runVisualAccuracySuite() {
   testBattletoadsCharacterSelectStability();
   testBattletoadsRollbackCrispPaletteNoFading();
   testOverflow12SpritesPerScanlineAllVisible();
-  testPowerBlade2HudSplitZeroJitter();
+  testTmnt3RealHudAndBattletoadsStage1Visuals();
   console.log(
-    '[PASS] Battletoads Title/CharSelect, Crisp Rollbacks, 12-Sprite ' +
-      'Overflow & Power Blade 2 Visual Gates Verified'
+    '[PASS] Battletoads Title/CharSelect/Stage1, Crisp Rollbacks, ' +
+      '12-Sprite Overflow & Real TMNT3 HUD Visual Gates Verified'
   );
 }
 

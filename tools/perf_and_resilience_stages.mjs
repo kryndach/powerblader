@@ -32,7 +32,10 @@ function httpRequest(urlStr, method = 'GET', bodyBuf = null, headers = {}) {
 }
 
 export async function runTest5ReconnectAndZombieEviction() {
-  const app = createCoopServer({ logAccess: false });
+  const tmpSaves = path.join(
+    (await import('os')).default.tmpdir(), `nes_saves_${Date.now()}`
+  );
+  const app = createCoopServer({ logAccess: false, savesDir: tmpSaves });
   const port = await app.listen(0, '127.0.0.1');
   const wsUrl = `ws://127.0.0.1:${port}/ws`;
 
@@ -157,9 +160,7 @@ export async function runTest5ReconnectAndZombieEviction() {
     const gotSaveJson = JSON.parse(getSave.body.toString('utf8'));
     assert.strictEqual(gotSaveJson.ok, true);
     assert.strictEqual(gotSaveJson.entry.frame, 300);
-    try {
-      fs.unlinkSync(path.resolve('local', 'saves', 'TESTCRC1_slot_1.json'));
-    } catch {}
+    try { fs.rmSync(tmpSaves, { recursive: true, force: true }); } catch {}
 
     ws1.close();
     ws2F5.close();
@@ -203,18 +204,31 @@ export function runTest6AudioDrcAndDeclick() {
       });
     };
 
-    // 1. Pre-buffer silence (< 2400 samples) then smooth fade-in (>= 2400)
+    // 1. Pre-buffer silence (< 2800 samples) then smooth fade-in (>= 2800)
     for (let i = 0; i < 1000; i++) drc.pushSample(0.5, -0.5);
     pullBlock();
     assert.strictEqual(outL[512], 0);
 
-    for (let i = 0; i < 1600; i++) drc.pushSample(0.5, -0.5);
+    for (let i = 0; i < 2000; i++) drc.pushSample(0.5, -0.5);
     pullBlock();
     assert.ok(Math.abs(outL[0]) < Math.abs(outL[63]), '64-sample fade-in');
 
-    // 2. Jittery network bursts + overflow clamp (> 5200 samples)
+    // Verify steady 60Hz 48kHz streaming has 0 underruns and 0 overflows
+    const u0 = drc.getStats().underruns;
+    let clk = 0;
+    for (let f = 0; f < 120; f++) {
+      for (let i = 0; i < 800; i++) {
+        const s = Math.sin((f * 800 + i) * 0.05) * 0.5;
+        drc.pushSample(s, s);
+      }
+      clk += 800;
+      while (clk >= 1024) { clk -= 1024; pullBlock(); }
+    }
+    assert.strictEqual(drc.getStats().underruns, u0, '60Hz audio underran!');
+
+    // 2. Jittery network bursts + overflow clamp (> 6400 samples)
     for (let tick = 0; tick < 20; tick++) {
-      const burst = tick % 3 === 0 ? 450 : tick === 10 ? 6500 : 1100;
+      const burst = tick % 3 === 0 ? 450 : tick === 10 ? 7000 : 1100;
       for (let i = 0; i < burst; i++) {
         const s = Math.sin((tick * 800 + i) * 0.05) * 0.6;
         drc.pushSample(s, s);
