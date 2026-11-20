@@ -295,20 +295,24 @@ async function main() {
 
   testBlackoutAndOutOfOrderBurst(nesBin);
   testRingWrapAndTurboTransitions(nesBin);
-  const { snesCore } = await testSnesAndArcadePreSyncRollback();
   await testHttpGzipRomAndWasmTransfer();
   await runTest5ReconnectAndZombieEviction();
   runTest6AudioDrcAndDeclick();
   runTest8MidGameLobbyPopupAndDelayGuard();
+  await runTest10PinggyTransferAndZeroUploadGate();
+  await testSnesAndArcadePreSyncRollback();
   const { arcCore, snesRealCore } = await runTest9RealArcadeAndSnesSgRuRollback(
     LOCAL_DIR, createMinimalArcadeTestZip()
   );
-  await runTest10PinggyTransferAndZeroUploadGate();
   console.log(
     '\n--- Multi-Console Zero-GC & 60 FPS (16.67ms) Frame-Budget Benchmarks ---'
   );
   const nesCore = new jsnes.NES({}); nesCore.loadROM(nesBin);
   benchmarkAndVerifyZeroGc('NES (TMNT III)', nesCore, true, 240);
+  if (snesRealCore) {
+    benchmarkAndVerifyZeroGc('SNES (Real ROM)', snesRealCore, false, 30);
+  }
+  benchmarkAndVerifyZeroGc('Arcade (FBNeo TGM2+)', arcCore, false, 30);
   const segaDir = path.join(LOCAL_DIR, 'sega');
   if (fs.existsSync(segaDir) && fs.readdirSync(segaDir).length > 0) {
     const f = fs.readdirSync(segaDir)[0];
@@ -317,11 +321,6 @@ async function main() {
     const segaCore = await createSegaGpgxCore({ romBytes, romName });
     benchmarkAndVerifyZeroGc('Sega MD (Sonic 3&K)', segaCore, false, 180);
   }
-  benchmarkAndVerifyZeroGc(
-    snesRealCore ? 'SNES (Real ROM)' : 'SNES (Snes9x WASM)',
-    snesRealCore || snesCore, false, 30
-  );
-  benchmarkAndVerifyZeroGc('Arcade (FBNeo TGM2+)', arcCore, false, 30);
   console.log('\nALL 10 EDGE-CASE & ZERO-GC BENCHMARK GATES PASSED!');
 }
 
