@@ -20,6 +20,11 @@ import {
   isCpuInTightWaitLoop, setNesOverclockEnabled
 } from '../src/ppu_sprite_and_overclock.mjs';
 import { extractRomFromFile } from '../server/archive_extractor.mjs';
+import { RollbackNetplayEngine } from '../src/netplay_engine.mjs';
+import {
+  createShadowWorkerController
+} from '../src/shadow_rollback_worker_core.mjs';
+import { createShadowRollbackHost } from '../src/shadow_rollback_host.mjs';
 
 function testSessionStoreContracts() {
   const st = createConsoleState();
@@ -156,20 +161,111 @@ function testOverclockWaitLoopContract() {
   assert.strictEqual(mock.ppu._hasTightWaitLoop, false);
 }
 
-export function runModuleContractSuite() {
+function createMockArcadeCore() {
+  let acc = 0x12345678, stepCnt = 0;
+  const fb = new Uint32Array(16);
+  const saveBytes = () => {
+    const b = new Uint8Array(8);
+    new DataView(b.buffer).setUint32(0, acc >>> 0, true);
+    new DataView(b.buffer).setUint32(4, stepCnt >>> 0, true);
+    return b;
+  };
+  return {
+    systemId: 'arcade', width: 4, height: 4, opts: {},
+    stepFrame(p1, p2) {
+      stepCnt++;
+      acc = (Math.imul(acc, 31) + p1 * 17 + p2 * 29 + stepCnt) >>> 0;
+      fb[0] = acc;
+    },
+    getFrameBuffer: () => fb,
+    saveStateBytes: saveBytes,
+    loadStateBytes(bytes) {
+      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      acc = dv.getUint32(0, true);
+      stepCnt = dv.getUint32(4, true);
+    },
+    computeHash: () => acc >>> 0,
+    getWasmModule: () => ({}),
+    getRomBytes: () => new Uint8Array(4),
+    getRomName: () => 'mock.zip'
+  };
+}
+
+async function testShadowRollbackContracts() {
+  const cShadow = createMockArcadeCore(), cSync = createMockArcadeCore();
+  const e1 = new RollbackNetplayEngine(cShadow, {
+    localPlayer: 1, online: true, inputDelayFrames: 0
+  });
+  const e2 = new RollbackNetplayEngine(cSync, {
+    localPlayer: 2, online: true, inputDelayFrames: 0
+  });
+  let onHostMsg = null;
+  const ctrl = createShadowWorkerController(
+    (msg) => setTimeout(() => onHostMsg?.(msg), 0),
+    { coreFactory: async () => createMockArcadeCore(), chunkFrames: 2 }
+  );
+  const host = createShadowRollbackHost(cShadow, {
+    transport: {
+      onMessage: (fn) => { onHostMsg = fn; },
+      postMessage: (m) => setTimeout(() => ctrl.handleMessage(m), 0),
+      terminate: () => {}
+    }
+  });
+  e1.attachShadowRollback(host);
+  assert.strictEqual(await host.waitUntilSynced(2000), true);
+
+  const q12 = [], q21 = [];
+  for (let f = 0; f < 75; f++) {
+    while (q12.length && q12[0].at <= f) {
+      e2.receiveRemoteInputPacket(q12.shift().p);
+    }
+    while (q21.length && q21[0].at <= f) {
+      e1.receiveRemoteInputPacket(q21.shift().p);
+    }
+    const r1 = e1.stepNetplayFrame((f % 5) === 0 ? 1 : 0);
+    const r2 = e2.stepNetplayFrame((f % 7) === 0 ? 2 : 0);
+    if (r1.packetToSend) q12.push({ at: f + 6, p: r1.packetToSend });
+    if (r2.packetToSend) q21.push({ at: f + 6, p: r2.packetToSend });
+    await new Promise((r) => setTimeout(r, 2));
+  }
+  while (q12.length) e2.receiveRemoteInputPacket(q12.shift().p);
+  while (q21.length) e1.receiveRemoteInputPacket(q21.shift().p);
+  for (let i = 0; i < 6; i++) {
+    const r1 = e1.stepNetplayFrame(0), r2 = e2.stepNetplayFrame(0);
+    if (r1.packetToSend) e2.receiveRemoteInputPacket(r1.packetToSend);
+    if (r2.packetToSend) e1.receiveRemoteInputPacket(r2.packetToSend);
+    await host.flush(e1, 2000);
+  }
+  assert.strictEqual(e1.desyncCount + e2.desyncCount, 0, 'Shadow desynced');
+  assert.strictEqual(cShadow.computeHash(), cSync.computeHash(), 'Hash diff');
+  assert.strictEqual(e1.localHashes.get(30), e2.localHashes.get(30), '30f');
+  assert.strictEqual(e1.localHashes.get(60), e2.localHashes.get(60), '60f');
+  assert.ok(host.getStats().shadowSwaps > 0, 'Expected shadow swaps > 0');
+
+  // Verify resetTimeline bumps epoch and re-syncs cleanly without stale leaks
+  e1.resetTimeline(0, 'epoch2');
+  assert.strictEqual(await host.waitUntilSynced(2000), true);
+  e1.destroy();
+}
+
+export async function runModuleContractSuite() {
   console.log('=== SOLID Module Contract Test Suite ===\n');
   testSessionStoreContracts();
   testInputRouterDeduplicationContract();
   testRollbackDelayHysteresisAndWasmHelpers();
   testServerTelemetryRelayHandlers();
   testOverclockWaitLoopContract();
+  await testShadowRollbackContracts();
   console.log(
     '[PASS] SessionStore, InputRouter, RollbackPolicy, OverclockWait, ' +
-      'WasmLoader & TelemetryRelay Contracts Verified'
+      'ShadowRollback, WasmLoader & TelemetryRelay Contracts Verified'
   );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) ===
     fileURLToPath(import.meta.url)) {
-  runModuleContractSuite();
+  runModuleContractSuite().catch((err) => {
+    console.error('[FAIL] Module Contract Suite Failed:', err);
+    process.exit(1);
+  });
 }

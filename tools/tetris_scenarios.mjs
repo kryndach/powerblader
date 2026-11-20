@@ -126,6 +126,20 @@ export const TETRIS_NETWORK_PROFILES = [
     rttMs: 240, jitterMs: 25, lossPct: 1, clumpEveryMs: 1200, clumpHoldMs: 120,
     delay: 0, mode: 'spam', frames: 300,
     maxP95Ms: 60, maxFreezes: 16, maxUnderruns: 0
+  },
+  {
+    id: 'shadow_sgr_0f',
+    label: 'Shadow Worker (Core #2) SG-RU Clump 0f (240ms + 120ms clump)',
+    rttMs: 240, jitterMs: 25, lossPct: 0, clumpEveryMs: 1200, clumpHoldMs: 120,
+    delay: 0, mode: 'human', frames: 240, shadowWorker: true,
+    maxP95Ms: 16.0, maxFreezes: 0, maxUnderruns: 0
+  },
+  {
+    id: 'shadow_spam_0f',
+    label: 'Shadow Worker (Core #2) Rapid Button-Spam 0f (240ms + 1% loss)',
+    rttMs: 240, jitterMs: 25, lossPct: 1, clumpEveryMs: 1200, clumpHoldMs: 120,
+    delay: 0, mode: 'spam', frames: 180, shadowWorker: true,
+    maxP95Ms: 16.0, maxFreezes: 0, maxUnderruns: 0
   }
 ];
 

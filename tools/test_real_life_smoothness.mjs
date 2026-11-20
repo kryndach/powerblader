@@ -85,6 +85,7 @@ const STOP_PROBE_JS = `(() => {
   }
   const d = window.__rafDeltas.slice(5).sort((a, b) => a - b);
   const p95 = d[Math.floor(d.length * 0.95)] || 0;
+  const maxRaf = d[d.length - 1] || 0;
   const freezes = d.filter((x) => x > 50).length;
   const cur = typeof window.__nesAudioStats === 'function'
     ? window.__nesAudioStats() : { underruns: 0, overflows: 0 };
@@ -93,8 +94,13 @@ const STOP_PROBE_JS = `(() => {
     underruns: Math.max(0, (cur.underruns || 0) - (base.underruns || 0)),
     overflows: Math.max(0, (cur.overflows || 0) - (base.overflows || 0))
   };
+  const shadow = typeof window.__shadowStats === 'function'
+    ? window.__shadowStats() : null;
+  const vTxt = document.getElementById('dbgVerifiedFrame')?.textContent || '';
   return {
-    p95: Math.round(p95), freezes, audio,
+    p95: Math.round(p95), maxRaf: Math.round(maxRaf), rafCount: d.length,
+    freezes, audio, shadow,
+    verifiedFrame: Number(vTxt.replace(/[^0-9]/g, '') || 0),
     stepText: document.getElementById('dbgStepTime')?.textContent || '',
     ping: document.getElementById('pingBadge')?.textContent || '',
     desyncs: document.getElementById('dbgDesyncs')?.textContent || '0',
@@ -236,20 +242,18 @@ async function runNetemChromeSuite() {
         `AudioU=${m1.audio.underruns}, OC-Sync OK, 0 Desyncs`
     );
 
-    // 2. Live 2P Tetris (tgm2p.zip + save) in Real Chrome over 240ms Netem
+    // 2. Live 2P Tetris (tgm2p.zip + save) at 0f Delay over 240ms Pinggy Netem
     proxy.setProfile({ rttMs: 0, jitterMs: 0, kbpsCap: 0, clumpEveryMs: 0 });
-    const setDelay5 = `(() => {
-      const s = document.getElementById('topInputDelaySelect');
-      if (s) { s.value = '5'; s.dispatchEvent(new Event('change')); }
-    })()`;
-    await Promise.all([tab1.evaluate(setDelay5), tab2.evaluate(setDelay5)]);
     const tgmCrc = await selectRomAndStart(tab1, tab2, 'tgm2p', 'Tetris TGM2+');
     await loadSaveIntoTab1(tab1, tab2, tgmCrc, ['2AAB0722']);
+    await Promise.all([tab1.evaluate(setDelay0), tab2.evaluate(setDelay0)]);
+    await tab1.send('Page.bringToFront');
+    await sleep(400);
 
     proxy.resetStats();
     proxy.setProfile({
       rttMs: 240, jitterMs: 20, kbpsCap: 170,
-      clumpEveryMs: 1400, clumpHoldMs: 120
+      clumpEveryMs: 1200, clumpHoldMs: 120
     });
     const f1StartTgm = await tab1.evaluate(
       `Number(document.getElementById('dbgFrame')?.textContent || 0)`
@@ -257,33 +261,58 @@ async function runNetemChromeSuite() {
     const tgmP1 = ['ArrowLeft', null, 'KeyZ', 'KeyZ', 'ArrowDown'];
     const tgmP2 = ['ArrowRight', 'KeyX', null, 'KeyX', 'ArrowDown'];
     await Promise.all([
-      tab1.evaluate(buildProbeStartJs(tgmP1, 130)),
-      tab2.evaluate(buildProbeStartJs(tgmP2, 145))
+      tab1.evaluate(buildProbeStartJs(tgmP1, 120)),
+      tab2.evaluate(buildProbeStartJs(tgmP2, 110))
     ]);
-    await sleep(3200);
+    await sleep(3600);
     const [t1, t2] = await Promise.all([
       tab1.evaluate(STOP_PROBE_JS), tab2.evaluate(STOP_PROBE_JS)
     ]);
     const st2 = proxy.getStats();
-    const kb2 = Math.round((st2.bytesUp + st2.bytesDown) / 3.2 / 1024);
+    const kb2 = Math.round((st2.bytesUp + st2.bytesDown) / 3.6 / 1024);
 
-    assert.strictEqual(t1.desyncs, '0', 'Tetris Chrome P1 desynced on 240ms');
-    assert.strictEqual(t2.desyncs, '0', 'Tetris Chrome P2 desynced on 240ms');
+    assert.strictEqual(t1.desyncs, '0', 'Tetris 0f P1 desynced on 240ms');
+    assert.strictEqual(t2.desyncs, '0', 'Tetris 0f P2 desynced on 240ms');
     assert.ok(
-      t1.frame - f1StartTgm >= 110 && t2.frame - f1StartTgm >= 110,
-      `Tetris Chrome stalled: dF=${t1.frame - f1StartTgm}/` +
-        `${t2.frame - f1StartTgm}`
+      t1.frame - f1StartTgm >= 140 && t2.frame - f1StartTgm >= 140,
+      `Tetris 0f stalled: dF=${t1.frame - f1StartTgm}/${t2.frame - f1StartTgm}`
     );
     assert.ok(kb2 <= 65, `Tetris wire traffic bloated (${kb2} KB/s > 65)`);
-    assert.ok(t1.freezes <= 4, `Tetris Chrome had ${t1.freezes} >50ms freezes`);
-    assert.strictEqual(t1.audio.underruns, 0, 'Tetris Chrome Audio underrun!');
-    assert.strictEqual(t1.audio.overflows, 0, 'Tetris Chrome Audio overflow!');
+    assert.ok(
+      t1.rafCount >= 100,
+      `Expected foreground rAF samples >= 100, got ${t1.rafCount}`
+    );
+    assert.ok(
+      t1.p95 <= 24,
+      `Tetris 0f main-thread rAF p95=${t1.p95}ms (>24ms, max=${t1.maxRaf}ms)`
+    );
+    assert.strictEqual(
+      t1.freezes, 0,
+      `Tetris 0f had ${t1.freezes} >50ms freezes (maxRaf=${t1.maxRaf}ms)`
+    );
+    assert.strictEqual(t1.audio.underruns, 0, 'Tetris 0f Audio underrun!');
+    assert.strictEqual(t1.audio.overflows, 0, 'Tetris 0f Audio overflow!');
+    assert.ok(
+      t1.shadow?.ready && !t1.shadow.failed && t1.shadow.shadowSwaps > 0,
+      `Tab 1 Shadow Worker inactive: ${JSON.stringify(t1.shadow)}`
+    );
+    assert.ok(
+      t2.shadow?.ready && !t2.shadow.failed && t2.shadow.shadowSwaps > 0,
+      `Tab 2 Shadow Worker inactive: ${JSON.stringify(t2.shadow)}`
+    );
+    assert.ok(
+      t1.verifiedFrame > f1StartTgm && t2.verifiedFrame > f1StartTgm,
+      `Confirmed 30f hashes did not verify: ` +
+        `v1=${t1.verifiedFrame} v2=${t2.verifiedFrame} start=${f1StartTgm}`
+    );
     assert.strictEqual(tab1.exceptions.length, 0, tab1.exceptions.join('; '));
     assert.strictEqual(tab2.exceptions.length, 0, tab2.exceptions.join('; '));
     console.log(
-      `[PASS] 2/2 Real Chrome 240ms Live 2P Tetris (tgm2p): ${t1.ping}, ` +
-        `Wire=${kb2}KB/s, Step=${t1.stepText}, Freezes=${t1.freezes}, ` +
-        `AudioU/O=${t1.audio.underruns}/${t1.audio.overflows}, 0 Desyncs`
+      `[PASS] 2/2 Real Chrome 240ms Live 2P Tetris (0f Delay): ${t1.ping}, ` +
+        `Wire=${kb2}KB/s, rAF p95=${t1.p95}ms max=${t1.maxRaf}ms, ` +
+        `ShadowSwaps=${t1.shadow.shadowSwaps} (gap=${t1.shadow.avgGap}f), ` +
+        `Verified=#${t1.verifiedFrame}, AudioU/O=${t1.audio.underruns}/` +
+        `${t1.audio.overflows}, 0 Desyncs`
     );
     try { tab1.close(); tab2.close(); } catch {}
   } finally {

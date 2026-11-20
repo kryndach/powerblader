@@ -1,20 +1,38 @@
 // FinalBurn Neo (FBNeo) Deterministic Arcade WASM Core Adapter
 import { INPUT_BITS, crc32Bytes } from './crc32.mjs';
 import {
-  RGB565_TO_BGR24, listZipEntryNames, loadNodeVendorWasm,
-  createMinimalArcadeTestZip
+  RGB565_TO_BGR24, listZipEntryNames, loadNodeVendorFactory,
+  loadNodeVendorWasm, createMinimalArcadeTestZip
 } from './wasm_runtime_loader.mjs';
 
 export { createMinimalArcadeTestZip };
 
 let fbneoFactory = null, fbneoWasmModule = null, fbneoLoadPromise = null;
-export async function ensureFbneoRuntime(onProgress = null) {
+async function ensureFbneoFactoryOnly() {
+  if (fbneoFactory) return fbneoFactory;
+  if (!globalThis.process?.versions?.node) {
+    const ns = await import('/vendor/fbneo_arcade.js?v=3');
+    fbneoFactory = ns.default;
+  } else {
+    const { factory } = await loadNodeVendorFactory('fbneo_arcade');
+    fbneoFactory = factory;
+  }
+  return fbneoFactory;
+}
+export async function ensureFbneoRuntime(
+  onProgress = null, wasmModuleOverride = null
+) {
+  if (wasmModuleOverride) {
+    const factory = await ensureFbneoFactoryOnly();
+    fbneoWasmModule = wasmModuleOverride;
+    return { factory, wasmModule: wasmModuleOverride };
+  }
   if (fbneoFactory && fbneoWasmModule)
     return { factory: fbneoFactory, wasmModule: fbneoWasmModule };
   if (fbneoLoadPromise) return fbneoLoadPromise;
   fbneoLoadPromise = (async () => {
     onProgress?.(0, { pct: 0 });
-    if (typeof window !== 'undefined' && !globalThis.process?.versions?.node) {
+    if (!globalThis.process?.versions?.node) {
       const [ns, xfer] = await Promise.all([
         import('/vendor/fbneo_arcade.js?v=3'),
         import('/js/rom_fast_transfer.mjs')
@@ -76,9 +94,11 @@ export function detectFbneoDriver(romBytes, romName = 'tgm2p.zip') {
 }
 export async function createFbneoArcadeCore({
   romBytes, romName = 'tgm2p.zip', onFrame = null, onAudioSample = null,
-  onCoreProgress = null
+  onCoreProgress = null, wasmModuleOverride = null
 }) {
-  const { factory, wasmModule } = await ensureFbneoRuntime(onCoreProgress);
+  const { factory, wasmModule } = await ensureFbneoRuntime(
+    onCoreProgress, wasmModuleOverride
+  );
   const u8 = romBytes instanceof Uint8Array
     ? romBytes : new Uint8Array(romBytes);
   const driver = detectFbneoDriver(u8, romName);
@@ -282,5 +302,8 @@ export async function createFbneoArcadeCore({
   core._initialBootState = core.saveStateBytes();
   core.loadROM = () =>
     core._initialBootState && core.loadStateBytes(core._initialBootState);
+  core.getWasmModule = () => wasmModule;
+  core.getRomBytes = () => u8;
+  core.getRomName = () => romName;
   return core;
 }

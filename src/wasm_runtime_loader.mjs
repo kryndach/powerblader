@@ -37,9 +37,9 @@ export function listZipEntryNames(u8) {
   return names;
 }
 
-export async function loadNodeVendorWasm(baseFile) {
-  const [fs, path, url] = await Promise.all([
-    import('node:fs'), import('node:path'), import('node:url')
+export async function loadNodeVendorFactory(baseFile) {
+  const [path, url] = await Promise.all([
+    import('node:path'), import('node:url')
   ]);
   const vDir = path.resolve(
     path.dirname(url.fileURLToPath(import.meta.url)), '..', 'public/vendor'
@@ -47,10 +47,17 @@ export async function loadNodeVendorWasm(baseFile) {
   const ns = await import(
     url.pathToFileURL(path.join(vDir, `${baseFile}.js`)).href
   );
+  return { factory: ns.default, vDir, path };
+}
+
+export async function loadNodeVendorWasm(baseFile) {
+  const [fs, { factory, vDir, path }] = await Promise.all([
+    import('node:fs'), loadNodeVendorFactory(baseFile)
+  ]);
   const wasmBytes = new Uint8Array(
     fs.readFileSync(path.join(vDir, `${baseFile}.wasm`))
   );
-  return { factory: ns.default, wasmBytes };
+  return { factory, wasmBytes };
 }
 
 export function createMinimalArcadeTestZip() {

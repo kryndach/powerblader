@@ -14,6 +14,9 @@ import { startConsoleFrameLoop } from './frame_loop.mjs';
 import {
   createConsoleState, resetPeerSessionState
 } from './session_store.mjs';
+import {
+  createShadowRollbackHost
+} from '/src/shadow_rollback_host.mjs';
 
 const state = createConsoleState();
 
@@ -24,6 +27,8 @@ const audio = createAudioDrcEngine({
   volumeValLabel: ui.volumeValLabel
 });
 window.__nesAudioStats = () => audio.getStats();
+window.__shadowStats = () => state.engine?.shadowRollback?.getStats?.() || null;
+window.addEventListener('beforeunload', () => state.engine?.destroy?.());
 
 try {
   const savedDelay = localStorage.getItem('nes_input_delay');
@@ -41,6 +46,11 @@ const romSync = createRomSyncManager(state, ui, audio);
 const saveSlots = createSaveSlotsManager(state, ui, romSync);
 const keyBindings = createKeyBindingsManager(state, ui);
 const viewportCtrl = createViewportAndSpeedController(state, ui, romSync);
+state.onEngineCreated = () => {
+  if (state.engine?.systemId === 'arcade' && state.nes?.getWasmModule) {
+    state.engine.attachShadowRollback(createShadowRollbackHost(state.nes));
+  }
+};
 state.onRomLoaded = () => {
   viewportCtrl.applyOverclockToCore();
   saveSlots.updateSlotSelectLabels();

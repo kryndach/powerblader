@@ -49,6 +49,7 @@ export class RollbackNetplayEngine {
     this._smoothedDisplayBuffer = new Uint32Array(this._pixelCount);
     this.lastRollbackBlendAlpha = 0;
     this.suppressCallbacks = false;
+    this.shadowRollback = null;
     wrapNesNetplayCallbacks(this, this.nes);
     this.saveRing = new Array(this.saveBufferSize);
     for (let i = 0; i < this.saveBufferSize; i++) {
@@ -57,8 +58,20 @@ export class RollbackNetplayEngine {
     this.resetTimeline(0);
   }
 
+  attachShadowRollback(host) {
+    if (this.shadowRollback && this.shadowRollback !== host) {
+      this.shadowRollback.destroy?.();
+    }
+    this.shadowRollback = host || null;
+    this.shadowRollback?.attachEngine?.(this);
+  }
+  destroy() {
+    this.shadowRollback?.destroy?.();
+    this.shadowRollback = null;
+  }
   resetTimeline(startFrame = 0, newSessionId = null) {
     resetEngineTimeline(this, startFrame, newSessionId);
+    this.shadowRollback?.onTimelineReset?.(this);
   }
   static computeRecommendedInputDelay(rttMs, jitterMs, rxClump, curDelay) {
     return computeRecommendedInputDelay(rttMs, jitterMs, rxClump, curDelay);
@@ -109,6 +122,7 @@ export class RollbackNetplayEngine {
   }
   receiveRemoteInputPacket(packet, nowMs = performance.now()) {
     processRemoteInputPacket(this, packet, nowMs);
+    this.shadowRollback?.onRemoteInputsUpdated?.(this);
   }
   _buildInputPacket(latestScheduledFrame) {
     return buildNetplayInputPacket(this, latestScheduledFrame);
@@ -154,7 +168,14 @@ export class RollbackNetplayEngine {
     if (!this.online) {
       return this._stepOfflineFrame(localButtonsMask, p2LocalButtonsMask, t0);
     }
-    if (!options?.skipRollback) this._executeRollbackIfNeeded();
+    if (!options?.skipRollback) {
+      if (this.shadowRollback?.isReady(this)) {
+        this.shadowRollback.applyPendingAndRequestCatchup(this);
+      } else {
+        this._executeRollbackIfNeeded();
+        this.shadowRollback?.trySyncFromEngine?.(this);
+      }
+    }
     const turbo = Math.max(1, options?.turboSpeed || 1);
     const maxAhead = turbo > 1
       ? this.saveBufferSize - 6
@@ -198,11 +219,14 @@ export class RollbackNetplayEngine {
       );
     }
     const f = this.currentFrame, idx = f % this.historySize;
-    this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
-    if (this.systemId === 'arcade' && f > this.timelineStartFrame &&
-        f % 30 === 0) {
-      this.localHashes.set(f, this.core.computeHash());
-      this._cleanupOldHashes();
+    const useShadow = Boolean(this.shadowRollback?.isReady(this));
+    if (!useShadow) {
+      this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
+      if (this.systemId === 'arcade' && f > this.timelineStartFrame &&
+          f % 30 === 0) {
+        this.localHashes.set(f, this.core.computeHash());
+        this._cleanupOldHashes();
+      }
     }
     const p1Mask = this.getPlayerInput(1, f);
     const p2Mask = this.getPlayerInput(2, f);
@@ -211,6 +235,7 @@ export class RollbackNetplayEngine {
     this.suppressCallbacks = false;
     this.core.stepFrame(p1Mask, p2Mask, Boolean(options?.skipPacket));
     this.currentFrame++;
+    this.shadowRollback?.notifyFrameStepped?.(this);
     if (this.systemId !== 'arcade' && this.currentFrame % 30 === 0) {
       this.localHashes.set(this.currentFrame, this.core.computeHash());
       this._cleanupOldHashes();

@@ -103,7 +103,7 @@ export async function createCdpTab(debugPort, targetUrl) {
     return res.result?.value;
   };
 
-  return { ws, evaluate, exceptions, close: () => ws.close() };
+  return { ws, send, evaluate, exceptions, close: () => ws.close() };
 }
 
 export async function waitFor(fn, timeoutMs = 25000, label = 'condition') {

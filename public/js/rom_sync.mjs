@@ -176,16 +176,16 @@ export function createRomSyncManager(state, ui, audio) {
     const isOnline = Boolean(
       state.ws && state.ws.readyState === 1 && state.peerConnected
     );
+    state.engine?.destroy?.();
     state.engine = new NesNetplayEngine(state.nes, {
-      localPlayer: state.localPlayerIndex,
-      online: isOnline,
+      localPlayer: state.localPlayerIndex, online: isOnline,
       enableRiftPacing: false,
       inputDelayFrames: resolveDesiredInputDelay(sysId),
       maxRollbackFrames: sysId === 'arcade' ? 36 : 56,
       saveBufferSize: sysId === 'arcade' ? 48 : 64
     });
-
     if (isOnline) state.engine.syncPaused = true;
+    state.onEngineCreated?.();
 
     const shortName = state.romName.replace(
       /\.(nes|sfc|smc|fig|swc|md|gen|smd|bin|sms|gg|zip)$/i, ''
