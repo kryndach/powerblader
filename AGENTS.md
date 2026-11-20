@@ -34,10 +34,10 @@
     all `PLAY_NES_*.bat` launchers, real PowerShell 5.1 AST + 7-bit ASCII on
     `start_online.ps1`, 32-bit/64-bit OpenSSH binaries, and real child-process
     `server/relay_server.mjs` boot with zero `stderr`).
-  - **After merging to `master` (`...\Projects\NES_Online`):** ALWAYS run
-    `node tools/verify_release_smoke.mjs --live-tunnel` inside the main repo
-    main repo folder BEFORE telling the user a build is ready, confirming the
-    exact files the user launches start cleanly and allocate a live HTTPS URL.
+  - **After merging to `master` (`...\Projects\NES_Online`):** ALWAYS run BOTH
+    `npm test` AND `node tools/verify_release_smoke.mjs --live-tunnel` inside
+    the main repo folder BEFORE telling the user a build is ready, confirming
+    the exact user ROMs/files start cleanly, pass all tests, and open a tunnel.
 
 ## 2. Code Style & Clean Code Rules (Strictly Enforced)
 

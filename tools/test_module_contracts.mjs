@@ -1,7 +1,9 @@
 // Isolated SOLID Module Contract Tests (Store, Router, Rollback, WASM, Relay)
 import assert from 'assert';
-import { fileURLToPath } from 'url';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import {
   createConsoleState, resetPingWindow, resetPeerSessionState,
   clearActiveRomTransfers
@@ -14,6 +16,7 @@ import {
 import {
   handleAutotestReportWs, handleGameplayTelemetryWs
 } from '../server/telemetry_relay_handlers.mjs';
+import { extractRomFromFile } from '../server/archive_extractor.mjs';
 
 function testSessionStoreContracts() {
   const st = createConsoleState();
@@ -79,6 +82,27 @@ function testRollbackDelayHysteresisAndWasmHelpers() {
   assert.strictEqual(RGB565_TO_BGR24[0x001f], 0xff0000); // Pure blue RGB565
   const miniZip = createMinimalArcadeTestZip();
   assert.deepStrictEqual(listZipEntryNames(miniZip), ['d26-01.ic7']);
+
+  // Verify split arcade clone ZIP (tgm2p.zip) auto-merges sibling parent ZIP
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nes_arc_merge_'));
+  try {
+    const parentZip = Buffer.from(miniZip);
+    // Build a 1-entry child ZIP with a different filename ("1b.u22")
+    const childZip = Buffer.from(miniZip);
+    const nameOff = childZip.indexOf(Buffer.from('d26-01.ic7'));
+    childZip.write('1b.u22    ', nameOff, 10, 'utf8');
+    const cdOff = childZip.lastIndexOf(Buffer.from('d26-01.ic7'));
+    childZip.write('1b.u22    ', cdOff, 10, 'utf8');
+    fs.writeFileSync(path.join(tmp, 'tgm2.zip'), parentZip);
+    const childPath = path.join(tmp, 'tgm2p.zip');
+    fs.writeFileSync(childPath, childZip);
+    const merged = extractRomFromFile(childPath);
+    const names = listZipEntryNames(new Uint8Array(merged.romBuffer));
+    assert.ok(names.includes('d26-01.ic7'), 'Parent ZIP entry missing!');
+    assert.ok(names.some((n) => n.startsWith('1b.u22')), 'Child entry missing');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 function testServerTelemetryRelayHandlers() {

@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createFbneoArcadeCore } from '../src/fbneo_arcade_core.mjs';
 import { RollbackNetplayEngine, INPUT_BITS } from '../src/netplay_engine.mjs';
+import { extractRomFromFile } from '../server/archive_extractor.mjs';
 import { createCoopServer } from '../server/relay_server.mjs';
 import {
   sleep, findChromiumBinary, createCdpTab, waitFor, launchHeadlessBrowser
@@ -21,9 +22,10 @@ async function testArcadeTgm2pStreamingRollbackBudget() {
     console.log('[SKIP] local/arcade/tgm2p.zip not present');
     return;
   }
-  const romBytes = new Uint8Array(fs.readFileSync(romPath));
-  const c1 = await createFbneoArcadeCore({ romBytes, romName: 'tgm2p.zip' });
-  const cRef = await createFbneoArcadeCore({ romBytes, romName: 'tgm2p.zip' });
+  const ext = extractRomFromFile(romPath);
+  const romBytes = new Uint8Array(ext.romBuffer);
+  const c1 = await createFbneoArcadeCore({ romBytes, romName: ext.romName });
+  const cRef = await createFbneoArcadeCore({ romBytes, romName: ext.romName });
   let saveCallsInRollback = 0, inRbMeasure = false;
   const origSaveInto = c1.saveStateInto;
   c1.saveStateInto = function (...a) {
