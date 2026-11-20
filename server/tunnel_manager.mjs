@@ -1,42 +1,12 @@
 // Host-Side SSH Tunnel Prober, Auto-Route Selector & Live Route Switcher
 import { execFileSync, spawn } from 'child_process';
 import fs from 'fs';
-import net from 'net';
 import path from 'path';
+import {
+  TUNNEL_ROUTES, isLocalHostRequest, defaultProbeTcp, createCandidatePool
+} from './tunnel_candidates.mjs';
 
-export const TUNNEL_ROUTES = [
-  { id: 'auto', label: 'Auto (Best Ping)', isAuto: true },
-  {
-    id: 'sg1', label: 'SG-1 (139.162.21)', tunnel: 'pinggy', region: 'ap',
-    host: 'lin.ap.1.a.pinggy.click', preferDomain: 'pinggy-free.link',
-    autoCandidate: true, penaltyMs: 0
-  },
-  {
-    id: 'sg2', label: 'SG-2 (139.162.14)', tunnel: 'pinggy', region: 'ap',
-    host: 'lin.ap.2.a.pinggy.click', preferDomain: 'pinggy-free.link',
-    autoCandidate: true, penaltyMs: 0
-  },
-  {
-    id: 'sg3', label: 'SG-3 (139.162.8)', tunnel: 'pinggy', region: 'ap',
-    host: 'lin.ap.3.a.pinggy.click', preferDomain: 'pinggy-free.link',
-    autoCandidate: true, penaltyMs: 0
-  },
-  {
-    id: 'sg4_alt', label: 'SG-4 (.pinggy.net)', tunnel: 'pinggy', region: 'ap',
-    host: 'lin.ap.4.a.pinggy.click', preferDomain: 'free.pinggy.net',
-    autoCandidate: true, penaltyMs: 65
-  },
-  {
-    id: 'eu', label: 'Europe (Frankfurt)', tunnel: 'pinggy', region: 'eu',
-    host: 'eu.a.pinggy.io', preferDomain: 'pinggy-free.link',
-    autoCandidate: true, penaltyMs: 30
-  },
-  {
-    id: 'lhr', label: 'Backup (localhost.run)', tunnel: 'localhost.run',
-    region: 'us', host: 'localhost.run', preferDomain: 'lhr.life',
-    autoCandidate: false, penaltyMs: 220
-  }
-];
+export { TUNNEL_ROUTES, isLocalHostRequest };
 
 const URL_RE = new RegExp(
   'https://[a-zA-Z0-9.-]+\\.' +
@@ -45,38 +15,6 @@ const URL_RE = new RegExp(
   'g'
 );
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-export function isLocalHostRequest(req) {
-  const ip = String(req.socket?.remoteAddress || '');
-  const isLoop =
-    ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
-  if (!isLoop || req.headers['x-forwarded-for']) return false;
-  return /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(
-    String(req.headers.host || '')
-  );
-}
-
-function defaultProbeTcp(host, port = 443, timeoutMs = 1300) {
-  const once = () => new Promise((resolve) => {
-    const t0 = performance.now();
-    const sock = net.connect({ host, port });
-    let done = false;
-    const finish = (val) => {
-      if (done) return;
-      done = true;
-      sock.destroy();
-      resolve(val);
-    };
-    sock.setTimeout(timeoutMs, () => finish(null));
-    sock.once('connect', () =>
-      finish(Math.max(1, Math.round(performance.now() - t0)))
-    );
-    sock.once('error', () => finish(null));
-  });
-  return Promise.all([once(), once()]).then(([a, b]) =>
-    a !== null && b !== null ? Math.min(a, b) : (a ?? b)
-  );
-}
 
 export function resolveSshBin(name = 'ssh') {
   if (process.platform === 'win32') {
@@ -174,8 +112,48 @@ export function createTunnelManager(
   const logsDir = options.logsDir || path.join(rootDir, 'logs');
   const probeTcp = options.probeTcpFn || defaultProbeTcp;
   const customSpawn = options.spawnTunnelFn || null;
-  let activeHandle = null, stopped = false, switchSeq = 0;
-  let lastProbes = {};
+  let activeHandle = null, activeRouteObj = null, stopped = false;
+  let switchSeq = 0, lastProbes = {};
+
+  function applyActiveTunnel(route, handle, reqId) {
+    activeRouteObj = route;
+    activeHandle = handle;
+    Object.assign(tunnelInfo, {
+      tunnel: route.tunnel,
+      region: `${route.region} [${route.host}]`,
+      routeId: route.id,
+      requestedRouteId: reqId || tunnelInfo.requestedRouteId || route.id,
+      routeLabel: route.label,
+      rttMs: lastProbes[route.id] ?? null,
+      publicUrl: handle.publicUrl,
+      altUrl: handle.altUrl || null,
+      probes: { ...lastProbes },
+      switching: false,
+      updatedAt: new Date().toISOString()
+    });
+    options.onTunnelChanged?.(tunnelInfo);
+  }
+
+  function spawnRouteHandle(route, onDrop = null) {
+    const port = getLocalPort();
+    return customSpawn
+      ? customSpawn(route, port, logsDir, onDrop)
+      : defaultSpawnSshTunnel(
+        route, port, logsDir, onDrop, options.sshBin || null
+      );
+  }
+
+  const candidatePool = createCandidatePool({
+    getActive: () => ({ route: activeRouteObj, handle: activeHandle }),
+    setActive: (route, handle) => {
+      applyActiveTunnel(route, handle, tunnelInfo.requestedRouteId || 'auto');
+    },
+    spawnRoute: (route) => spawnRouteHandle(route, null),
+    getProbes: () => lastProbes,
+    routes: TUNNEL_ROUTES,
+    graceMs: options.candidateGraceMs,
+    ttlMs: options.candidateTtlMs
+  });
 
   async function probeAllRoutes() {
     const cands = TUNNEL_ROUTES.filter((r) => r.autoCandidate);
@@ -192,9 +170,11 @@ export function createTunnelManager(
   }
 
   function stopActive() {
+    candidatePool.cleanupAll();
     if (activeHandle) {
       try { activeHandle.kill?.(); } catch {}
       activeHandle = null;
+      activeRouteObj = null;
     }
   }
 
@@ -223,7 +203,6 @@ export function createTunnelManager(
     for (const route of tryList) {
       if (mySeq !== switchSeq || stopped) break;
       try {
-        const port = getLocalPort();
         const onDrop = () => {
           if (!stopped && mySeq === switchSeq) {
             setTimeout(() => {
@@ -231,26 +210,9 @@ export function createTunnelManager(
             }, 1500);
           }
         };
-        const h = customSpawn
-          ? await customSpawn(route, port, logsDir, onDrop)
-          : await defaultSpawnSshTunnel(
-            route, port, logsDir, onDrop, options.sshBin || null
-          );
+        const h = await spawnRouteHandle(route, onDrop);
         if (mySeq !== switchSeq || stopped) { h.kill?.(); break; }
-        activeHandle = h;
-        Object.assign(tunnelInfo, {
-          tunnel: route.tunnel,
-          region: `${route.region} [${route.host}]`,
-          routeId: route.id,
-          requestedRouteId: requestedId,
-          routeLabel: route.label,
-          rttMs: lastProbes[route.id] ?? null,
-          publicUrl: h.publicUrl,
-          altUrl: h.altUrl || null,
-          probes: { ...lastProbes },
-          switching: false,
-          updatedAt: new Date().toISOString()
-        });
+        applyActiveTunnel(route, h, requestedId);
         return tunnelInfo;
       } catch (e) {
         lastErr = e;
@@ -292,6 +254,23 @@ export function createTunnelManager(
     if (!isLocalHostRequest(req)) {
       return sendJson(res, 403, { ok: false, error: 'Host-only API' }, true);
     }
+    if (urlObj.pathname === '/api/tunnel-candidates' && req.method === 'POST') {
+      readJsonBody(req, res, 4096, (body) => {
+        candidatePool.openPool(Number(body.maxExtra) || 2)
+          .then((r) => sendJson(res, r.ok ? 200 : 400, r, true))
+          .catch((e) => sendJson(res, 502, { ok: false, error: e.message }));
+      });
+      return;
+    }
+    if (urlObj.pathname === '/api/tunnel-promote' && req.method === 'POST') {
+      readJsonBody(req, res, 4096, (body) => {
+        const r = candidatePool.promote(body.candId);
+        sendJson(
+          res, r.ok ? 200 : 400, { ...r, ...formatRoutesPayload() }, true
+        );
+      });
+      return;
+    }
     if (req.method === 'GET') {
       const p = urlObj.searchParams.get('probe') === '1'
         ? probeAllRoutes() : Promise.resolve();
@@ -312,6 +291,8 @@ export function createTunnelManager(
 
   return {
     activateRoute, probeAllRoutes, handleTunnelApi,
+    openCandidatePool: (n) => candidatePool.openPool(n),
+    promoteCandidate: (id) => candidatePool.promote(id),
     stop: () => { stopped = true; switchSeq++; stopActive(); }
   };
 }

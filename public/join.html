@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NES Online - Auto-Join Launcher</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; font-family: system-ui, -apple-system, sans-serif;
+      background: #0f1420; color: #e6edf7; min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .card {
+      width: min(460px, 92vw); background: #171f30; border-radius: 12px;
+      border: 1px solid #2b3854; padding: 22px; box-shadow: 0 12px 32px #0007;
+    }
+    h1 { margin: 0 0 6px; font-size: 1.2rem; color: #7cc4ff; }
+    .sub { margin: 0 0 14px; font-size: 0.85rem; color: #9ab0d0; }
+    .status {
+      padding: 10px 12px; border-radius: 8px; background: #101725;
+      border: 1px solid #2a3b5c; font-size: 0.88rem; margin-bottom: 12px;
+    }
+    .status.ok { border-color: #2f9e66; color: #8af5bc; }
+    .status.warn { border-color: #c28d2c; color: #ffd98a; }
+    .row { display: flex; gap: 8px; margin-bottom: 10px; }
+    input {
+      flex: 1; background: #0d131f; color: #e6edf7; border: 1px solid #304264;
+      border-radius: 6px; padding: 7px 10px; font-size: 0.88rem;
+    }
+    button {
+      background: #2b7cff; color: #fff; border: 0; border-radius: 6px;
+      padding: 8px 14px; font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: #3e8aff; }
+    .list { font-family: ui-monospace, monospace; font-size: 0.8rem; }
+    .item {
+      display: flex; justify-content: space-between; padding: 5px 8px;
+      border-bottom: 1px solid #233049;
+    }
+    details { margin-top: 12px; font-size: 0.8rem; color: #9ab0d0; }
+    summary { cursor: pointer; margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>NES Online &mdash; Permanent Auto-Join</h1>
+    <p class="sub">Finds Host automatically &amp; picks lowest-ping route.</p>
+    <div id="statusBox" class="status warn">Initializing relays...</div>
+    <div class="row">
+      <input id="nickInp" placeholder="Nickname" maxlength="14" />
+      <input id="roomInp" placeholder="Room" maxlength="12"
+        style="max-width:96px" />
+      <button id="retryBtn">Find Host</button>
+    </div>
+    <div id="routeList" class="list"></div>
+    <details>
+      <summary>Connection Settings (Secret &amp; Relays)</summary>
+      <div class="row">
+        <input id="secretInp" type="password" placeholder="Shared Secret" />
+      </div>
+      <div id="relayInfo" style="word-break:break-all;opacity:.8;"></div>
+    </details>
+  </div>
+<script>
+const EMBED_CFG = /*__NES_JOIN_CONFIG__*/null;
+const DEFAULT_RELAYS = [
+  'wss://relay.damus.io', 'wss://nos.lol',
+  'wss://relay.primal.net', 'wss://relay.snort.social'
+];
+const $ = (id) => document.getElementById(id);
+const qp = new URLSearchParams(location.search);
+const cfg = EMBED_CFG || {};
+const relays = Array.isArray(cfg.relays) && cfg.relays.length
+  ? cfg.relays : DEFAULT_RELAYS;
+
+$('nickInp').value =
+  qp.get('nick') || localStorage.getItem('nes_join_nick') || 'Bro';
+$('roomInp').value = (qp.get('room') || cfg.room || 'NOVA').toUpperCase();
+$('secretInp').value = qp.get('secret') || cfg.secret ||
+  localStorage.getItem('nes_join_secret') || '';
+$('relayInfo').textContent = 'Relays: ' + relays.join(', ');
+
+let sockets = [];
+let newestTs = 0;
+let probing = false;
+let pendingPayload = null;
+let redirected = false;
+
+function setStatus(txt, cls = 'warn') {
+  const el = $('statusBox');
+  el.textContent = txt;
+  el.className = 'status ' + cls;
+}
+
+async function sha256Bytes(text) {
+  const buf = new TextEncoder().encode(text);
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', buf));
+}
+
+function toHex(u8) {
+  return Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function decryptContent(b64, aesKey) {
+  const raw = b64ToBytes(b64);
+  if (raw.length < 29) throw new Error('short');
+  const iv = raw.subarray(0, 12);
+  const body = raw.subarray(12);
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, body);
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
+async function probeUrl(cand) {
+  const base = String(cand.url || '').replace(/\/+$/, '');
+  const times = [];
+  for (let i = 0; i < 4; i++) {
+    const ctrl = new AbortController();
+    const tmr = setTimeout(() => ctrl.abort(), 2800);
+    const t0 = performance.now();
+    try {
+      const rnd = Math.random().toString(36).slice(2);
+      const r = await fetch(
+        base + '/api/edge-ping?n=' + i + '&r=' + rnd,
+        { cache: 'no-store', mode: 'cors', signal: ctrl.signal }
+      );
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      await r.text();
+      times.push(Math.max(1, Math.round(performance.now() - t0)));
+    } catch {} finally { clearTimeout(tmr); }
+  }
+  const vals = times.length >= 2 ? times.slice(1) : times;
+  if (!vals.length) return { ...cand, ok: false, med: null };
+  vals.sort((a, b) => a - b);
+  return { ...cand, ok: true, med: vals[Math.floor(vals.length / 2)] };
+}
+
+function renderList(rows) {
+  $('routeList').innerHTML = rows.map((r) =>
+    '<div class="item"><span>' + (r.label || r.id) + '</span><span>' +
+    (r.ok ? r.med + ' ms' : 'offline') + '</span></div>'
+  ).join('');
+}
+
+async function handleBeaconPayload(payload) {
+  if (redirected) return;
+  if (probing) { pendingPayload = payload; return; }
+  const cands = Array.isArray(payload?.candidates) ? payload.candidates : [];
+  if (!cands.length) return;
+  probing = true;
+  setStatus('Found Host! Probing ' + cands.length + ' URLs...', 'warn');
+  const rows = await Promise.all(cands.map(probeUrl));
+  probing = false;
+  renderList(rows);
+  const live = rows.filter((r) => r.ok).sort((a, b) => a.med - b.med);
+  if (!live.length) {
+    if (pendingPayload) {
+      const next = pendingPayload;
+      pendingPayload = null;
+      return handleBeaconPayload(next);
+    }
+    setStatus('Host offline — waiting automatically for Host...', 'warn');
+    return;
+  }
+  const win = live[0];
+  redirected = true;
+  closeSockets();
+  const nick = ($('nickInp').value || 'Bro').trim().slice(0, 14);
+  const rawRoom = $('roomInp').value || payload.room || 'NOVA';
+  const room = rawRoom.trim().toUpperCase();
+  try { localStorage.setItem('nes_join_nick', nick); } catch {}
+  const base = win.url.replace(/\/+$/, '');
+  const u = new URL(base + '/');
+  u.searchParams.set('room', room);
+  u.searchParams.set('nick', nick);
+  const edgeIds = cands.map((c) => String(c.id).replace(/__alt$/, ''));
+  if (new Set(edgeIds).size >= 2) u.searchParams.set('optimized', '1');
+  setStatus('Connecting via ' + win.label + ' (' + win.med + ' ms)...', 'ok');
+  window.__joinWinnerUrl = u.toString();
+  if (qp.get('noRedirect') !== '1') {
+    setTimeout(() => { window.location.replace(u.toString()); }, 200);
+  }
+}
+
+function closeSockets() {
+  for (const ws of sockets) { try { ws.close(); } catch {} }
+  sockets = [];
+}
+
+async function startDiscovery() {
+  closeSockets();
+  redirected = false;
+  newestTs = 0;
+  const secret = ($('secretInp').value || '').trim();
+  if (secret.length < 8) {
+    setStatus('Enter the Shared Secret from Host (or use Join File).', 'warn');
+    return;
+  }
+  try { localStorage.setItem('nes_join_secret', secret); } catch {}
+  const aesRaw = await sha256Bytes('nes_online_aes_v1:' + secret);
+  const aesKey = await crypto.subtle.importKey(
+    'raw', aesRaw, 'AES-GCM', false, ['decrypt']
+  );
+  const dTagBytes = await sha256Bytes('nes_online_dtag_v1:' + secret);
+  const dTag = toHex(dTagBytes).slice(0, 24);
+  const filter = { kinds: [30078], '#d': [dTag], limit: 2 };
+  if (cfg.pubkey && secret === cfg.secret) filter.authors = [cfg.pubkey];
+
+  setStatus('Listening on ' + relays.length + ' P2P relays...', 'warn');
+  let openCount = 0;
+  for (const rUrl of relays) {
+    try {
+      const ws = new WebSocket(rUrl);
+      sockets.push(ws);
+      ws.onopen = () => {
+        openCount++;
+        ws.send(JSON.stringify(['REQ', 'nes_' + openCount, filter]));
+      };
+      ws.onmessage = async (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg[0] !== 'EVENT' || !msg[2]?.content) return;
+          const payload = await decryptContent(msg[2].content, aesKey);
+          const pTs = Number(payload?.ts || (msg[2].created_at || 0) * 1000);
+          if (pTs <= newestTs) return;
+          newestTs = pTs;
+          await handleBeaconPayload(payload);
+        } catch {}
+      };
+    } catch {}
+  }
+}
+
+$('retryBtn').addEventListener('click', startDiscovery);
+startDiscovery();
+</script>
+</body>
+</html>

@@ -10,6 +10,7 @@ import { createKeyBindingsManager } from './key_bindings.mjs';
 import { createViewportAndSpeedController } from './viewport_and_speed.mjs';
 import { setupRomDropAndPicker } from './rom_archive.mjs';
 import { setupHostTunnelController } from './tunnel_ui.mjs';
+import { createRouteOptimizer } from './route_optimizer.mjs';
 import { startConsoleFrameLoop } from './frame_loop.mjs';
 import {
   createConsoleState, resetPeerSessionState
@@ -109,7 +110,8 @@ function connectToRoom() {
         nick,
         romCrc32: state.romCrc32,
         romName: state.romName,
-        isAutoDefaultRom: state.isAutoDefaultRom
+        isAutoDefaultRom: state.isAutoDefaultRom,
+        routeOptimized: Boolean(state.routeOptimizer?.isClientOptimized?.())
       })
     );
   };
@@ -140,7 +142,11 @@ function connectToRoom() {
 }
 
 ui.connectBtn.addEventListener('click', connectToRoom);
-setupHostTunnelController(state, ui);
+const tunnelCtrl = setupHostTunnelController(state, ui, {
+  onOptimizeRoute: () =>
+    state.routeOptimizer?.triggerOptimization({ auto: false })
+});
+state.routeOptimizer = createRouteOptimizer(state, ui, tunnelCtrl);
 
 ui.resetBtn.addEventListener('click', () => {
   if (!state.nes || !state.engine) return;

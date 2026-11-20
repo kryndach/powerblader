@@ -94,6 +94,7 @@ export function createProtocolHandlers(
       state.peerNick = partner.nick || `Player ${partner.playerIndex}`;
       state.partnerRomName = partner.romName || null;
       state.partnerRomCrc32 = partner.romCrc32 || null;
+      state.routeOptimizer?.onPeerJoined?.(partner);
     } else {
       state.partnerRomName = null;
       state.partnerRomCrc32 = null;
@@ -138,6 +139,10 @@ export function createProtocolHandlers(
 
   function handleIncomingNetMessage(msg) {
     if (msg.type === 'aux_bound') return;
+    if (msg.type.startsWith('route_')) {
+      state.routeOptimizer?.handleRouteMessage?.(msg);
+      return;
+    }
     if (msg.type === 'netplay_input') {
       inputRouter.routeNetplayInput(msg);
       return;
@@ -162,6 +167,7 @@ export function createProtocolHandlers(
       state.partnerRomName = msg.peer?.romName || state.partnerRomName;
       state.partnerRomCrc32 = msg.peer?.romCrc32 || state.partnerRomCrc32;
       state.matchStarted = false;
+      state.routeOptimizer?.onPeerJoined?.(msg.peer);
       if (state.engine) {
         state.engine.localPlayer = state.localPlayerIndex;
         state.engine.online = true;

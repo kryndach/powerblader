@@ -39,6 +39,7 @@ export function createRoomManager(trackers, options = {}) {
       clientId: peer.clientId, playerIndex: peer.playerIndex, nick: peer.nick,
       romCrc32: peer.romCrc32, romName: peer.romName,
       isAutoDefaultRom: Boolean(peer.isAutoDefaultRom),
+      routeOptimized: Boolean(peer.routeOptimized),
       wsOpen: Boolean(peer.ws?.readyState === 1),
       httpActive: Boolean(peer.httpActive)
     };
@@ -101,6 +102,7 @@ export function createRoomManager(trackers, options = {}) {
         romCrc32: info.romCrc32 || null, romName: info.romName || null,
         isAutoDefaultRom: typeof info.isAutoDefaultRom === 'boolean'
           ? info.isAutoDefaultRom : true,
+        routeOptimized: Boolean(info.routeOptimized),
         ws: wsInstance || null, httpActive: Boolean(info.httpActive),
         httpOutbox: [], nextSeq: 1, lastSeenAt: Date.now()
       };
@@ -112,6 +114,9 @@ export function createRoomManager(trackers, options = {}) {
       if (info.romName !== undefined) peer.romName = info.romName;
       if (typeof info.isAutoDefaultRom === 'boolean') {
         peer.isAutoDefaultRom = info.isAutoDefaultRom;
+      }
+      if (typeof info.routeOptimized === 'boolean') {
+        peer.routeOptimized = info.routeOptimized;
       }
       if (wsInstance) peer.ws = wsInstance;
       if (info.httpActive) peer.httpActive = true;
@@ -176,6 +181,7 @@ export function createRoomManager(trackers, options = {}) {
       FORWARD_TYPES.has(msg.type) ||
       msg.type.startsWith('rom_') ||
       msg.type.startsWith('match_') ||
+      msg.type.startsWith('route_') ||
       msg.type.startsWith('diag_') ||
       msg.type.startsWith('autotest_') ||
       msg.type.startsWith('telemetry_');
@@ -256,7 +262,9 @@ export function createRoomManager(trackers, options = {}) {
           const peer = joinOrUpdatePeerSession(
             roomCode, clientId, {
               nick: msg.nick, romCrc32: msg.romCrc32, romName: msg.romName,
-              isAutoDefaultRom: msg.isAutoDefaultRom, forceRoomJoined: true
+              isAutoDefaultRom: msg.isAutoDefaultRom,
+              routeOptimized: Boolean(msg.routeOptimized),
+              forceRoomJoined: true
             }, ws
           );
           ws.peerSession = peer;

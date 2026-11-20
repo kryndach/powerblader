@@ -14,6 +14,7 @@ import {
   handleRoomRomApi, handleSaveSlotApi, sendBinaryWithRange
 } from './room_rom_and_save_api.mjs';
 import { createTunnelManager } from './tunnel_manager.mjs';
+import { createRendezvousBeacon } from './rendezvous_beacon.mjs';
 const vendorMemCache = new Map();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -70,6 +71,9 @@ function resolveStaticAsset(pathname, req, recordAccess) {
     recordAccess(req, `AUTOTEST_LOAD ${req.url}`);
     return path.join(ROOT_DIR, 'public', 'autotest.html');
   }
+  if (pathname === '/join' || pathname === '/join.html') {
+    return path.join(ROOT_DIR, 'public', 'join.html');
+  }
   if (pathname.startsWith('/src/') && pathname.endsWith('.mjs')) {
     return path.join(ROOT_DIR, 'src', path.basename(pathname));
   }
@@ -99,8 +103,14 @@ export function createCoopServer(options = {}) {
     handlePeerMessage, attachWebSocketServer, stopCleanup
   } = roomMgr;
   let server = null;
+  const beacon = createRendezvousBeacon(ROOT_DIR, options);
   const tunnelMgr = createTunnelManager(
-    ROOT_DIR, tunnelInfo, () => server?.address()?.port || 8080, options
+    ROOT_DIR, tunnelInfo, () => server?.address()?.port || 8080, {
+      ...options,
+      onTunnelChanged: (info) => {
+        beacon.publishTunnelState(info).catch(() => {});
+      }
+    }
   );
 
   server = http.createServer((req, res) => {
@@ -108,47 +118,52 @@ export function createCoopServer(options = {}) {
     const urlObj = new URL(req.url, `http://${hostHdr}`);
     const pathname = urlObj.pathname;
 
+    if (pathname === '/api/edge-ping') {
+      const hdrs = {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Cache-Control': 'no-store'
+      };
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, hdrs); return res.end();
+      }
+      res.writeHead(200, { ...hdrs, 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true, t: Date.now() }));
+    }
     if (pathname === '/api/health') {
-      sendJson(res, 200, {
+      return sendJson(res, 200, {
         ok: true, activeRooms: rooms.size, tunnelInfo, accessLog
       });
-      return;
     }
-
-    if (pathname === '/api/tunnel-info' || pathname === '/api/tunnel-routes') {
+    if (pathname.startsWith('/api/tunnel-')) {
       return tunnelMgr.handleTunnelApi(
+        req, urlObj, res, readJsonBody, sendJson
+      );
+    }
+    if (
+      pathname.startsWith('/api/rendezvous-') || pathname === '/api/join-file'
+    ) {
+      return beacon.handleRendezvousApi(
         req, urlObj, res, readJsonBody, sendJson
       );
     }
 
     if (pathname === '/api/gameplay-telemetry') {
       if (req.method === 'GET') {
-        sendJson(
-          res,
-          200,
-          { ok: true, session: gameplayTelemetrySession },
-          true
+        return sendJson(
+          res, 200, { ok: true, session: gameplayTelemetrySession }, true
         );
-        return;
       }
       if (req.method === 'POST') {
         readJsonBody(req, res, 4 * 1024 * 1024, (telemetry) => {
           if (telemetry.playerIndex === 2) {
             gameplayTelemetrySession.pc2 = telemetry;
-          } else {
-            gameplayTelemetrySession.pc1 = telemetry;
-          }
+          } else gameplayTelemetrySession.pc1 = telemetry;
           saveGameplayTelemetryToDisk();
-          sendJson(
-            res,
-            200,
-            {
-              ok: true,
-              savedTo: 'logs/gameplay_telemetry_latest.txt',
-              combinedText: gameplayTelemetrySession.combinedText
-            },
-            true
-          );
+          sendJson(res, 200, {
+            ok: true, savedTo: 'logs/gameplay_telemetry_latest.txt',
+            combinedText: gameplayTelemetrySession.combinedText
+          }, true);
         });
         return;
       }
@@ -156,8 +171,7 @@ export function createCoopServer(options = {}) {
 
     if (pathname === '/api/autotest-report') {
       if (req.method === 'GET') {
-        sendJson(res, 200, { ok: true, session: autotestSession }, true);
-        return;
+        return sendJson(res, 200, { ok: true, session: autotestSession }, true);
       }
       if (req.method === 'POST') {
         readJsonBody(req, res, 4 * 1024 * 1024, (report) => {
@@ -170,16 +184,10 @@ export function createCoopServer(options = {}) {
                 ' to logs/autotest_latest.txt'
             );
           }
-          sendJson(
-            res,
-            200,
-            {
-              ok: true,
-              savedTo: 'logs/autotest_latest.txt',
-              combinedText: autotestSession.combinedText
-            },
-            true
-          );
+          sendJson(res, 200, {
+            ok: true, savedTo: 'logs/autotest_latest.txt',
+            combinedText: autotestSession.combinedText
+          }, true);
         });
         return;
       }
@@ -304,9 +312,7 @@ export function createCoopServer(options = {}) {
   attachWebSocketServer(wss);
 
   return {
-    server,
-    wss,
-    rooms,
+    server, wss, rooms, tunnelMgr, beacon,
     listen(port = 8080, host) {
       return new Promise((resolve, reject) => {
         server.once('error', reject);

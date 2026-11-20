@@ -8,6 +8,7 @@
 *.state
 *.fc0
 local/saves/
+local/rendezvous_secret.txt
 saves/
 
 # Dependencies & build artifacts

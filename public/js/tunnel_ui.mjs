@@ -1,7 +1,7 @@
 // Host-Side Live Tunnel Route Selector & Public Invite Link Copy Controller
 import { isLocalHostRuntime } from './rom_fast_transfer.mjs';
 
-export function setupHostTunnelController(state, ui) {
+export function setupHostTunnelController(state, ui, hooks = {}) {
   let cachedTunnel = null;
   let routeList = [];
 
@@ -11,6 +11,13 @@ export function setupHostTunnelController(state, ui) {
       ? cachedTunnel.publicUrl.replace(/\/+$/, '')
       : window.location.origin;
     return `${base}/?room=${encodeURIComponent(code)}`;
+  }
+
+  function applyRoutesResponse(data) {
+    if (!data?.ok) return;
+    if (Array.isArray(data.routes)) routeList = data.routes;
+    if (data.tunnelInfo) cachedTunnel = data.tunnelInfo;
+    renderRouteOptions();
   }
 
   async function refreshTunnelInfo() {
@@ -63,18 +70,32 @@ export function setupHostTunnelController(state, ui) {
     } catch {}
   });
 
-  if (!isLocalHostRuntime() || !ui.tunnelRouteSelect) return;
+  const api = { buildInviteUrl, applyRoutesResponse };
+  if (!isLocalHostRuntime() || !ui.tunnelRouteSelect) return api;
 
   ui.tunnelRouteSelect.style.display = '';
+  const deckGroup = ui.tunnelRouteSelect.parentElement;
+  if (deckGroup && !document.getElementById('optimizeRouteBtn')) {
+    const optBtn = document.createElement('button');
+    optBtn.id = 'optimizeRouteBtn';
+    optBtn.textContent = 'Best Route';
+    optBtn.title = 'Probe partner ping across Pinggy edges & auto-switch';
+    optBtn.addEventListener('click', () => hooks.onOptimizeRoute?.());
+    const joinBtn = document.createElement('button');
+    joinBtn.id = 'exportJoinFileBtn';
+    joinBtn.textContent = 'Join File';
+    joinBtn.title = 'Download permanent join_nes.html bookmark for partner';
+    joinBtn.addEventListener('click', () => {
+      const code = (ui.roomInput?.value || 'NOVA').trim().toUpperCase();
+      window.location.href = `/api/join-file?room=${encodeURIComponent(code)}`;
+    });
+    ui.tunnelRouteSelect.insertAdjacentElement('afterend', joinBtn);
+    ui.tunnelRouteSelect.insertAdjacentElement('afterend', optBtn);
+  }
 
   fetch('/api/tunnel-routes')
     .then((r) => (r.ok ? r.json() : null))
-    .then((data) => {
-      if (!data?.ok) return;
-      routeList = data.routes || [];
-      cachedTunnel = data.tunnelInfo || cachedTunnel;
-      renderRouteOptions();
-    })
+    .then((data) => applyRoutesResponse(data))
     .catch(() => {});
 
   ui.tunnelRouteSelect.addEventListener('change', async () => {
@@ -93,9 +114,7 @@ export function setupHostTunnelController(state, ui) {
       if (!res.ok || !data.ok) {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
-      routeList = data.routes || routeList;
-      cachedTunnel = data.tunnelInfo || cachedTunnel;
-      renderRouteOptions();
+      applyRoutesResponse(data);
       const inviteUrl = buildInviteUrl();
       let copied = false;
       try {
@@ -120,4 +139,6 @@ export function setupHostTunnelController(state, ui) {
       ui.tunnelRouteSelect.disabled = false;
     }
   });
+
+  return api;
 }
