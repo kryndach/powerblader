@@ -69,20 +69,27 @@ function publishEventToRelay(relayUrl, ev, timeoutMs = 4500) {
 }
 
 export function createRendezvousBeacon(rootDir, options = {}) {
-  const secretPath = options.secretPath ||
-    path.join(rootDir, 'local', 'rendezvous_secret.txt');
-  const passPath = options.roomPasswordPath ||
-    path.join(rootDir, 'local', 'room_password.txt');
+  const isSilentTest = options.logAccess === false;
+  const secretPath = options.secretPath || (
+    isSilentTest ? null : path.join(rootDir, 'local', 'rendezvous_secret.txt')
+  );
+  const passPath = options.roomPasswordPath || (
+    isSilentTest ? null : path.join(rootDir, 'local', 'room_password.txt')
+  );
   const relays = Array.isArray(options.rendezvousRelays)
     ? options.rendezvousRelays : DEFAULT_RENDEZVOUS_RELAYS;
   const enabled = options.enableRendezvous !== false;
-  const secret = options.rendezvousSecret || loadOrCreateSecret(secretPath);
+  const secret = options.rendezvousSecret || (
+    secretPath
+      ? loadOrCreateSecret(secretPath)
+      : `nes_${crypto.randomBytes(12).toString('hex')}`
+  );
   const keys = deriveRendezvousKeys(secret);
   let activeRoom = normalizeRoomCode(options.defaultRoom || 'NOVA');
   let roomPassword = String(
     options.roomPassword ?? process.env.NES_ROOM_PASSWORD ?? ''
   ).trim();
-  if (!roomPassword && !options.roomPasswordPath && fs.existsSync(passPath)) {
+  if (!roomPassword && passPath && fs.existsSync(passPath)) {
     try { roomPassword = fs.readFileSync(passPath, 'utf8').trim(); } catch {}
   }
   let roomAuthToken = '';
@@ -144,11 +151,14 @@ export function createRendezvousBeacon(rootDir, options = {}) {
   async function setRoomPassword(room, password) {
     activeRoom = normalizeRoomCode(room || activeRoom);
     roomPassword = String(password || '').trim().slice(0, 64);
-    try {
-      fs.mkdirSync(path.dirname(passPath), { recursive: true });
-      if (roomPassword) fs.writeFileSync(passPath, `${roomPassword}\n`, 'utf8');
-      else if (fs.existsSync(passPath)) fs.unlinkSync(passPath);
-    } catch {}
+    if (passPath) {
+      try {
+        fs.mkdirSync(path.dirname(passPath), { recursive: true });
+        if (roomPassword) {
+          fs.writeFileSync(passPath, `${roomPassword}\n`, 'utf8');
+        } else if (fs.existsSync(passPath)) fs.unlinkSync(passPath);
+      } catch {}
+    }
     await syncPasswordDerived();
     if (lastTunnelInfo?.publicUrl) {
       publishTunnelState(lastTunnelInfo, lastExtraCandidates).catch(() => {});
