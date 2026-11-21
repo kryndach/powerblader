@@ -24,7 +24,7 @@
 }
 
 .tv-bezel.drag-over::after {
-  content: "DROP .NES / .ZIP / .RAR / .7Z ROM HERE";
+  content: "DROP ROM (NES / SNES / SEGA / ARCADE / .ZIP / .7Z)";
   position: absolute;
   inset: 12px;
   background: rgba(11, 15, 25, 0.88);

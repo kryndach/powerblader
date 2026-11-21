@@ -1,4 +1,4 @@
-// Main NES Netplay Console Application Entry Point
+// Main Multi-Console Netplay Application Entry Point
 import { createConsoleUI } from './console_ui.mjs';
 import { createAudioDrcEngine } from './audio_drc.mjs';
 import { createRomSyncManager } from './rom_sync.mjs';
@@ -17,7 +17,7 @@ import {
   setConnectionPhase, startLocalHostHealthPoller
 } from './connection_status_ui.mjs';
 import {
-  resolveServerEndpoints, buildApiUrl, buildWsUrl
+  resolveServerEndpoints, buildApiUrl, buildWsUrl, buildSubPageUrl
 } from './server_endpoint.mjs';
 import { startConsoleFrameLoop } from './frame_loop.mjs';
 import {
@@ -147,10 +147,7 @@ function connectToRoom() {
 
   const code = (ui.roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
   ui.roomInput.value = code;
-  if (ui.autoBenchLink) {
-    const q = encodeURIComponent(code);
-    ui.autoBenchLink.href = `./autotest.html?gameRoom=${q}`;
-  }
+  syncBenchLinks();
   const nick = (ui.nickInput.value || 'Player').trim().slice(0, 14);
   ui.dbgWssState.textContent = 'Connecting...';
   attachSocketLifecycle(new WebSocket(buildWsUrl(state, '/ws')), code, nick);
@@ -158,7 +155,7 @@ function connectToRoom() {
 
 hybridConn = setupHybridConnectionUi(state, ui, {
   connectStandardWs: connectToRoom,
-  onServerDiscovered: () => romSync.discoverLocalRoms(),
+  onServerDiscovered: () => { syncBenchLinks(); romSync.discoverLocalRoms(); },
   attachCustomSocket(customWs, code, nick) {
     audio.initAudio();
     if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
@@ -237,42 +234,31 @@ function applyInputDelaySelection(newValue) {
   if (ui.inputDelaySelect && ui.inputDelaySelect.value !== newValue) {
     ui.inputDelaySelect.value = newValue;
   }
-  try {
-    localStorage.setItem('nes_input_delay', newValue);
-  } catch {}
+  try { localStorage.setItem('nes_input_delay', newValue); } catch {}
   const nextDelay = romSync.resolveDesiredInputDelay();
   if (state.engine) state.engine.setInputDelay(nextDelay);
   const ms = Math.round(nextDelay * (1000 / 60.0988));
   const suffix = newValue === 'auto' ? ' [AUTO]' : '';
   ui.logDebug(`Local Input Delay set to ${nextDelay}f (${ms}ms)${suffix}`);
-  ui.showScreenBanner(
-    `LOCAL INPUT LAG: ${nextDelay}f (${ms}ms)${suffix}`,
-    'ok',
-    2200
-  );
+  ui.showScreenBanner(`LOCAL INPUT LAG: ${nextDelay}f (${ms}ms)${suffix}`, 'ok',
+    2200);
   telemetry.pushGameplayTelemetryToServer();
 }
 
-if (ui.topInputDelaySelect) {
-  ui.topInputDelaySelect.addEventListener('change', () => {
-    applyInputDelaySelection(ui.topInputDelaySelect.value);
-  });
-}
-ui.inputDelaySelect.addEventListener('change', () => {
-  applyInputDelaySelection(ui.inputDelaySelect.value);
-});
+ui.topInputDelaySelect?.addEventListener('change', () =>
+  applyInputDelaySelection(ui.topInputDelaySelect.value));
+ui.inputDelaySelect.addEventListener('change', () =>
+  applyInputDelaySelection(ui.inputDelaySelect.value));
 
 ui.crtToggleBtn.addEventListener('click', () => {
   const enabled = ui.scanlinesOverlay.classList.toggle('enabled');
   ui.crtToggleBtn.textContent = enabled ? 'CRT: ON' : 'CRT: OFF';
   ui.crtToggleBtn.classList.toggle('active-toggle', enabled);
 });
-
 ui.debugToggleBtn.addEventListener('click', () => {
   ui.debugDrawer.classList.toggle('open');
   ui.debugToggleBtn.classList.toggle('active-toggle');
 });
-
 ui.forceResyncBtn.addEventListener('click', () => {
   if (!state.ws || state.ws.readyState !== 1 || !state.peerConnected) return;
   romSync.sendStateSyncToPeer({ resetToZero: false });
@@ -284,18 +270,14 @@ ui.copyTelemetryBtn.addEventListener('click', async () => {
     const res = await fetch(buildApiUrl(state, '/api/gameplay-telemetry'));
     if (res.ok) {
       const data = await res.json();
-      const txt =
-        data.session?.combinedText ||
-        data.combinedText ||
+      const txt = data.session?.combinedText || data.combinedText ||
         JSON.stringify(data, null, 2);
       await navigator.clipboard.writeText(txt);
       const orig = ui.copyTelemetryBtn.textContent;
       ui.copyTelemetryBtn.textContent = 'Copied!';
       setTimeout(() => (ui.copyTelemetryBtn.textContent = orig), 1500);
     }
-  } catch (e) {
-    ui.logDebug(`Copy telemetry failed: ${e.message}`);
-  }
+  } catch (e) { ui.logDebug(`Copy telemetry failed: ${e.message}`); }
 });
 
 ui.simLagSlider.addEventListener('input', () => {
@@ -334,11 +316,22 @@ ui.saveFileInput?.addEventListener('change', () => {
 startConsoleFrameLoop(
   state, ui, transport, telemetry, saveSlots, keyBindings, viewportCtrl
 );
-ui.autoBenchLink?.addEventListener('click', () => {
+function syncBenchLinks() {
   const c = (ui.roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
-  const q = encodeURIComponent(c);
-  ui.autoBenchLink.href = `./autotest.html?gameRoom=${q}`;
-});
+  if (ui.autoBenchLink) {
+    ui.autoBenchLink.href = buildSubPageUrl(
+      './autotest.html', { gameRoom: c }, state.apiBaseUrl
+    );
+  }
+  if (ui.netBenchLink) {
+    ui.netBenchLink.href = buildSubPageUrl(
+      './net_debug.html', { room: c }, state.apiBaseUrl
+    );
+  }
+}
+ui.autoBenchLink?.addEventListener('click', syncBenchLinks);
+ui.netBenchLink?.addEventListener('click', syncBenchLinks);
+syncBenchLinks();
 const isStatic = await hybridConn.whenReady();
 if (!isStatic || state.apiBaseUrl) {
   await romSync.discoverLocalRoms();

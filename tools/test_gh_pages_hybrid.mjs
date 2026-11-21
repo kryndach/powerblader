@@ -217,18 +217,52 @@ async function runSuite() {
         type: 'keyUp', key: k, code: c
       });
     }
-    const uiChecks = await tabBro.evaluate(`({
-      passVal: document.getElementById('roomPassInput')?.value,
-      slotVal: document.getElementById('saveSlotSelect')?.value,
-      ocText: document.getElementById('overclockToggleBtn')?.textContent.trim(),
-      autoHref: document.getElementById('autoBenchLink')?.href || '',
-      netHref: document.getElementById('netBenchLink')?.href || ''
-    })`);
+    const uiChecks = await tabBro.evaluate(`(async () => {
+      window.__copiedInvite = '';
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async (t) => { window.__copiedInvite = t; } }
+      });
+      document.getElementById('copyLinkBtn').click();
+      await new Promise((r) => setTimeout(r, 30));
+      return {
+        passVal: document.getElementById('roomPassInput')?.value,
+        slotVal: document.getElementById('saveSlotSelect')?.value,
+        ocText: document.getElementById('overclockToggleBtn')?.textContent,
+        logo: document.querySelector('.brand-logo')?.textContent.trim(),
+        title: document.title,
+        lobbyHdr: document.getElementById('lobbyTitleText')?.textContent.trim(),
+        roleTxt: document.getElementById('roleBadge')?.textContent.trim(),
+        copiedInvite: window.__copiedInvite,
+        autoHref: document.getElementById('autoBenchLink')?.href || '',
+        netHref: document.getElementById('netBenchLink')?.href || ''
+      };
+    })()`);
     assert.strictEqual(uiChecks.passVal, 'w1a2s3z5', 'Pass swallowed hotkeys');
     assert.strictEqual(uiChecks.slotVal, '1', 'Pass digits switched save slot');
     assert.strictEqual(uiChecks.ocText, 'OC: ON', 'NES OC should default ON');
+    assert.notStrictEqual(uiChecks.logo, 'NES', 'Logo should be multi-console');
+    assert.ok(!uiChecks.title.startsWith('NES'), uiChecks.title);
+    assert.ok(!uiChecks.lobbyHdr.startsWith('NES'), uiChecks.lobbyHdr);
+    assert.ok(!uiChecks.roleTxt.includes('$4016'), uiChecks.roleTxt);
+    assert.ok(
+      uiChecks.copiedInvite.includes('/NES_Online/?room=NOVA'),
+      `Copy Link stripped sub-path: ${uiChecks.copiedInvite}`
+    );
     assert.ok(uiChecks.autoHref.includes('/NES_Online/'), uiChecks.autoHref);
+    assert.ok(uiChecks.autoHref.includes('server='), uiChecks.autoHref);
     assert.ok(uiChecks.netHref.includes('/NES_Online/'), uiChecks.netHref);
+    assert.ok(uiChecks.netHref.includes('server='), uiChecks.netHref);
+    const tabStaticAt = await createCdpTab(
+      browser.debugPort,
+      `http://127.0.0.1:${pagesSrv.port}/NES_Online/autotest.html?gameRoom=Z1`
+    );
+    await waitFor(() => tabStaticAt.evaluate(`(() => {
+      const b = document.getElementById('stateBadge')?.textContent || '';
+      const a = document.getElementById('backToGameBtn')?.href || '';
+      return b.includes('SERVER REQUIRED') && a.includes('/NES_Online/?room=');
+    })()`), 6000, 'Static autotest.html shows SERVER REQUIRED + sub-path back');
+    try { tabStaticAt.close(); } catch {}
     console.log(
       '[PASS] 3/4 Real Chrome GitHub Pages /NES_Online/: Room+Pass ' +
         'Discovery, 0 Sub-Path 404s, Pass Hotkeys & 60-Min Auto-Heal Verified'

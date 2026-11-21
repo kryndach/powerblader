@@ -3,8 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NES Online — 2-PC Automated Network & P2P Benchmark</title>
-  <link rel="stylesheet" href="/css/autotest.css">
+  <title>Netplay Deck — 2-PC Automated Network &amp; P2P Benchmark</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="./css/autotest.css">
 </head>
 <body>
   <div class="wrap">
@@ -16,10 +17,12 @@
           <span class="badge info">AUTOBENCH v3.0</span>
         </div>
         <div class="btn-row">
-          <a id="backToGameBtn" href="/?room=NOVA" class="btn">
-            🎮 ← Back to NES Game
+          <a id="backToGameBtn" href="./?room=NOVA" class="btn">
+            🎮 ← Back to Netplay Deck
           </a>
-          <a href="/nettest" class="btn">🔬 Interactive Debugger</a>
+          <a id="netDebugLink" href="./net_debug.html" class="btn">
+            🔬 Interactive Debugger
+          </a>
           <button id="rerunBtn" class="btn primary">
             ▶ Re-Run Full Benchmark
           </button>
@@ -113,6 +116,6 @@ Waiting for benchmark to start...
     </div>
   </div>
 
-  <script type="module" src="/js/autotest_app.mjs"></script>
+  <script type="module" src="./js/autotest_app.mjs"></script>
 </body>
 </html>

@@ -1,16 +1,26 @@
 // Host-Side Live Tunnel Route Selector & Public Invite Link Copy Controller
 import { isLocalHostRuntime } from './rom_fast_transfer.mjs';
 
+export function computeInviteUrl(loc, roomCode, tunnelUrl, isLocal) {
+  const code = String(roomCode || 'NOVA').trim().toUpperCase() || 'NOVA';
+  const pathBase = String(loc?.pathname || '/')
+    .replace(/\/index\.html$/i, '')
+    .replace(/\/+$/, '');
+  const base = isLocal && tunnelUrl
+    ? String(tunnelUrl).replace(/\/+$/, '')
+    : `${loc?.origin || ''}${pathBase}`;
+  return `${base}/?room=${encodeURIComponent(code)}`;
+}
+
 export function setupHostTunnelController(state, ui, hooks = {}) {
   let cachedTunnel = null;
   let routeList = [];
 
   function buildInviteUrl() {
-    const code = (ui.roomInput?.value || 'NOVA').trim().toUpperCase();
-    const base = isLocalHostRuntime() && cachedTunnel?.publicUrl
-      ? cachedTunnel.publicUrl.replace(/\/+$/, '')
-      : window.location.origin;
-    return `${base}/?room=${encodeURIComponent(code)}`;
+    return computeInviteUrl(
+      window.location, ui.roomInput?.value, cachedTunnel?.publicUrl,
+      isLocalHostRuntime()
+    );
   }
 
   function applyRoutesResponse(data) {
@@ -86,7 +96,7 @@ export function setupHostTunnelController(state, ui, hooks = {}) {
     const joinBtn = document.createElement('button');
     joinBtn.id = 'exportJoinFileBtn';
     joinBtn.textContent = 'Join File';
-    joinBtn.title = 'Download permanent join_nes.html bookmark for partner';
+    joinBtn.title = 'Download permanent auto-join bookmark for partner';
     joinBtn.addEventListener('click', () => {
       const code = (ui.roomInput?.value || 'NOVA').trim().toUpperCase();
       window.location.href = `/api/join-file?room=${encodeURIComponent(code)}`;

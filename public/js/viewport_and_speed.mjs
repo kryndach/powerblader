@@ -26,7 +26,7 @@ export function createViewportAndSpeedController(state, ui, romSync = null) {
   floatingBtn.type = 'button';
   floatingBtn.className = 'floating-center-btn hidden';
   floatingBtn.textContent = 'Center Game View';
-  floatingBtn.title = 'Scroll back to center the NES screen';
+  floatingBtn.title = 'Scroll back to center the game screen';
   document.body.appendChild(floatingBtn);
 
   function computeRawSpeed() {

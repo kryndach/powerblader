@@ -8,6 +8,10 @@ import {
   createAutotestNetplayAndHttpManager
 } from './autotest_netplay_and_http.mjs';
 import { runFullAutoBenchmark } from './autotest_runner.mjs';
+import {
+  resolveServerEndpoints, buildApiUrl, buildWsUrl, buildSubPageUrl,
+  resolveStoredRoomAuth, verifyDiagBackendOrWarn
+} from './server_endpoint.mjs';
 
 const el = (id) => document.getElementById(id);
 const els = {
@@ -27,14 +31,22 @@ if (!clientId) {
   sessionStorage.setItem('nes_autotest_cid', clientId);
 }
 
+const endpoints = resolveServerEndpoints();
+const apiUrl = (p) => buildApiUrl(endpoints, p);
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('room') || 'AUTO').trim().toUpperCase();
 const gameRoom = (params.get('gameRoom') || 'NOVA').trim().toUpperCase();
+const srv = endpoints.apiBaseUrl;
 const backBtn = el('backToGameBtn');
-if (backBtn) backBtn.href = `/?room=${encodeURIComponent(gameRoom)}`;
+if (backBtn) backBtn.href = buildSubPageUrl('./', { room: gameRoom }, srv);
+const netLink = el('netDebugLink');
+if (netLink) {
+  netLink.href = buildSubPageUrl('./net_debug.html', { room: gameRoom }, srv);
+}
 
 let ws = null, wsAux = null, localPlayerIndex = 1, peerConnected = false;
 let suiteRunning = false, autoStartedOnce = false, reconnectTimer = null;
+let roomAuth = '';
 
 const logs = [];
 function log(msg) {
@@ -90,11 +102,9 @@ function renderTables() {
 }
 
 function sendWs(obj) {
-  if (ws && ws.readyState === 1) {
-    ws.send(JSON.stringify(obj));
-    return true;
-  }
-  return false;
+  if (!ws || ws.readyState !== 1) return false;
+  ws.send(JSON.stringify(obj));
+  return true;
 }
 
 function sendDualWs(obj) {
@@ -111,14 +121,12 @@ async function uploadReportToServer(isFinal = false) {
   reportState.playerIndex = localPlayerIndex;
   if (localPlayerIndex !== 1 && !isFinal) return;
   const sentViaWs = sendWs({
-    type: 'autotest_report_ws',
-    report: { ...reportState, isFinal }
+    type: 'autotest_report_ws', report: { ...reportState, isFinal }
   });
   if (localPlayerIndex === 1 || !sentViaWs || isFinal) {
     try {
-      const res = await fetch('/api/autotest-report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const res = await fetch(apiUrl('/api/autotest-report'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...reportState, isFinal })
       });
       if (res.ok) {
@@ -131,7 +139,7 @@ async function uploadReportToServer(isFinal = false) {
 
 const ctx = {
   els, roomCode, reportState, log, sendWs, sendDualWs, renderTables,
-  uploadReportToServer, calcStats,
+  uploadReportToServer, calcStats, apiUrl, getRoomAuth: () => roomAuth,
   isSuiteRunning: () => suiteRunning,
   setSuiteRunning: (v) => { suiteRunning = Boolean(v); },
   isPeerConnected: () => peerConnected
@@ -194,8 +202,7 @@ async function handleSyncMessage(msg) {
 function connectAuxSocket() {
   if (wsAux) { try { wsAux.close(); } catch {} wsAux = null; }
   reportState.dualWsOk = false;
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const aux = new WebSocket(`${proto}//${window.location.host}/ws?aux=1`);
+  const aux = new WebSocket(buildWsUrl(endpoints, '/ws?aux=1'));
   wsAux = aux;
   aux.onopen = () => {
     aux.send(JSON.stringify({ type: 'bind_aux', roomCode, clientId }));
@@ -285,30 +292,26 @@ async function dispatchIncoming(msg) {
     stagesMgr.startLocal60HzTx(msg.totalFrames || 180);
     return;
   }
-  if (msg.type === 'autotest_stream_pkt') {
-    return stagesMgr.handleStreamPacket(msg);
-  }
-  if (msg.type === 'autotest_stream_done') {
-    return stagesMgr.sendStreamReportIfNeeded();
-  }
-  if (msg.type === 'autotest_stream_report') {
-    return stagesMgr.handleStreamReport(msg);
-  }
-  if (msg.type === 'diag_xfer_start') return stagesMgr.handleXferStart(msg);
-  if (msg.type === 'diag_xfer_chunk') return stagesMgr.handleXferChunk(msg);
-  if (msg.type === 'diag_xfer_end') return stagesMgr.handleXferEnd(msg);
-  if (msg.type === 'diag_xfer_ack') return stagesMgr.handleXferAck(msg);
+  const sMap = {
+    autotest_stream_pkt: () => stagesMgr.handleStreamPacket(msg),
+    autotest_stream_done: () => stagesMgr.sendStreamReportIfNeeded(),
+    autotest_stream_report: () => stagesMgr.handleStreamReport(msg),
+    diag_xfer_start: () => stagesMgr.handleXferStart(msg),
+    diag_xfer_chunk: () => stagesMgr.handleXferChunk(msg),
+    diag_xfer_end: () => stagesMgr.handleXferEnd(msg),
+    diag_xfer_ack: () => stagesMgr.handleXferAck(msg)
+  };
+  if (sMap[msg.type]) return sMap[msg.type]();
   if (msg.type === 'autotest_sync') await handleSyncMessage(msg);
 }
 
 function connectAutoRoom() {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   if (ws) { try { ws.onclose = null; ws.close(); } catch {} }
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+  ws = new WebSocket(buildWsUrl(endpoints, '/ws'));
   ws.onopen = () => {
     log(`Connected to WebSocket (${ws.url}) — joining "${roomCode}"...`);
-    sendWs({ type: 'join_room', roomCode, clientId, nick: 'PC' });
+    sendWs({ type: 'join_room', roomCode, clientId, nick: 'PC', roomAuth });
   };
   ws.onclose = (ev) => {
     log(`WebSocket closed (code=${ev.code}) — reconnecting in 800ms...`);
@@ -324,7 +327,6 @@ els.rerunBtn.addEventListener('click', () => {
   if (localPlayerIndex === 1) triggerBenchmark();
   else sendWs({ type: 'autotest_trigger_rerun' });
 });
-
 function copyReport() {
   navigator.clipboard.writeText(els.reportBox.value).then(() => {
     els.copyBtn.textContent = '✔ Copied!';
@@ -337,5 +339,11 @@ function copyReport() {
 }
 els.copyBtn.addEventListener('click', copyReport);
 els.copyBtn2.addEventListener('click', copyReport);
-
-connectAutoRoom();
+(async () => {
+  roomAuth = await resolveStoredRoomAuth(gameRoom);
+  const ok = await verifyDiagBackendOrWarn(
+    endpoints, els.stateBadge, els.stateText, 'AutoTest'
+  );
+  if (!ok) { els.rerunBtn.disabled = true; return; }
+  connectAutoRoom();
+})();

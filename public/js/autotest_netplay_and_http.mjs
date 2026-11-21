@@ -100,12 +100,19 @@ export function createAutotestNetplayAndHttpManager(ctx) {
     return { ok: true, bootMs, visMs, headMs, slMs, rb5Ms, hash60 };
   }
 
+  function roomRomUrl(room, extra = '') {
+    const auth = ctx.getRoomAuth?.() || '';
+    const authQ = auth ? `&auth=${encodeURIComponent(auth)}` : '';
+    const q = `room=${encodeURIComponent(room)}${extra}${authQ}`;
+    const base = `/api/room-rom?${q}`;
+    return ctx.apiUrl ? ctx.apiUrl(base) : base;
+  }
+
   async function runHttpStripedBenchmark(roomCode) {
     const kb = 512, u8 = makePseudoRandomBytes(kb, 0x13579bdf);
     const crc = crc32Hex(u8);
     const dlRoom = `${roomCode}_H1`, ulRoom = `${roomCode}_H2`;
-    const ulUrl = `/api/room-rom?room=${encodeURIComponent(dlRoom)}` +
-      `&crc=${crc}&name=bench512.zip`;
+    const ulUrl = roomRomUrl(dlRoom, `&crc=${crc}&name=bench512.zip`);
     await uploadStripedRom(ulUrl, u8, {
       'Content-Type': 'application/octet-stream'
     }, { concurrency: 8, sliceBytes: 65536, forceStriped: true });
@@ -116,7 +123,7 @@ export function createAutotestNetplayAndHttpManager(ctx) {
     const res = await resP;
     if (!res) return { ok: false };
     const checkDl = await fetchStripedBinary(
-      `/api/room-rom?room=${encodeURIComponent(ulRoom)}`,
+      roomRomUrl(ulRoom),
       { concurrency: 8, probeBytes: 16384, sliceBytes: 65536 }
     );
     const ulMatch = Boolean(checkDl?.u8 && crc32Hex(checkDl.u8) === res.ulCrc);
@@ -130,7 +137,7 @@ export function createAutotestNetplayAndHttpManager(ctx) {
   }
 
   async function handleHttpBenchRequest(msg) {
-    const dlUrl = `/api/room-rom?room=${encodeURIComponent(msg.dlRoom)}`;
+    const dlUrl = roomRomUrl(msg.dlRoom);
     const t1 = performance.now();
     const r1 = await fetch(`${dlUrl}&single=1`, { cache: 'no-store' });
     const b1 = new Uint8Array(await r1.arrayBuffer());
@@ -155,8 +162,7 @@ export function createAutotestNetplayAndHttpManager(ctx) {
     let firstUlPct = 0;
     const tUp = performance.now();
     await uploadStripedRom(
-      `/api/room-rom?room=${encodeURIComponent(msg.ulRoom)}` +
-        `&crc=${ulCrc}&name=pc2up.zip`,
+      roomRomUrl(msg.ulRoom, `&crc=${ulCrc}&name=pc2up.zip`),
       upBytes, { 'Content-Type': 'application/octet-stream' },
       {
         concurrency: 8, sliceBytes: 65536, forceStriped: true,

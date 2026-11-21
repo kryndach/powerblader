@@ -203,18 +203,19 @@ export function startLocalHostHealthPoller(state, ui) {
       const noStore = { cache: 'no-store' };
       const [hRes, rRes] = await Promise.all([
         fetch('./api/health', noStore),
-        fetch('./api/rendezvous-status', noStore).catch(() => null)
+        fetch('./api/rendezvous-info', noStore).catch(() => null)
       ]);
       const h = hRes.ok ? await hRes.json() : null;
       const r = rRes?.ok ? await rRes.json() : null;
       const ti = h?.tunnelInfo || null;
-      const pubUrl = ti?.publicUrl || (r?.lastCandidateCount > 0 ? 'live' : '');
+      const pubUrl = ti?.publicUrl ||
+        (r?.status?.lastCandidateCount > 0 ? 'live' : '');
       if (pubUrl) {
         state.hostHealth = {
           publicUrl: pubUrl,
           routeLabel: ti?.routeLabel || 'Pinggy',
-          okRelays: r?.okRelays?.length || 0,
-          hasPassword: Boolean(r?.auth?.hasPassword)
+          okRelays: r?.status?.okRelays?.length || 0,
+          hasPassword: Boolean(r?.hasPassword)
         };
         ui.updateStatusStrip();
       }

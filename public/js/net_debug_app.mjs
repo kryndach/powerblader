@@ -2,13 +2,25 @@
 import { createNetDebugWebRtcManager } from './net_debug_webrtc.mjs';
 import { createNetDebugSuitesManager } from './net_debug_suites.mjs';
 import { createNetDebugArenaManager } from './net_debug_arena.mjs';
+import {
+  resolveServerEndpoints, buildApiUrl, buildWsUrl, buildSubPageUrl,
+  resolveStoredRoomAuth, verifyDiagBackendOrWarn
+} from './server_endpoint.mjs';
 
 const els = new Proxy({}, { get: (_, id) => document.getElementById(id) });
+const endpoints = resolveServerEndpoints();
+const srv = endpoints.apiBaseUrl;
 const params = new URLSearchParams(window.location.search);
 if (params.get('room')) els.roomInput.value = params.get('room').toUpperCase();
 if (params.get('nick')) els.nickInput.value = params.get('nick').slice(0, 14);
-els.backToNesLink.href = `/?room=${encodeURIComponent(els.roomInput.value)}`;
-
+const initRm = els.roomInput.value;
+els.backToNesLink.href = buildSubPageUrl('./', { room: initRm }, srv);
+if (els.autoTestLink) {
+  els.autoTestLink.href = buildSubPageUrl(
+    './autotest.html', { gameRoom: initRm }, srv
+  );
+}
+let backendReady = false, roomAuth = '';
 const logHistory = [];
 function logEvent(msg, level = 'info') {
   const ts = new Date().toISOString().slice(11, 23);
@@ -18,9 +30,7 @@ function logEvent(msg, level = 'info') {
   div.className = `log-line ${level}`;
   div.textContent = `[${ts}] ${msg}`;
   els.logBox.prepend(div);
-  while (els.logBox.children.length > 80) {
-    els.logBox.removeChild(els.logBox.lastChild);
-  }
+  while (els.logBox.children.length > 80) els.logBox.lastChild.remove();
 }
 els.clearLogBtn.addEventListener('click', () => { els.logBox.innerHTML = ''; });
 let clientId = sessionStorage.getItem('nes_netbench_client_id');
@@ -47,19 +57,15 @@ const metrics = {
 
 function recordRttSample(b, sampleMs) {
   const s = Math.max(1, Math.round(sampleMs));
-  b.jitter = b.rtt === null
-    ? 0
+  b.jitter = b.rtt === null ? 0
     : Math.round(b.jitter * 0.7 + Math.abs(s - b.rtt) * 0.3);
   b.rtt = b.rtt === null ? s : Math.round(b.rtt * 0.7 + s * 0.3);
-  b.rx++;
-  b.samples.push(s);
+  b.rx++; b.samples.push(s);
   if (b.samples.length > 30) b.samples.shift();
 }
-
 function flushHttpTunnelNow() {
   if (httpOutQueue.length > 0 && !httpPollingBusy) pollHttpTunnel(false);
 }
-
 const ctx = {
   els, metrics, logEvent, getWs: () => ws,
   enqueueHttp: (m) => httpOutQueue.push(m),
@@ -67,7 +73,6 @@ const ctx = {
   getLocalPlayerIndex: () => localPlayerIndex,
   handleIncomingMessage: (msg, via) => handleIncomingMessage(msg, via)
 };
-
 const webrtcMgr = createNetDebugWebRtcManager(ctx);
 const suitesMgr = createNetDebugSuitesManager(ctx, webrtcMgr);
 const arenaMgr = createNetDebugArenaManager(ctx, webrtcMgr, suitesMgr);
@@ -214,7 +219,7 @@ async function pollHttpTunnel(isInitialJoin = false) {
   const t0 = performance.now();
 
   try {
-    const res = await fetch('/api/http-tunnel', {
+    const res = await fetch(buildApiUrl(endpoints, '/api/http-tunnel'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -253,33 +258,29 @@ async function pollHttpTunnel(isInitialJoin = false) {
   }
 }
 
-function connectRoom() {
+async function connectRoom() {
+  if (!backendReady) return;
   if (ws) { try { ws.close(); } catch {} ws = null; }
   if (wsFallbackTimer) clearTimeout(wsFallbackTimer);
   webrtcMgr.closeWebRtc();
-  highestSeqSeen = 0;
-  seenSeqSet.clear();
-
+  highestSeqSeen = 0; seenSeqSet.clear();
   const code = (els.roomInput.value || 'NOVA').trim().toUpperCase();
-  els.roomInput.value = code;
-  roomCode = code;
-  els.backToNesLink.href = `/?room=${encodeURIComponent(code)}`;
+  els.roomInput.value = code; roomCode = code;
+  roomAuth = await resolveStoredRoomAuth(code);
+  els.backToNesLink.href = buildSubPageUrl('./', { room: code }, srv);
   const nick = (els.nickInput.value || 'PC').trim().slice(0, 14);
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+  ws = new WebSocket(buildWsUrl(endpoints, '/ws'));
   els.wssStateVal.textContent = 'Connecting...';
   els.httpStateVal.textContent = 'STANDBY (Waiting for WSS)';
-
   wsFallbackTimer = setTimeout(() => {
     if (ws?.readyState !== 1) pollHttpTunnel(true);
   }, 2200);
-
   ws.onopen = () => {
     if (wsFallbackTimer) clearTimeout(wsFallbackTimer);
     els.wssStateVal.textContent = 'OPEN';
     els.httpStateVal.textContent = 'STANDBY (WSS Open)';
     logEvent(`Connected to WebSocket Relay (${ws.url}).`, 'ok');
-    const j = { type: 'join_room', roomCode: code, clientId, nick };
+    const j = { type: 'join_room', roomCode: code, clientId, nick, roomAuth };
     ws.send(JSON.stringify(j));
   };
   ws.onmessage = (ev) => {
@@ -293,43 +294,40 @@ function connectRoom() {
       `WS Drops: ${wsDropCount} (Last code: ${lastWsCloseCode})`;
     els.wssStateVal.textContent = `BLOCKED/CLOSED (${ev.code})`;
     els.httpStateVal.textContent = 'OPEN (Active Fallback)';
-    updateRoomBanner();
-    pollHttpTunnel(true);
+    updateRoomBanner(); pollHttpTunnel(true);
   };
 }
-
 els.connectBtn.addEventListener('click', connectRoom);
 els.renegotiateRtcBtn.addEventListener('click', () => {
   if (peerConnected) webrtcMgr.startWebRtc(true);
 });
 document.querySelectorAll('.xfer-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    suitesMgr.runDataTransferTest(
-      Number(btn.dataset.xferKb), btn.dataset.xferMode,
-      els.transferTransportSelect.value
-    );
-  });
+  btn.addEventListener('click', () => suitesMgr.runDataTransferTest(
+    Number(btn.dataset.xferKb), btn.dataset.xferMode,
+    els.transferTransportSelect.value
+  ));
 });
-els.startStreamBtn.addEventListener('click', () => {
-  suitesMgr.run60HzStreamTest(els.streamTransportSelect.value, 300);
-});
+els.startStreamBtn.addEventListener('click', () =>
+  suitesMgr.run60HzStreamTest(els.streamTransportSelect.value, 300));
 els.runAutoSuiteBtn.addEventListener(
   'click', arenaMgr.runFullAutoDiagnosticSuite
 );
 els.copyInviteBtn.addEventListener('click', () => {
   const c = (els.roomInput.value || 'NOVA').trim().toUpperCase();
-  navigator.clipboard.writeText(`${window.location.origin}/nettest?room=${c}`);
+  const base = `${window.location.origin}${window.location.pathname}`;
+  navigator.clipboard.writeText(buildSubPageUrl(base, { room: c }, srv));
 });
 els.copyReportBtn.addEventListener('click', () => {
   const txt = JSON.stringify({ metrics, logHistory }, null, 2);
   navigator.clipboard.writeText(txt);
 });
-
 setInterval(() => {
-  if (ws?.readyState !== 1 || httpOutQueue.length > 0) pollHttpTunnel(false);
+  if (backendReady && (ws?.readyState !== 1 || httpOutQueue.length > 0)) {
+    pollHttpTunnel(false);
+  }
 }, 220);
-
 setInterval(async () => {
+  if (!backendReady) return;
   if (ws?.readyState === 1) {
     ws.send(JSON.stringify({ type: 'ping', t: Date.now() }));
     if (peerConnected) {
@@ -344,6 +342,7 @@ setInterval(async () => {
   }
   await webrtcMgr.pollSelectedCandidatePair();
 }, 1000);
-
 arenaMgr.startArenaLoop();
-connectRoom();
+verifyDiagBackendOrWarn(
+  endpoints, els.roomBadge, els.roomStatusText, 'NetDebug'
+).then((ok) => { backendReady = ok; if (ok) connectRoom(); });

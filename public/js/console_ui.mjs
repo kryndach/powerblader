@@ -138,8 +138,8 @@ export function createConsoleUI(state) {
     const p2RomName = !p1IsMe ? state.romName : state.partnerRomName;
     const p2Crc = !p1IsMe ? state.romCrc32 : state.partnerRomCrc32;
 
-    ui.lobbyP1Name.textContent = `Player 1 ($4016) - ${p1Nick}`;
-    ui.lobbyP2Name.textContent = `Player 2 ($4017) - ${p2Nick}`;
+    ui.lobbyP1Name.textContent = `Player 1 - ${p1Nick}`;
+    ui.lobbyP2Name.textContent = `Player 2 - ${p2Nick}`;
 
     if (p1Crc) {
       ui.lobbySlotP1.className = 'lobby-slot ready';
@@ -278,8 +278,7 @@ export function createConsoleUI(state) {
   };
 
   ui.updateStatusStrip = function () {
-    const portStr = state.localPlayerIndex === 1 ? '$4016' : '$4017';
-    ui.roleBadge.textContent = `YOU: P${state.localPlayerIndex} (${portStr})`;
+    ui.roleBadge.textContent = `YOU: P${state.localPlayerIndex}`;
     const shortRom = state.romName
       ? state.romName.replace(/\.(nes|sfc|smc|md|gen|smd|sms|gg|zip)$/i, '')
       : 'No ROM';
