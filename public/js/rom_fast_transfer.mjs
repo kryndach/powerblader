@@ -21,12 +21,13 @@ function createByteTracker(totalBytes, onProgress) {
   const emit = (force = false) => {
     if (!onProgress) return;
     const now = performance.now();
-    const pct = totalBytes > 0
+    const rawPct = totalBytes > 0
       ? (loaded >= totalBytes ? 100
         : loaded > 0 ? Math.max(1, Math.min(99, Math.round(
           (loaded / totalBytes) * 100
         ))) : 0)
       : 0;
+    const pct = lastPct >= 0 ? Math.max(lastPct, rawPct) : rawPct;
     const firstReal = lastPct <= 0 && pct > 0;
     if (!force && !firstReal) {
       if (lastPct >= 0 && pct === lastPct && now - lastEmit < 180) return;
@@ -46,11 +47,19 @@ function createByteTracker(totalBytes, onProgress) {
   };
 }
 
-async function gunzipBytes(u8) {
+export async function gzipBytes(u8) {
+  if (typeof CompressionStream === 'function') {
+    const cs = new CompressionStream('gzip');
+    const s = new Blob([u8]).stream().pipeThrough(cs);
+    return new Uint8Array(await new Response(s).arrayBuffer());
+  }
+  const zlib = await import('node:zlib');
+  return new Uint8Array(zlib.gzipSync(u8, { level: 6 }));
+}
+export async function gunzipBytes(u8) {
   if (typeof DecompressionStream === 'function') {
-    const s = new Blob([u8]).stream().pipeThrough(
-      new DecompressionStream('gzip')
-    );
+    const ds = new DecompressionStream('gzip');
+    const s = new Blob([u8]).stream().pipeThrough(ds);
     return new Uint8Array(await new Response(s).arrayBuffer());
   }
   const zlib = await import('node:zlib');
@@ -302,9 +311,7 @@ export async function uploadRomToServerCache(state, onProgress = null) {
       const isZip = String(state.romName).toLowerCase().endsWith('.zip');
       if (typeof CompressionStream === 'function' &&
           body.byteLength > 16384 && !isZip) {
-        const gz = new CompressionStream('gzip');
-        const s = new Blob([body]).stream().pipeThrough(gz);
-        body = new Uint8Array(await new Response(s).arrayBuffer());
+        body = await gzipBytes(body);
         headers['X-Rom-Encoding'] = 'gzip';
       }
       const q = `room=${encodeURIComponent(rm)}&crc=${encodeURIComponent(crc)}`

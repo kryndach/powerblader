@@ -3,6 +3,10 @@ import { INPUT_BITS } from '../../src/netplay_engine.mjs';
 import {
   describeTransferStatus, applyTransferToLobby, updateTransferUi
 } from './transfer_status_ui.mjs';
+import {
+  getActiveTransportLabel, applyTopButtonStates, applyStripVisuals,
+  renderOfflineOrSignalingState
+} from './connection_status_ui.mjs';
 
 function formatMaskShort(mask) {
   if (!mask) return 'Idle';
@@ -45,19 +49,12 @@ export function createConsoleUI(state) {
   const imgBuf32 = new Uint32Array(imgData.data.buffer);
 
   const ui = {
-    canvas,
-    ctx,
-    imgData,
-    imgBuf32,
+    canvas, ctx, imgData, imgBuf32,
     dbgP1Btns: el('dbgP1Btns').querySelectorAll('.pbtn'),
     dbgP2Btns: el('dbgP2Btns').querySelectorAll('.pbtn')
   };
   for (const id of UI_IDS) ui[id] = el(id);
-
-  let bannerTimer = null;
-  let lastMiniPadP1 = -1;
-  let lastMiniPadP2 = -1;
-
+  let bannerTimer = null, lastMiniPadP1 = -1, lastMiniPadP2 = -1;
   ui.setTransferStatus = (xfer) => updateTransferUi(state, ui, xfer);
 
   ui.resetSendRomButtons = function () {
@@ -71,13 +68,9 @@ export function createConsoleUI(state) {
       ui.topSendRomBtn.disabled = false;
     }
   };
-
   ui.showScreenBanner = function (text, level = 'ok', autoHideMs = 3500) {
     if (!ui.screenBanner) return;
-    if (bannerTimer) {
-      clearTimeout(bannerTimer);
-      bannerTimer = null;
-    }
+    if (bannerTimer) { clearTimeout(bannerTimer); bannerTimer = null; }
     ui.screenBanner.textContent = text;
     ui.screenBanner.className = `screen-banner visible ${level}`;
     if (autoHideMs > 0) {
@@ -86,10 +79,8 @@ export function createConsoleUI(state) {
       }, autoHideMs);
     }
   };
-
   ui.logDebug = function (msg) {
-    const ts = new Date().toLocaleTimeString();
-    const entry = `[${ts}] ${msg}`;
+    const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
     state.telemetryEvents.push(entry);
     if (state.telemetryEvents.length > 35) state.telemetryEvents.shift();
     const line = document.createElement('div');
@@ -99,21 +90,16 @@ export function createConsoleUI(state) {
       ui.dbgLog.removeChild(ui.dbgLog.lastChild);
     }
   };
-
   ui.setConsoleResolution = function (w = 256, h = 240) {
     if (canvas.width === w && canvas.height === h) return;
-    canvas.width = w;
-    canvas.height = h;
+    canvas.width = w; canvas.height = h;
     ui.imgData = ctx.createImageData(w, h);
     ui.imgBuf32 = new Uint32Array(ui.imgData.data.buffer);
   };
-
   ui.renderFrameToCanvas = function (fb) {
     const buf = ui.imgBuf32;
     const len = Math.min(buf.length, fb.length);
-    for (let i = 0; i < len; i++) {
-      buf[i] = 0xff000000 | fb[i];
-    }
+    for (let i = 0; i < len; i++) buf[i] = 0xff000000 | fb[i];
     state.canvasDirty = true;
     if (document.hidden) {
       ctx.putImageData(ui.imgData, 0, 0);
@@ -134,7 +120,7 @@ export function createConsoleUI(state) {
     }
   };
 
-  ui.updateLobbyOverlay = function () {
+  ui.updateLobbyOverlay = function (offlineGuide = null) {
     if (!ui.lobbyOverlay) return;
     const wsOpen = Boolean(state.ws && state.ws.readyState === 1);
     const myNick = (ui.nickInput.value || 'You').trim();
@@ -160,6 +146,11 @@ export function createConsoleUI(state) {
       ui.lobbyP1Rom.textContent = `[OK] ${p1RomName} [CRC32: ${p1Crc}]`;
       ui.lobbyP1Badge.className = 'badge ok';
       ui.lobbyP1Badge.textContent = 'ROM READY';
+    } else if (offlineGuide?.p1SlotCls) {
+      ui.lobbySlotP1.className = offlineGuide.p1SlotCls;
+      ui.lobbyP1Rom.textContent = 'Host ready — you can load a game anytime';
+      ui.lobbyP1Badge.className = offlineGuide.p1BadgeCls;
+      ui.lobbyP1Badge.textContent = offlineGuide.p1BadgeTxt;
     } else {
       ui.lobbySlotP1.className = 'lobby-slot waiting';
       ui.lobbyP1Rom.textContent = 'Waiting for game selection...';
@@ -168,17 +159,19 @@ export function createConsoleUI(state) {
     }
 
     if (!wsOpen) {
-      ui.lobbyRoomBadge.className = 'badge warn';
-      ui.lobbyRoomBadge.textContent = 'SOLO / OFFLINE';
+      ui.lobbyRoomBadge.className = offlineGuide?.roomBadgeCls || 'badge warn';
+      ui.lobbyRoomBadge.textContent =
+        offlineGuide?.roomBadgeTxt || 'SOLO / OFFLINE';
       ui.lobbySlotP2.className = 'lobby-slot waiting';
-      ui.lobbyP2Rom.textContent = 'Click "Connect" above for 2-PC Online Co-op';
-      ui.lobbyP2Badge.className = 'badge warn';
-      ui.lobbyP2Badge.textContent = 'OFFLINE';
+      ui.lobbyP2Rom.textContent =
+        offlineGuide?.p2Rom || 'Click "Connect" above for 2-PC Online Co-op';
+      ui.lobbyP2Badge.className = offlineGuide?.p2BadgeCls || 'badge warn';
+      ui.lobbyP2Badge.textContent = offlineGuide?.p2BadgeTxt || 'OFFLINE';
     } else if (!state.peerConnected) {
-      ui.lobbyRoomBadge.className = 'badge warn';
-      ui.lobbyRoomBadge.textContent = `ROOM "${state.roomCode}" - WAITING P2`;
+      ui.lobbyRoomBadge.className = 'badge ok';
+      ui.lobbyRoomBadge.textContent = `ROOM "${state.roomCode}" - READY FOR P2`;
       ui.lobbySlotP2.className = 'lobby-slot waiting';
-      ui.lobbyP2Rom.textContent = 'Waiting for Player 2 to open room link...';
+      ui.lobbyP2Rom.textContent = 'Waiting for Player 2 to join...';
       ui.lobbyP2Badge.className = 'badge warn';
       ui.lobbyP2Badge.textContent = 'WAITING';
     } else if (p2Crc) {
@@ -187,26 +180,27 @@ export function createConsoleUI(state) {
       ui.lobbyP2Badge.className = 'badge ok';
       ui.lobbyP2Badge.textContent = 'ROM READY';
     } else {
-      ui.lobbySlotP2.className = 'lobby-slot waiting';
+      ui.lobbySlotP2.className = 'lobby-slot ready';
       ui.lobbyP2Rom.textContent =
-        `${state.peerNick} connected - selecting game...`;
-      ui.lobbyP2Badge.className = 'badge warn';
-      ui.lobbyP2Badge.textContent = 'SELECT ROM';
+        `${state.peerNick} connected — ready for ROM`;
+      ui.lobbyP2Badge.className = 'badge ok';
+      ui.lobbyP2Badge.textContent = 'CONNECTED';
     }
 
     if (applyTransferToLobby(state, ui)) return;
 
     if (!wsOpen) {
       ui.lobbyActionsRow.style.display = 'none';
-      if (state.romUint8) {
+      if (state.romUint8 && !offlineGuide) {
         ui.lobbyOverlay.classList.add('hidden');
       } else {
-        ui.lobbyFooterText.innerHTML =
-          'Select any <strong>ROM / .ZIP</strong> using ' +
-          '<strong>-- Select Game --</strong> or <strong>Load ROM</strong> ' +
-          'above (or drag &amp; drop onto screen).<br/>For 2-PC Online: ' +
-          'click <strong>Connect</strong> and select or send the game!';
-        ui.lobbyOverlay.classList.remove('hidden');
+        ui.lobbyFooterText.innerHTML = offlineGuide?.footerHtml ||
+          'Select any <strong>ROM / .ZIP</strong> above (or drag &amp; ' +
+          'drop).<br/>For 2-PC Online: click <strong>Connect</strong> or ' +
+          '<strong>Host P2P</strong>!';
+        if (!state.romUint8 || offlineGuide?.roomBadgeCls === 'badge err') {
+          ui.lobbyOverlay.classList.remove('hidden');
+        } else ui.lobbyOverlay.classList.add('hidden');
       }
       return;
     }
@@ -216,10 +210,13 @@ export function createConsoleUI(state) {
       if (state.romUint8) {
         ui.lobbyOverlay.classList.add('hidden');
       } else {
+        const hlth = state.hostHealth?.routeLabel
+          ? ` (${state.hostHealth.routeLabel} LIVE)` : '';
         ui.lobbyFooterText.innerHTML =
-          `Connected to Room <strong>${state.roomCode}</strong>! Click ` +
-          '<strong>Copy Link</strong> to invite Player 2, and select your ' +
-          '<strong>ROM / .ZIP</strong> above.';
+          `<div class="next-step-box ok"><strong>Room ${state.roomCode}` +
+          ` Ready${hlth}!</strong> Tell Partner to click ` +
+          '<strong>Connect</strong> (or click <strong>Copy Link</strong>). ' +
+          'You can select a game now!</div>';
         ui.lobbyOverlay.classList.remove('hidden');
       }
       return;
@@ -235,44 +232,45 @@ export function createConsoleUI(state) {
       return;
     }
 
+    const via = getActiveTransportLabel(state, ui).toUpperCase();
     ui.lobbyOverlay.classList.remove('hidden');
-    ui.lobbyRoomBadge.className = crcMatched ? 'badge ok' : 'badge warn';
+    ui.lobbyRoomBadge.className = 'badge ok';
     ui.lobbyRoomBadge.textContent = crcMatched
-      ? `ROOM "${state.roomCode}" - ROMS MATCHED`
-      : `ROOM "${state.roomCode}" - 2 PLAYERS CONNECTED`;
+      ? `ROOM "${state.roomCode}" [${via}] - MATCHED`
+      : `ROOM "${state.roomCode}" CONNECTED [${via}]`;
 
     if (!state.romCrc32 && !state.partnerRomCrc32) {
       ui.lobbyFooterText.innerHTML =
-        'Both players connected! Select a <strong>game</strong> above ' +
-        '(or click <strong>Send ROM</strong>) to start at Frame #0.';
+        '<div class="next-step-box ok"><strong>Connected to ' +
+        `${state.peerNick}!</strong> Next step: pick a <strong>ROM</strong> ` +
+        'above (or drag &amp; drop) and click <strong>Send ROM</strong>.</div>';
       ui.lobbyActionsRow.style.display = 'none';
     } else if (!state.romCrc32 && state.partnerRomCrc32) {
       ui.lobbyFooterText.innerHTML =
-        `Partner selected <strong>${state.partnerRomName}</strong> ` +
-        `<code>[${state.partnerRomCrc32}]</code>.<br/>Select the same game ` +
-        'or ask Partner to click <strong>Send ROM</strong>!';
+        '<div class="next-step-box ok"><strong>Connected!</strong> Partner ' +
+        `loaded <strong>${state.partnerRomName}</strong>. Wait for Partner ` +
+        'to click <strong>Send ROM</strong> (or select the same file).</div>';
       ui.lobbyActionsRow.style.display = 'none';
     } else if (state.romCrc32 && !state.partnerRomCrc32) {
       ui.lobbyFooterText.innerHTML =
-        `You selected <strong>${state.romName}</strong> ` +
-        `<code>[${state.romCrc32}]</code>.<br/>Click ` +
-        '<strong>Send ROM to Partner</strong> below (or wait for Partner).';
+        '<div class="next-step-box warn"><strong>Connected!</strong> Next ' +
+        `step: click <strong>Send ROM to Partner</strong> below to start ` +
+        `<strong>${state.romName}</strong>!</div>`;
       ui.lobbyActionsRow.style.display = 'flex';
       ui.startMatchNowBtn.style.display = 'none';
       ui.sendRomManualBtn.style.display = 'inline-flex';
     } else if (!crcMatched) {
       ui.lobbyFooterText.innerHTML =
-        '<span style="color:#f87171;font-weight:700;">' +
-        'Different games loaded!</span><br/>Select the same game on both PCs ' +
-        'or click <strong>Send ROM to Partner</strong> below.';
+        '<div class="next-step-box err"><strong>Different games loaded!' +
+        '</strong> Click <strong>Send ROM to Partner</strong> to sync both ' +
+        'PCs to the same game.</div>';
       ui.lobbyActionsRow.style.display = 'flex';
       ui.startMatchNowBtn.style.display = 'none';
       ui.sendRomManualBtn.style.display = 'inline-flex';
     } else {
       ui.lobbyFooterText.innerHTML =
-        `<span style="color:#4ade80;font-weight:700;">Both PCs have ` +
-        `"${state.romName}" [${state.romCrc32}]!</span><br/>` +
-        'Synchronizing Frame #0 lockstep start...';
+        `<div class="next-step-box ok"><strong>Both PCs matched ` +
+        `"${state.romName}"!</strong> Synchronizing Frame #0...</div>`;
       ui.lobbyActionsRow.style.display = 'flex';
       ui.startMatchNowBtn.style.display = 'inline-flex';
       ui.sendRomManualBtn.style.display = 'none';
@@ -288,8 +286,9 @@ export function createConsoleUI(state) {
 
     const xferDesc = describeTransferStatus(state, state.transferStatus);
     if (xferDesc) {
-      ui.statusLed.className = 'led warn';
-      ui.statusText.textContent = `${xferDesc.title} (${xferDesc.meta})`;
+      applyStripVisuals(
+        ui, 'busy', xferDesc.badgeText, `${xferDesc.title} (${xferDesc.meta})`
+      );
       ui.dbgTransportBadge.className = 'badge warn';
       ui.dbgTransportBadge.textContent = xferDesc.badgeText;
       ui.updateLobbyOverlay();
@@ -297,51 +296,51 @@ export function createConsoleUI(state) {
     }
 
     if (!state.ws || state.ws.readyState !== 1) {
-      ui.statusLed.className = 'led';
-      ui.statusText.textContent = state.romUint8
-        ? `SOLO MODE - Playing "${shortRom}" on Port 1`
-        : 'EMPTY CONSOLE - Select a .NES ROM above or click Connect';
-      ui.dbgTransportBadge.className = 'badge warn';
-      ui.dbgTransportBadge.textContent = 'OFFLINE';
-      ui.updateLobbyOverlay();
+      const guide = renderOfflineOrSignalingState(state, ui);
+      ui.updateLobbyOverlay(guide);
       return;
     }
 
+    const via = getActiveTransportLabel(state, ui);
     if (!state.peerConnected) {
-      ui.statusLed.className = 'led warn';
-      ui.statusText.textContent =
-        `ROOM "${state.roomCode}" - Waiting for Player 2... (${shortRom})`;
+      const hlth = state.hostHealth?.routeLabel
+        ? ` (${state.hostHealth.routeLabel})` : '';
+      applyStripVisuals(
+        ui, 'warn', 'HOST READY',
+        `ROOM "${state.roomCode}"${hlth} — Waiting for Partner (${shortRom})`
+      );
+      applyTopButtonStates(state, ui, 'waiting_p2', 'warn');
       ui.dbgTransportBadge.className = 'badge warn';
-      ui.dbgTransportBadge.textContent = 'WAITING FOR P2';
+      ui.dbgTransportBadge.textContent = 'WAITING P2';
     } else if (
-      !state.romCrc32 ||
-      !state.partnerRomCrc32 ||
+      !state.romCrc32 || !state.partnerRomCrc32 ||
       state.partnerRomCrc32 !== state.romCrc32
     ) {
-      ui.statusLed.className = 'led warn';
-      const pRom = state.partnerRomName || 'Waiting...';
-      ui.statusText.textContent =
-        `ROOM "${state.roomCode}" - Select same ROM (You: ${shortRom} | ` +
-        `${state.peerNick}: ${pRom})`;
-      ui.dbgTransportBadge.className = 'badge warn';
-      ui.dbgTransportBadge.textContent = 'SELECT ROM';
+      const nextHint = state.romCrc32
+        ? 'Click Send ROM' : 'Pick a ROM or wait for Send ROM';
+      applyStripVisuals(
+        ui, 'ok', `${via.toUpperCase()}`,
+        `CONNECTED TO ${state.peerNick} [${via}] — Next: ${nextHint}`
+      );
+      applyTopButtonStates(state, ui, 'connected', 'ok');
+      ui.dbgTransportBadge.className = 'badge ok';
+      ui.dbgTransportBadge.textContent = via.toUpperCase();
     } else if (state.engine && state.engine.syncPaused) {
-      ui.statusLed.className = 'led warn';
-      ui.statusText.textContent =
-        `ROOM "${state.roomCode}" - Locking Frame #0 for "${shortRom}"...`;
+      applyStripVisuals(
+        ui, 'busy', 'SYNCING',
+        `ROOM "${state.roomCode}" — Syncing Frame #0 for "${shortRom}"...`
+      );
+      applyTopButtonStates(state, ui, 'connected', 'ok');
       ui.dbgTransportBadge.className = 'badge warn';
       ui.dbgTransportBadge.textContent = 'SYNCING';
     } else {
-      const usingP2P =
-        state.rtcChannel &&
-        state.rtcChannel.readyState === 'open' &&
-        ui.transportModeSelect.value !== 'wss';
-      const via = usingP2P ? 'WebRTC P2P' : 'WSS Relay';
-      ui.statusLed.className = 'led ok';
-      ui.statusText.textContent =
-        `ONLINE SYNCED [${state.roomCode}] - Playing "${shortRom}" (${via})`;
+      applyStripVisuals(
+        ui, 'ok', `${via.toUpperCase()}`,
+        `ONLINE [${state.roomCode}] — Playing "${shortRom}" (${via})`
+      );
+      applyTopButtonStates(state, ui, 'playing', 'ok');
       ui.dbgTransportBadge.className = 'badge ok';
-      ui.dbgTransportBadge.textContent = usingP2P ? 'P2P DIRECT' : 'WSS RELAY';
+      ui.dbgTransportBadge.textContent = via.toUpperCase();
     }
     ui.updateLobbyOverlay();
   };

@@ -14,6 +14,9 @@ import { createRouteOptimizer } from './route_optimizer.mjs';
 import { setupRomCacheFolderUi } from './rom_cache_ui.mjs';
 import { setupHybridConnectionUi } from './hybrid_connect.mjs';
 import {
+  setConnectionPhase, startLocalHostHealthPoller
+} from './connection_status_ui.mjs';
+import {
   resolveServerEndpoints, buildApiUrl, buildWsUrl
 } from './server_endpoint.mjs';
 import { startConsoleFrameLoop } from './frame_loop.mjs';
@@ -94,7 +97,15 @@ function attachSocketLifecycle(ws, code, nick) {
   ws.onopen = () => {
     ui.dbgWssState.textContent = ws.isServerlessP2p
       ? 'Connected (P2P)' : 'Connected';
-    ui.connectBtn.textContent = 'Reconnect';
+    if (ws.isServerlessP2p && ws.getIceSummary) {
+      setTimeout(() => ws.getIceSummary().then((s) => {
+        if (!s) return;
+        const rtt = s.rttMs ? ` ~${s.rttMs}ms` : '';
+        ui.logDebug(
+          `[P2P ICE] ${s.localType}<->${s.remoteType} (${s.protocol}${rtt})`
+        );
+      }), 1500);
+    }
     ws.send(JSON.stringify({
       type: 'join_room', roomCode: code, nick,
       romCrc32: state.romCrc32, romName: state.romName,
@@ -121,7 +132,9 @@ function attachSocketLifecycle(ws, code, nick) {
       state.engine.online = false;
       state.engine.syncPaused = false;
     }
-    ui.updateStatusStrip();
+    if (state.connStatus?.phase !== 'error') {
+      setConnectionPhase(state, ui, { phase: 'offline', tone: 'idle' });
+    } else ui.updateStatusStrip();
     hybridConn?.schedulePinggyAutoReconnect?.();
   };
 }
@@ -307,20 +320,11 @@ ui.localRomSelect.addEventListener('change', () => {
 setupRomDropAndPicker(state, ui, romSync);
 
 ui.saveSlotSelect?.addEventListener('change', () =>
-  saveSlots.selectSlot(Number(ui.saveSlotSelect.value), true)
-);
-ui.quickSaveBtn?.addEventListener('click', () =>
-  saveSlots.saveToCurrentSlot()
-);
-ui.quickLoadBtn?.addEventListener('click', () =>
-  saveSlots.loadFromCurrentSlot()
-);
-ui.exportSaveFileBtn?.addEventListener('click', () =>
-  saveSlots.exportSaveToFile()
-);
-ui.importSaveFileBtn?.addEventListener('click', () =>
-  ui.saveFileInput?.click()
-);
+  saveSlots.selectSlot(Number(ui.saveSlotSelect.value), true));
+ui.quickSaveBtn?.addEventListener('click', saveSlots.saveToCurrentSlot);
+ui.quickLoadBtn?.addEventListener('click', saveSlots.loadFromCurrentSlot);
+ui.exportSaveFileBtn?.addEventListener('click', saveSlots.exportSaveToFile);
+ui.importSaveFileBtn?.addEventListener('click', () => ui.saveFileInput.click());
 ui.saveFileInput?.addEventListener('change', () => {
   const f = ui.saveFileInput.files?.[0];
   if (f) saveSlots.importSaveFromFile(f);
@@ -336,7 +340,10 @@ ui.autoBenchLink?.addEventListener('click', () => {
   ui.autoBenchLink.href = `./autotest.html?gameRoom=${q}`;
 });
 const isStatic = await hybridConn.whenReady();
-if (!isStatic || state.apiBaseUrl) await romSync.discoverLocalRoms();
+if (!isStatic || state.apiBaseUrl) {
+  await romSync.discoverLocalRoms();
+  startLocalHostHealthPoller(state, ui);
+}
 if (params.get('room') || params.get('server')) {
   hybridConn.smartConnect();
 }

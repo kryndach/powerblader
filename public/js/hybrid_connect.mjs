@@ -10,6 +10,7 @@ import {
 } from './serverless_p2p_socket.mjs';
 import { probeCandidateUrls } from './route_optimizer.mjs';
 import { isLocalHostRuntime } from './rom_fast_transfer.mjs';
+import { setConnectionPhase } from './connection_status_ui.mjs';
 
 const PASS_STORAGE_KEY = 'nes_room_password_v1';
 
@@ -175,17 +176,45 @@ export function setupHybridConnectionUi(state, ui, hooks) {
     const { room, pass } = await refreshRoomAuth();
     if (myGen !== connectGen) return;
     if (pass.length < 4) {
+      setConnectionPhase(state, ui, {
+        phase: 'error', pill: 'PASS NEEDED',
+        headline: 'Enter a Room Password (4+ chars) to Host P2P',
+        nextStep: 'Type a shared Pass next to Room, then click Host P2P.'
+      });
       return ui.showScreenBanner(
         'ENTER A ROOM PASSWORD (4+ CHARS) FOR P2P HOST', 'warn', 3500
       );
     }
     const nick = (ui.nickInput?.value || 'Host').trim().slice(0, 14);
+    setConnectionPhase(state, ui, {
+      phase: 'hosting_p2p', room, relayCount: 0,
+      headline: `Starting P2P Host for "${room}"...`
+    });
     ui.showScreenBanner(`HOSTING P2P ROOM "${room}"...`, 'warn', 0);
     const p2pSock = createServerlessP2pSocket({
       role: 'host', roomCode: room, password: pass, nick, relays,
-      onStatus: (s) => {
+      onStatus: (s, phase, meta) => {
         ui.logDebug(`[P2P] ${s}`);
-        ui.showScreenBanner(s.toUpperCase(), 'warn', 4500);
+        if (phase === 'hosting') {
+          setConnectionPhase(state, ui, {
+            phase: 'hosting_p2p', room, relayCount: meta?.relayCount || 1,
+            headline: s
+          });
+          ui.showScreenBanner(s.toUpperCase(), 'ok', 4500);
+        } else if (phase === 'answering') {
+          setConnectionPhase(state, ui, {
+            phase: 'connecting', headline: s,
+            nextStep: 'Completing direct WebRTC handshake...'
+          });
+        } else if (phase === 'error') {
+          setConnectionPhase(state, ui, {
+            phase: 'error', pill: 'P2P ERROR', headline: s,
+            nextStep: 'Click Host P2P to retry or run PLAY_NES_AUTO.bat.'
+          });
+          ui.showScreenBanner(s.toUpperCase(), 'err', 4500);
+        } else if (phase !== 'connected') {
+          ui.showScreenBanner(s.toUpperCase(), 'warn', 4500);
+        }
       }
     });
     hooks.attachCustomSocket(p2pSock, room, nick);
@@ -203,14 +232,28 @@ export function setupHybridConnectionUi(state, ui, hooks) {
         await syncHostPasswordToServer();
       }
       if (myGen !== connectGen) return;
+      setConnectionPhase(state, ui, {
+        phase: 'connecting', headline: `Connecting to Room "${room}"...`,
+        nextStep: 'Opening WebSocket channel...'
+      });
       return hooks.connectStandardWs();
     }
     if (pass.length < 4) {
+      setConnectionPhase(state, ui, {
+        phase: 'error', pill: 'PASS NEEDED',
+        headline: 'Enter Room Password (4+ chars) to find Host',
+        nextStep: 'Type the exact Pass your Host used, then click Connect.'
+      });
       return ui.showScreenBanner(
         'ENTER ROOM PASSWORD TO AUTO-FIND HOST (OR USE ?server=)', 'warn', 4000
       );
     }
     ui.dbgWssState.textContent = 'Discovering Host...';
+    setConnectionPhase(state, ui, {
+      phase: 'discovering',
+      headline: `Step 1/2: Finding Host for "${room}" via Nostr relays...`,
+      nextStep: 'Checking live Pinggy relay & Serverless P2P offers...'
+    });
     ui.showScreenBanner(
       `FINDING HOST FOR "${room}" VIA P2P RELAYS...`, 'warn', 0
     );
@@ -226,6 +269,12 @@ export function setupHybridConnectionUi(state, ui, hooks) {
         `Discovered Host via Nostr -> ${found.winner.label} ` +
           `(${found.winner.medRttMs}ms)`
       );
+      setConnectionPhase(state, ui, {
+        phase: 'connecting',
+        headline: `Step 2/2: Connecting to ${found.winner.label} ` +
+          `(${found.winner.medRttMs}ms)...`,
+        nextStep: 'Joining room over Pinggy WSS...'
+      });
       ui.showScreenBanner(
         `HOST FOUND (${found.winner.medRttMs}ms) - CONNECTING...`, 'ok', 2600
       );
@@ -234,15 +283,34 @@ export function setupHybridConnectionUi(state, ui, hooks) {
     }
     if (found.mode === 'p2p') {
       const nick = (ui.nickInput?.value || 'Bro').trim().slice(0, 14);
+      setConnectionPhase(state, ui, {
+        phase: 'connecting',
+        headline: `Step 2/2: Opening Direct WebRTC P2P to "${room}"...`,
+        nextStep: 'Exchanging ICE candidates (3-6 sec)...'
+      });
       ui.showScreenBanner('CONNECTING SERVERLESS WEB-RTC P2P...', 'warn', 6000);
       const p2pSock = createServerlessP2pSocket({
         role: 'guest', roomCode: room, password: pass, nick, relays,
         existingOffer: found.offer,
-        onStatus: (s) => ui.logDebug(`[P2P] ${s}`)
+        onStatus: (s, phase) => {
+          ui.logDebug(`[P2P] ${s}`);
+          if (phase === 'error') {
+            setConnectionPhase(state, ui, {
+              phase: 'error', pill: 'P2P FAILED', headline: s,
+              nextStep: 'Try clicking Retry, or Host can run PLAY_NES_AUTO.bat.'
+            });
+          }
+        }
       });
       return hooks.attachCustomSocket(p2pSock, room, nick);
     }
     ui.dbgWssState.textContent = 'Host Offline';
+    setConnectionPhase(state, ui, {
+      phase: 'error', pill: 'HOST OFFLINE',
+      headline: `No online Host found for Room "${room}"`,
+      nextStep: 'Ask Host to click Host P2P (or run PLAY_NES_AUTO.bat) ' +
+        'with the same Room + Pass, then click Retry.'
+    });
     ui.showScreenBanner(
       'HOST NOT ONLINE YET — START HOST OR CLICK HOST P2P', 'warn', 4500
     );

@@ -104,9 +104,12 @@ export function applyTransferToLobby(state, ui) {
   return true;
 }
 
+const SEND_PHASE_RANK = { uploading: 1, sending: 2, 'partner-core': 3 };
+const RECV_PHASE_RANK = { downloading: 1, 'loading-core': 2 };
+
 export function updateTransferUi(state, ui, xfer) {
-  state.transferStatus = xfer || null;
   if (!xfer) {
+    state.transferStatus = null;
     if (ui.sendRomManualBtn) {
       ui.sendRomManualBtn.textContent = 'Send ROM to Partner';
       ui.sendRomManualBtn.disabled = false;
@@ -118,7 +121,27 @@ export function updateTransferUi(state, ui, xfer) {
     ui.updateStatusStrip();
     return;
   }
-  const desc = describeTransferStatus(state, xfer);
+  const prev = state.transferStatus;
+  let nextXfer = { ...xfer };
+  if (prev && prev.romName === nextXfer.romName &&
+      (!prev.sessionId || !nextXfer.sessionId ||
+        prev.sessionId === nextXfer.sessionId)) {
+    const sPrev = SEND_PHASE_RANK[prev.phase] || 0;
+    const sNext = SEND_PHASE_RANK[nextXfer.phase] || 0;
+    const rPrev = RECV_PHASE_RANK[prev.phase] || 0;
+    const rNext = RECV_PHASE_RANK[nextXfer.phase] || 0;
+    if ((sPrev && sNext && sNext < sPrev) ||
+        (rPrev && rNext && rNext < rPrev)) {
+      return;
+    }
+    if (prev.phase === nextXfer.phase &&
+        Number(nextXfer.pct) < Number(prev.pct)) {
+      nextXfer.pct = prev.pct;
+      if (prev.detail) nextXfer.detail = prev.detail;
+    }
+  }
+  state.transferStatus = nextXfer;
+  const desc = describeTransferStatus(state, nextXfer);
   if (ui.topSendRomBtn) {
     ui.topSendRomBtn.textContent = desc.topBtn;
     ui.topSendRomBtn.disabled = true;

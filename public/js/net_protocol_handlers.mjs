@@ -6,6 +6,7 @@ import { createInputRouter } from './input_router.mjs';
 import {
   clearActiveRomTransfers, resetPingWindow, resetPeerSessionState
 } from './session_store.mjs';
+import { setConnectionPhase } from './connection_status_ui.mjs';
 
 export function createProtocolHandlers(
   state, ui, romSync, transport, telemetry
@@ -147,9 +148,12 @@ export function createProtocolHandlers(
     if (msg.type === 'aux_bound') return;
     if (msg.type === 'auth_required') {
       ui.dbgWssState.textContent = 'Auth Failed';
-      return ui.showScreenBanner(
-        `PASSWORD REQUIRED (${msg.reason || 'Check Pass'})`, 'err', 5000
-      );
+      setConnectionPhase(state, ui, {
+        phase: 'error', pill: 'AUTH ERROR',
+        headline: `Password Rejected (${msg.reason || 'Wrong Pass'})`,
+        nextStep: 'Enter matching Room + Pass and click Retry.'
+      });
+      return ui.showScreenBanner('PASSWORD REQUIRED (Check Pass)', 'err', 5000);
     }
     if (msg.type.startsWith('route_')) {
       return state.routeOptimizer?.handleRouteMessage?.(msg);
@@ -157,15 +161,12 @@ export function createProtocolHandlers(
     if (msg.type === 'netplay_input') {
       return inputRouter.routeNetplayInput(msg);
     }
-
     state.rxCountThisSec++;
     if (msg.type === 'peer_ping') {
       return sendWs({ type: 'peer_pong', t: msg.t });
     }
-    if (
-      msg.type === 'wire_rtt' || msg.type === 'peer_pong' ||
-      (msg.type === 'pong' && !state.peerConnected)
-    ) {
+    if (msg.type === 'wire_rtt' || msg.type === 'peer_pong' ||
+        (msg.type === 'pong' && !state.peerConnected)) {
       return handlePongAndAutoDelay(msg);
     }
     if (msg.type === 'room_joined') return handleRoomJoined(msg);

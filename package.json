@@ -6,9 +6,10 @@
   "main": "server/relay_server.mjs",
   "scripts": {
     "start": "node server/relay_server.mjs",
-    "test": "node tools/test_module_contracts.mjs && node tools/test_visual_accuracy.mjs && node tools/test_coop_qa.mjs && node tools/test_real_roms.mjs && node tools/test_perf_and_edge_cases.mjs && node tools/test_tetris_real_life.mjs && node tools/test_browser_e2e.mjs && node tools/test_route_and_rendezvous.mjs && node tools/test_gh_pages_hybrid.mjs && node tools/test_real_life_smoothness.mjs && node tools/verify_release_smoke.mjs",
+    "test": "node tools/test_module_contracts.mjs && node tools/test_visual_accuracy.mjs && node tools/test_coop_qa.mjs && node tools/test_real_roms.mjs && node tools/test_perf_and_edge_cases.mjs && node tools/test_tetris_real_life.mjs && node tools/test_browser_e2e.mjs && node tools/test_route_and_rendezvous.mjs && node tools/test_gh_pages_hybrid.mjs && node tools/test_p2p_ux_and_progress.mjs && node tools/test_real_life_smoothness.mjs && node tools/verify_release_smoke.mjs",
     "test:routes": "node tools/test_route_and_rendezvous.mjs",
     "test:pages": "node tools/test_gh_pages_hybrid.mjs",
+    "test:ux": "node tools/test_p2p_ux_and_progress.mjs",
     "build:pages": "node tools/build_gh_pages.mjs",
     "test:contracts": "node tools/test_module_contracts.mjs",
     "test:visual": "node tools/test_visual_accuracy.mjs",

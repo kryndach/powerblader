@@ -14,8 +14,8 @@ export const DEFAULT_NOSTR_RELAYS = [
 const DEFAULT_ICE = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun.nextcloud.com:443' },
-  { urls: 'stun:stun.cloudflare.com:3478' }
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun.nextcloud.com:443' }
 ];
 
 function waitForIceComplete(rtc, maxMs = 1500) {
@@ -139,10 +139,35 @@ export function createServerlessP2pSocket({
         });
         return;
       }
-      if (msg.type === 'netplay_input' && inputDc?.readyState === 'open') {
+      const useUnordered = msg.type === 'netplay_input' ||
+        msg.type === 'peer_ping' || msg.type === 'peer_pong';
+      if (useUnordered && inputDc?.readyState === 'open') {
         try { inputDc.send(rawStr); return; } catch {}
       }
       try { ctrlDc.send(rawStr); } catch {}
+    },
+    async getIceSummary() {
+      if (!rtc?.getStats) return null;
+      try {
+        const stats = await rtc.getStats();
+        let activePair = null;
+        stats.forEach((r) => {
+          if (r.type === 'candidate-pair' &&
+              (r.selected || r.state === 'succeeded')) {
+            if (!activePair || r.selected) activePair = r;
+          }
+        });
+        if (!activePair) return null;
+        const loc = stats.get(activePair.localCandidateId);
+        const rem = stats.get(activePair.remoteCandidateId);
+        return {
+          protocol: loc?.protocol || 'udp',
+          localType: loc?.candidateType || 'unknown',
+          remoteType: rem?.candidateType || 'unknown',
+          rttMs: activePair.currentRoundTripTime
+            ? Math.round(activePair.currentRoundTripTime * 1000) : null
+        };
+      } catch { return null; }
     },
     close() {
       if (closed) return;
@@ -182,7 +207,7 @@ export function createServerlessP2pSocket({
       if (closed) return;
       try { stopSub?.(); stopSub = null; } catch {}
       sock.readyState = 1;
-      onStatus?.('WebRTC P2P Direct Link OPEN!');
+      onStatus?.('WebRTC P2P Direct Link OPEN!', 'connected', {});
       sock.onopen?.();
     };
     dc.onmessage = (ev) => handlePeerChannelData(ev.data);
@@ -214,14 +239,16 @@ export function createServerlessP2pSocket({
         }));
         const offer = await rtc.createOffer();
         await rtc.setLocalDescription(offer);
-        onStatus?.('Gathering ICE candidates for P2P Host...');
+        onStatus?.('Gathering ICE candidates for P2P Host...', 'gathering', {});
         await waitForIceComplete(rtc, 1500);
         if (closed) return;
         let answered = false;
         stopSub = subscribeEncryptedNostr(relays, ansKeys, async (ans) => {
           if (closed || answered || ans?.sid !== sid || !ans.sdp) return;
           answered = true;
-          onStatus?.('Partner answered! Opening direct P2P channel...');
+          onStatus?.(
+            'Partner answered! Opening direct P2P channel...', 'answering', {}
+          );
           try { await rtc.setRemoteDescription(ans.sdp); } catch {}
         });
         const sdpOut = {
@@ -233,7 +260,8 @@ export function createServerlessP2pSocket({
         onStatus?.(
           okCnt > 0
             ? `P2P Host online (${okCnt} relays) — waiting for partner...`
-            : 'Failed to reach Nostr relays'
+            : 'Failed to reach Nostr relays',
+          okCnt > 0 ? 'hosting' : 'error', { relayCount: okCnt, room }
         );
       } else {
         rtc.ondatachannel = (ev) => {
@@ -242,7 +270,9 @@ export function createServerlessP2pSocket({
         };
         const acceptOffer = async (off) => {
           if (closed || !off?.sdp) return;
-          onStatus?.('Found P2P Host! Sending encrypted answer...');
+          onStatus?.(
+            'Found P2P Host! Sending encrypted answer...', 'answering', {}
+          );
           await rtc.setRemoteDescription(off.sdp);
           const ans = await rtc.createAnswer();
           await rtc.setLocalDescription(ans);
@@ -269,7 +299,7 @@ export function createServerlessP2pSocket({
         }
       }
     } catch (e) {
-      onStatus?.(`P2P Error: ${e.message}`);
+      onStatus?.(`P2P Error: ${e.message}`, 'error', {});
       sock.onerror?.(e);
       sock.close();
     }

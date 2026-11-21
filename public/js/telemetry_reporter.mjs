@@ -5,10 +5,11 @@ import { buildApiUrl } from './server_endpoint.mjs';
 export function createTelemetryReporter(state, ui, romSync) {
   function buildGameplayTelemetryPayload() {
     const t = state.engine ? state.engine.getTelemetry() : {};
-    const usingP2P =
-      state.rtcChannel &&
-      state.rtcChannel.readyState === 'open' &&
-      ui.transportModeSelect.value !== 'wss';
+    const usingP2P = Boolean(
+      state.ws?.isServerlessP2p ||
+      (state.rtcChannel && state.rtcChannel.readyState === 'open' &&
+        ui.transportModeSelect.value !== 'wss')
+    );
     const matchState =
       !state.ws || state.ws.readyState !== 1
         ? 'OFFLINE_SOLO'
@@ -95,8 +96,9 @@ export function createTelemetryReporter(state, ui, romSync) {
 
   function handlePongAndAutoDelay(msg) {
     const p2pOpen = Boolean(
-      state.rtcChannel && state.rtcChannel.readyState === 'open' &&
-      ui.transportModeSelect?.value !== 'wss'
+      state.ws?.isServerlessP2p ||
+      (state.rtcChannel && state.rtcChannel.readyState === 'open' &&
+        ui.transportModeSelect?.value !== 'wss')
     );
     const nowPerf = performance.now();
     if (msg.type === 'wire_rtt') {

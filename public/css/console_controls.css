@@ -182,3 +182,108 @@
   gap: 8px;
   padding-top: 4px;
 }
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.85); }
+}
+
+.led.busy {
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan);
+  animation: pulseDot 1.1s ease-in-out infinite;
+}
+
+.conn-pill {
+  font-size: 0.68rem;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 10px;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: #1b1f2a;
+  color: var(--muted);
+}
+.conn-pill.busy {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+.conn-pill.warn {
+  background: rgba(251, 191, 36, 0.16);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.conn-pill.ok {
+  background: rgba(74, 222, 128, 0.16);
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.conn-pill.err {
+  background: rgba(248, 113, 113, 0.18);
+  border-color: var(--err);
+  color: var(--err);
+}
+
+.status-strip.strip-busy { border-left: 3px solid var(--cyan); }
+.status-strip.strip-warn { border-left: 3px solid var(--warn); }
+.status-strip.strip-ok { border-left: 3px solid var(--ok); }
+.status-strip.strip-err { border-left: 3px solid var(--err); }
+
+.badge.busy {
+  background: rgba(56, 189, 248, 0.18);
+  color: var(--cyan);
+  border: 1px solid var(--cyan);
+}
+
+button.btn-state-busy {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+button.btn-state-host {
+  background: rgba(251, 191, 36, 0.16);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+button.btn-state-ok {
+  background: rgba(34, 197, 94, 0.22);
+  border-color: var(--ok);
+  color: #dcfce7;
+}
+button.btn-state-err {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: var(--err);
+  color: #fecaca;
+}
+
+.next-step-box {
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+.next-step-box.ok {
+  border-color: rgba(74, 222, 128, 0.45);
+  background: rgba(74, 222, 128, 0.08);
+  color: #dcfce7;
+}
+.next-step-box.busy {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.08);
+  color: #e0f2fe;
+}
+.next-step-box.warn {
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.08);
+  color: #fef3c7;
+}
+.next-step-box.err {
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.1);
+  color: #fee2e2;
+}
