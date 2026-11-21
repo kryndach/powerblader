@@ -51,16 +51,17 @@ export function createProtocolHandlers(
     state.engine.inputDelayFrames = romSync.resolveDesiredInputDelay();
     if (syncState.resetToZero && state.nes && state.romBinaryString) {
       state.nes.loadROM(state.romBinaryString);
-      if (typeof syncState.overclockEnabled === 'boolean') {
-        state.onOverclockStateSynced?.(syncState.overclockEnabled);
-      }
+      const ocVal = syncState.overclockMode ?? syncState.overclockEnabled;
+      if (ocVal !== undefined) state.onOverclockStateSynced?.(ocVal);
       state.engine.resetTimeline(0, syncState.sessionId);
     } else {
       state.engine.importSyncState(
         syncState, { preserveLocalInputDelay: true }
       );
       if (state.nes && state.nes.ppu) {
-        const oc = Boolean(state.nes.ppu._overclockEnabled);
+        const p = state.nes.ppu;
+        const oc = typeof p._overclockMode === 'number'
+          ? p._overclockMode : Boolean(p._overclockEnabled);
         state.onOverclockStateSynced?.(oc);
       }
     }
@@ -235,9 +236,8 @@ export function createProtocolHandlers(
         state.partnerRomName = msg.romName || state.romName;
         state.partnerRomCrc32 = msg.romCrc32 || state.romCrc32;
         state.nes.loadROM(state.romBinaryString);
-        if (typeof msg.overclockEnabled === 'boolean') {
-          state.onOverclockStateSynced?.(msg.overclockEnabled);
-        }
+        const ocVal = msg.overclockMode ?? msg.overclockEnabled;
+        if (ocVal !== undefined) state.onOverclockStateSynced?.(ocVal);
         state.engine.localPlayer = state.localPlayerIndex;
         state.engine.online = true;
         state.engine.enableRiftPacing = false;

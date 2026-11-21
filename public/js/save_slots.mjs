@@ -159,6 +159,17 @@ export function createSaveSlotsManager(state, ui, romSync) {
     const rand = Math.random().toString(36).slice(2, 7);
     const newSessionId = `${Date.now().toString(36)}_${rand}`;
     const syncState = { ...entry.syncState, sessionId: newSessionId };
+    if (syncState.nesState?.ppu) {
+      const oc = state.nesOverclockMode ?? (state.nesOverclockEnabled ? 1 : 0);
+      syncState.nesState = {
+        ...syncState.nesState,
+        ppu: {
+          ...syncState.nesState.ppu,
+          _overclockMode: oc,
+          _overclockEnabled: oc > 0
+        }
+      };
+    }
     const isOnline = Boolean(
       state.ws && state.ws.readyState === 1 && state.peerConnected
     );

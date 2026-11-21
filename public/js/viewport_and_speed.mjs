@@ -14,11 +14,12 @@ export function createViewportAndSpeedController(state, ui, romSync = null) {
   const speedBtns = Array.from(document.querySelectorAll('.speed-btn'));
 
   try {
-    state.nesOverclockEnabled =
-      localStorage.getItem('nes_overclock_enabled') === '1';
+    const savedOc = localStorage.getItem('nes_overclock_enabled');
+    state.nesOverclockMode = savedOc === '0' ? 0 : savedOc === '2' ? 2 : 1;
   } catch {
-    state.nesOverclockEnabled = false;
+    state.nesOverclockMode = 1;
   }
+  state.nesOverclockEnabled = state.nesOverclockMode > 0;
 
   const floatingBtn = document.createElement('button');
   floatingBtn.id = 'floatingCenterBtn';
@@ -176,34 +177,45 @@ export function createViewportAndSpeedController(state, ui, romSync = null) {
     centerGameScreen({ smooth: true })
   );
 
+  function parseOcMode(val) {
+    if (val === 2 || val === '2' || val === 'max') return 2;
+    if (val === true || val === 1 || val === '1' || val === 'on') return 1;
+    return 0;
+  }
+
   function syncOverclockButtonUI() {
     if (!overclockBtn) return;
-    const on = Boolean(state.nesOverclockEnabled);
-    overclockBtn.textContent = on ? 'OC: ON' : 'OC: OFF';
-    overclockBtn.classList.toggle('active-toggle', on);
+    const mode = state.nesOverclockMode ?? (state.nesOverclockEnabled ? 1 : 0);
+    overclockBtn.textContent =
+      mode === 2 ? 'OC: MAX' : mode === 1 ? 'OC: ON' : 'OC: OFF';
+    overclockBtn.classList.toggle('active-toggle', mode > 0);
   }
 
   function applyOverclockToCore() {
+    const mode = state.nesOverclockMode ?? (state.nesOverclockEnabled ? 1 : 0);
     if (state.nes && state.nes.ppu) {
-      setNesOverclockEnabled(state.nes, Boolean(state.nesOverclockEnabled));
+      setNesOverclockEnabled(state.nes, mode);
     }
     syncOverclockButtonUI();
   }
 
-  function setOverclockEnabled(enabled, options = {}) {
-    const next = Boolean(enabled);
-    state.nesOverclockEnabled = next;
+  function setOverclockEnabled(enabledOrMode, options = {}) {
+    const mode = parseOcMode(enabledOrMode);
+    state.nesOverclockMode = mode;
+    state.nesOverclockEnabled = mode > 0;
     if (options.persist !== false) {
       try {
-        localStorage.setItem('nes_overclock_enabled', next ? '1' : '0');
+        localStorage.setItem('nes_overclock_enabled', String(mode));
       } catch {}
     }
     applyOverclockToCore();
     if (options.showBanner !== false) {
-      const msg = next
-        ? 'NES OVERCLOCK: ON (ANTI-LAG)'
-        : 'NES OVERCLOCK: OFF (ACCURATE)';
-      ui.showScreenBanner(msg, next ? 'warn' : 'ok', 2000);
+      const msg = mode === 2
+        ? 'NES OVERCLOCK: MAX (FORCE +360sc ANTI-LAG)'
+        : mode === 1
+          ? 'NES OVERCLOCK: ON (SMART ANTI-LAG)'
+          : 'NES OVERCLOCK: OFF (ACCURATE)';
+      ui.showScreenBanner(msg, mode > 0 ? 'warn' : 'ok', 2200);
       ui.logDebug(msg);
     }
     if (
@@ -222,7 +234,9 @@ export function createViewportAndSpeedController(state, ui, romSync = null) {
 
   if (overclockBtn) {
     overclockBtn.addEventListener('click', () => {
-      setOverclockEnabled(!state.nesOverclockEnabled, {
+      const cur = state.nesOverclockMode ?? (state.nesOverclockEnabled ? 1 : 0);
+      const nextMode = cur === 1 ? 2 : cur === 2 ? 0 : 1;
+      setOverclockEnabled(nextMode, {
         persist: true,
         syncPeer: true,
         showBanner: true

@@ -35,21 +35,30 @@ export function patchJsnes8x16Sprites(nes) {
 
   if (!nes._patchedLoadRomHook) {
     nes._patchedLoadRomHook = true;
+    const readOcMode = (n) => (
+      n.ppu
+        ? (n.ppu._overclockEnabled ? (n.ppu._overclockMode === 2 ? 2 : 1) : 0)
+        : (typeof n._overclockMode === 'number' ? n._overclockMode : 0)
+    );
     if (typeof nes.loadROM === 'function') {
       const origLoadROM = nes.loadROM.bind(nes);
       nes.loadROM = function (data) {
+        const prevMode = readOcMode(this);
         const res = origLoadROM(data);
         resetOverclockRuntimeFlags(this.ppu);
         patchJsnes8x16Sprites(this);
+        setNesOverclockEnabled(this, prevMode);
         return res;
       };
     }
     if (typeof nes.reset === 'function') {
       const origReset = nes.reset.bind(nes);
       nes.reset = function () {
+        const prevMode = readOcMode(this);
         const res = origReset();
         resetOverclockRuntimeFlags(this.ppu);
         patchJsnes8x16Sprites(this);
+        setNesOverclockEnabled(this, prevMode);
         return res;
       };
     }

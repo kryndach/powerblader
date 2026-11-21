@@ -220,7 +220,10 @@ export function serializeCompactNesState(
   delete nesState.ppu.bgbuffer;
   delete nesState.ppu.pixrendered;
   delete nesState.ppu.scantile;
-  nesState.ppu._overclockEnabled = Boolean(nes.ppu._overclockEnabled);
+  const ocMode = nes.ppu._overclockEnabled
+    ? (nes.ppu._overclockMode === 2 ? 2 : 1) : 0;
+  nesState.ppu._overclockMode = ocMode;
+  nesState.ppu._overclockEnabled = ocMode > 0;
   nesState.ppu._hasTightWaitLoop = Boolean(nes.ppu._hasTightWaitLoop);
   nesState.ppu._overclockCapped = Boolean(nes.ppu._overclockCapped);
 
@@ -259,7 +262,12 @@ export function restoreCompactNesState(nes, syncObj) {
 
   if (useRefMap) ppu.ptTile = [];
   ppu.fromJSON(s.ppu);
-  ppu._overclockEnabled = Boolean(s.ppu._overclockEnabled);
+  const ocMode = s.ppu._overclockEnabled
+    ? (s.ppu._overclockMode === 2 ? 2 : 1) : 0;
+  ppu._overclockMode = ocMode;
+  ppu._overclockEnabled = ocMode > 0;
+  nes._overclockMode = ocMode;
+  nes._overclockEnabled = ocMode > 0;
   ppu._hasTightWaitLoop = Boolean(s.ppu._hasTightWaitLoop);
   ppu._overclockCapped = Boolean(s.ppu._overclockCapped);
   ppu._overclockScanlines = 0;

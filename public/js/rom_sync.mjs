@@ -86,11 +86,12 @@ export function createRomSyncManager(state, ui, audio) {
     if (state.partnerRomCrc32 !== state.romCrc32) state.matchStarted = false;
     armSyncAckWatchdog(newSessionId, 12000);
 
+    const oc = state.nesOverclockMode ?? (state.nesOverclockEnabled ? 1 : 0);
     state.ws.send(JSON.stringify({
       type: 'match_start_req', sessionId: newSessionId,
       romCrc32: state.romCrc32, romName: state.romName,
       inputDelayFrames: state.engine.inputDelayFrames,
-      overclockEnabled: Boolean(state.nesOverclockEnabled), reason
+      overclockEnabled: oc > 0, overclockMode: oc, reason
     }));
     ui.logDebug(
       `Initiated Frame #0 lockstep (${reason}) for "${state.romName}" ` +
@@ -241,10 +242,11 @@ export function createRomSyncManager(state, ui, audio) {
     if (resetToZero && state.nes && state.romBinaryString) {
       state.nes.loadROM(state.romBinaryString);
       state.engine.resetTimeline(0, newSessionId);
+      const ocM = state.nesOverclockMode ?? (state.nesOverclockEnabled ? 1 : 0);
       syncState = {
         resetToZero: true, sessionId: newSessionId, frame: 0,
         inputDelayFrames: state.engine.inputDelayFrames,
-        overclockEnabled: Boolean(state.nesOverclockEnabled)
+        overclockEnabled: ocM > 0, overclockMode: ocM
       };
     } else {
       state.engine.sessionId = newSessionId;

@@ -216,22 +216,29 @@ async function runNetemChromeSuite() {
     assert.ok(m1.freezes <= 3, `NES 0f Tab 1 had ${m1.freezes} >50ms freezes`);
     assert.strictEqual(m1.audio.underruns, 0, 'NES 0f Audio underrun!');
 
-    // Verify OC: OFF default & P1 -> P2 live sync over 240ms netem
+    // Verify OC: ON default & P1 -> P2 live sync (ON -> MAX -> OFF) over 240ms
     const oc1 = await tab1.evaluate(
       `document.getElementById('overclockToggleBtn')?.textContent.trim()`
     );
     const oc2 = await tab2.evaluate(
       `document.getElementById('overclockToggleBtn')?.textContent.trim()`
     );
-    assert.strictEqual(oc1, 'OC: OFF');
-    assert.strictEqual(oc2, 'OC: OFF');
+    assert.strictEqual(oc1, 'OC: ON');
+    assert.strictEqual(oc2, 'OC: ON');
     await tab1.evaluate(
       `document.getElementById('overclockToggleBtn').click(); true`
     );
     await waitFor(() => tab2.evaluate(
       `document.getElementById('overclockToggleBtn')?.textContent.trim() ` +
-        `=== 'OC: ON'`
-    ), 6000, 'P2 synced OC: ON over 240ms netem');
+        `=== 'OC: MAX'`
+    ), 12000, 'P2 synced OC: MAX over 240ms netem');
+    await tab1.evaluate(
+      `document.getElementById('overclockToggleBtn').click(); true`
+    );
+    await waitFor(() => tab2.evaluate(
+      `document.getElementById('overclockToggleBtn')?.textContent.trim() ` +
+        `=== 'OC: OFF'`
+    ), 12000, 'P2 synced OC: OFF over 240ms netem');
     assert.strictEqual(
       await tab1.evaluate(`document.getElementById('dbgDesyncs')?.textContent`),
       '0', 'OC toggle caused desync'

@@ -201,9 +201,37 @@ async function runSuite() {
       pagesSrv.missing404s.length, 0,
       `Sub-path 404s: ${pagesSrv.missing404s.join(', ')}`
     );
+    // Verify Password input does NOT conflict with hotkeys + OC defaults ON
+    await tabBro.evaluate(`(() => {
+      const p = document.getElementById('roomPassInput');
+      p.value = ''; p.focus(); return document.activeElement === p;
+    })()`);
+    for (const [k, c] of [
+      ['w', 'KeyW'], ['1', 'Digit1'], ['a', 'KeyA'], ['2', 'Digit2'],
+      ['s', 'KeyS'], ['3', 'Digit3'], ['z', 'KeyZ'], ['5', 'Digit5']
+    ]) {
+      await tabBro.send('Input.dispatchKeyEvent', {
+        type: 'keyDown', key: k, code: c, text: k
+      });
+      await tabBro.send('Input.dispatchKeyEvent', {
+        type: 'keyUp', key: k, code: c
+      });
+    }
+    const uiChecks = await tabBro.evaluate(`({
+      passVal: document.getElementById('roomPassInput')?.value,
+      slotVal: document.getElementById('saveSlotSelect')?.value,
+      ocText: document.getElementById('overclockToggleBtn')?.textContent.trim(),
+      autoHref: document.getElementById('autoBenchLink')?.href || '',
+      netHref: document.getElementById('netBenchLink')?.href || ''
+    })`);
+    assert.strictEqual(uiChecks.passVal, 'w1a2s3z5', 'Pass swallowed hotkeys');
+    assert.strictEqual(uiChecks.slotVal, '1', 'Pass digits switched save slot');
+    assert.strictEqual(uiChecks.ocText, 'OC: ON', 'NES OC should default ON');
+    assert.ok(uiChecks.autoHref.includes('/NES_Online/'), uiChecks.autoHref);
+    assert.ok(uiChecks.netHref.includes('/NES_Online/'), uiChecks.netHref);
     console.log(
       '[PASS] 3/4 Real Chrome GitHub Pages /NES_Online/: Room+Pass ' +
-        'Discovery, 0 Sub-Path 404s & 60-Min Tunnel Auto-Heal Verified'
+        'Discovery, 0 Sub-Path 404s, Pass Hotkeys & 60-Min Auto-Heal Verified'
     );
     try { tabHost.close(); tabBro.close(); } catch {}
 

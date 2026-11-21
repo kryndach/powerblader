@@ -8,6 +8,9 @@ import {
   patchJsnes8x16Sprites, setNesOverclockEnabled
 } from '../src/jsnes_ppu_patches.mjs';
 import {
+  isCpuInTightWaitLoop
+} from '../src/ppu_sprite_and_overclock.mjs';
+import {
   NesNetplayEngine, INPUT_BITS, computeRomCrc32
 } from '../src/netplay_engine.mjs';
 import { resolveSaveSlotPath } from './tetris_scenarios.mjs';
@@ -85,11 +88,9 @@ function runBattletoadsCharSelect(romBin, overclockOn) {
     }
     prevFb = curFb;
   }
-  const mode = overclockOn ? 'OC=ON' : 'OC=OFF';
   assert.strictEqual(
     glitches.length, 0,
-    `Battletoads char select (${mode}) blinked ${glitches.length}x: ` +
-      JSON.stringify(glitches.slice(0, 4))
+    `Battletoads (${overclockOn ? 'ON' : 'OFF'}) blinked ${glitches.length}x`
   );
   assert.strictEqual(nes.ppu._hasTightWaitLoop, false);
 }
@@ -99,7 +100,6 @@ function testBattletoadsCharacterSelectStability() {
   if (!romBin) return;
   runBattletoadsCharSelect(romBin, false);
   runBattletoadsCharSelect(romBin, true);
-
   const archonBin = findRom('archon');
   if (!archonBin) return;
   const n = new jsnes.NES({ onFrame: () => {} });
@@ -277,6 +277,59 @@ function testTmnt3RealHudAndBattletoadsStage1Visuals() {
   );
 }
 
+function testKirbyAndMultiObjectNesOverclock() {
+  const chk = (base, pc, bytes, exp) => {
+    const mem = new Uint8Array(0x10000);
+    for (let i = 0; i < bytes.length; i++) mem[(base + i) & 0xffff] = bytes[i];
+    const got = isCpuInTightWaitLoop({
+      REG_PC: (pc - 1) & 0xffff, REG_SP: 0xfa, mem
+    });
+    assert.strictEqual(got, exp, `pc=${pc.toString(16)} exp=${exp}`);
+  };
+  const cmpLoop = [0xa5, 0x10, 0xc5, 0x11, 0xf0, 0xfa];
+  chk(0x8000, 0x8000, cmpLoop, true);
+  chk(0x8000, 0x8002, cmpLoop, true);
+  chk(0x8000, 0x8004, cmpLoop, true);
+  chk(0x8000, 0x8000, [0xa5, 0x10, 0x29, 0x80, 0xf0, 0xfa], true);
+  chk(0x8000, 0x8000, [0xe6, 0x11, 0xa5, 0x10, 0xf0, 0xfa], true);
+  chk(0x8000, 0x8000, [0xad, 0x00, 0x03, 0xcd, 0x01, 0x03, 0xf0, 0xf8], true);
+  chk(0x8000, 0x8000, [0xa5, 0x10, 0xd0, 0x03, 0x4c, 0x00, 0x80], true);
+  chk(0x8000, 0x8000, [0xe6, 0x10, 0xd0, 0xfc], false);
+
+  const romBin = findRom('battletoads');
+  if (!romBin) return;
+  const nes = new jsnes.NES({ onFrame: () => {} });
+  nes.loadROM(romBin);
+  patchJsnes8x16Sprites(nes);
+  setNesOverclockEnabled(nes, true);
+  nes.loadROM(romBin);
+  assert.strictEqual(nes.ppu._overclockEnabled, true, 'loadROM wiped OC');
+
+  const ppu = nes.ppu;
+  ppu.f_nmiOnVblank = 1; ppu.f_bgVisibility = 1;
+  ppu._hasTightWaitLoop = true; ppu._overclockCapped = false;
+  nes.cpu.REG_PC = 0x8000; nes.cpu.mem[0x8001] = 0xea;
+  let granted = 0;
+  for (let i = 0; i < 600; i++) {
+    ppu.scanline = 261;
+    const prev = ppu._overclockScanlines;
+    ppu.endScanline();
+    if (ppu._overclockScanlines > prev) granted++;
+    else break;
+  }
+  assert.ok(granted >= 360, `Expected >=360 OC scanlines, got ${granted}`);
+  assert.strictEqual(ppu._overclockCapped, true);
+  nes.cpu.mem.set([0xa5, 0x10, 0xf0, 0xfc], 0x8100);
+  nes.cpu.REG_PC = 0x80ff; ppu.scanline = 261; ppu.endScanline();
+  assert.strictEqual(ppu._overclockCapped, false, 'OC failed to auto-rearm');
+
+  setNesOverclockEnabled(nes, 2);
+  assert.strictEqual(ppu._overclockMode, 2);
+  ppu._hasTightWaitLoop = false;
+  nes.cpu.REG_PC = 0x8000; ppu.scanline = 261; ppu.endScanline();
+  assert.strictEqual(ppu._overclockScanlines, 1, 'OC:MAX must grant scanlines');
+}
+
 export function runVisualAccuracySuite() {
   console.log('=== Visual Pixel-Stability & Sprite Accuracy Suite ===\n');
   testBattletoadsTitleScanline87Stability();
@@ -284,9 +337,10 @@ export function runVisualAccuracySuite() {
   testBattletoadsRollbackCrispPaletteNoFading();
   testOverflow12SpritesPerScanlineAllVisible();
   testTmnt3RealHudAndBattletoadsStage1Visuals();
+  testKirbyAndMultiObjectNesOverclock();
   console.log(
     '[PASS] Battletoads Title/CharSelect/Stage1, Crisp Rollbacks, ' +
-      '12-Sprite Overflow & Real TMNT3 HUD Visual Gates Verified'
+      '12-Sprite Overflow, Kirby/Multi-Object OC & Real TMNT3 HUD Verified'
   );
 }
 

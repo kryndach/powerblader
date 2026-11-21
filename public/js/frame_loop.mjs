@@ -35,6 +35,20 @@ function pollGamepadMask() {
   return m;
 }
 
+const NON_TEXT_INPUT_TYPES = new Set([
+  'button', 'checkbox', 'color', 'file', 'hidden',
+  'image', 'radio', 'range', 'reset', 'submit'
+]);
+
+function isTextInputTarget(el) {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  const tag = (el.tagName || '').toUpperCase();
+  if (tag === 'TEXTAREA') return true;
+  if (tag !== 'INPUT') return false;
+  return !NON_TEXT_INPUT_TYPES.has((el.type || 'text').toLowerCase());
+}
+
 export function startConsoleFrameLoop(
   state, ui, transport, telemetry, saveSlots, keyBindings, viewportCtrl
 ) {
@@ -43,8 +57,8 @@ export function startConsoleFrameLoop(
   window.addEventListener('keydown', (e) => {
     if (keyBindings && keyBindings.handleModalKeydown(e)) return;
     if (
-      document.activeElement === ui.nickInput ||
-      document.activeElement === ui.roomInput
+      isTextInputTarget(document.activeElement) ||
+      isTextInputTarget(e.target)
     ) {
       return;
     }
@@ -85,16 +99,20 @@ export function startConsoleFrameLoop(
   });
 
   window.addEventListener('keyup', (e) => {
+    const typing =
+      isTextInputTarget(document.activeElement) || isTextInputTarget(e.target);
     if (keyBindings && keyBindings.isTurboHoldCode(e.code)) {
-      e.preventDefault();
-      if (viewportCtrl) viewportCtrl.setHoldTurbo(false);
+      if (!typing) e.preventDefault();
+      if (viewportCtrl && state.holdTurboActive) {
+        viewportCtrl.setHoldTurbo(false);
+      }
       return;
     }
     const bit = keyBindings
       ? keyBindings.getBitForCode(e.code)
       : KEY_MAP[e.code];
     if (bit !== undefined) {
-      e.preventDefault();
+      if (!typing) e.preventDefault();
       localButtonsMask &= ~bit;
     }
   });
