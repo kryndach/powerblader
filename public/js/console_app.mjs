@@ -11,7 +11,9 @@ import { createViewportAndSpeedController } from './viewport_and_speed.mjs';
 import { setupRomDropAndPicker } from './rom_archive.mjs';
 import { setupHostTunnelController } from './tunnel_ui.mjs';
 import { createRouteOptimizer } from './route_optimizer.mjs';
-import { setupRomCacheFolderUi } from './rom_cache_ui.mjs';
+import {
+  setupRomCacheFolderUi, loadCachedRomSelection
+} from './rom_cache_ui.mjs';
 import { setupHybridConnectionUi } from './hybrid_connect.mjs';
 import {
   setConnectionPhase, startLocalHostHealthPoller
@@ -291,12 +293,14 @@ ui.simLossSlider.addEventListener('input', () => {
 });
 
 ui.localRomSelect.addEventListener('change', () => {
-  if (ui.localRomSelect.value) {
-    romSync.fetchLocalRomByName(ui.localRomSelect.value, {
-      broadcastToPeer: true,
-      isAutoDefault: false
-    });
+  const v = ui.localRomSelect.value;
+  if (!v) return;
+  if (v.startsWith('cached:')) {
+    return loadCachedRomSelection(v, state, ui, romSync);
   }
+  romSync.fetchLocalRomByName(v, {
+    broadcastToPeer: true, isAutoDefault: false
+  });
 });
 
 setupRomDropAndPicker(state, ui, romSync);

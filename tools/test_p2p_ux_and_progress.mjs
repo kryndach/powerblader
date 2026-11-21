@@ -238,58 +238,38 @@ async function testChromeConnectionStatusIndicators() {
     const base = `http://127.0.0.1:${net.pagesPort}/NES_Online/` +
       `?room=UXROOM&pass=uxpass88&relays=${encR}&p2p=1&debug=1`;
 
-    // 1. Client connects before host exists -> MUST show red error guidance
-    const tabGuest = await createCdpTab(
-      browser.debugPort, `${base}&nick=BroUX`
-    );
+    const tabGuest = await createCdpTab(browser.debugPort, `${base}&nick=Bro`);
     await waitFor(() => tabGuest.evaluate(
       `document.getElementById('statusLed')?.classList.contains('err') && ` +
         `Boolean(document.getElementById('connStatePill'))`
     ), 10000, 'Client offline error indicator (red LED + connStatePill)');
-    console.log(
-      '[PASS] 3/4 Client Offline Error Indicator (Red LED + Guidance)'
-    );
-
-    // 2. Host clicks Host P2P -> MUST show clear HOSTING status before Bro
-    const tabHost = await createCdpTab(
-      browser.debugPort, `${base}&nick=HostUX`
-    );
+    console.log('[PASS] 3/4 Client Offline Error Indicator (Red LED + Guide)');
+    const tabHost = await createCdpTab(browser.debugPort, `${base}&nick=Host`);
     await waitFor(() => tabHost.evaluate(
       `Boolean(document.getElementById('hostP2pBtn'))`
     ), 8000, 'Host P2P button ready');
-    await tabHost.evaluate(
-      `document.getElementById('hostP2pBtn').click(); true`
-    );
+    await tabHost.evaluate(`document.getElementById('hostP2pBtn').click()`);
     await waitFor(() => tabHost.evaluate(`(() => {
-      const pill = document.getElementById('connStatePill')?.textContent || '';
-      const bdg = document.getElementById('lobbyRoomBadge')?.textContent || '';
-      const led = document.getElementById('statusLed')?.className || '';
-      return pill.includes('HOST') && bdg.includes('HOST') &&
-        !bdg.includes('OFFLINE') && !led.endsWith('led');
+      const p = document.getElementById('connStatePill')?.textContent || '';
+      const b = document.getElementById('lobbyRoomBadge')?.textContent || '';
+      const l = document.getElementById('statusLed')?.className || '';
+      return p.includes('HOST') && b.includes('HOST') &&
+        !b.includes('OFFLINE') && !l.endsWith('led');
     })()`), 10000, 'Host P2P shows visible HOSTING status before partner');
 
-    // 3. Guest clicks Connect -> BOTH show green P2P CONNECTED & guide
-    await tabGuest.evaluate(
-      `document.getElementById('connectBtn').click(); true`
-    );
-    await waitFor(() => Promise.all([
-      tabHost.evaluate(`({
-        pill: document.getElementById('connStatePill')?.textContent || '',
-        pillCls: document.getElementById('connStatePill')?.className || '',
-        badgeCls: document.getElementById('lobbyRoomBadge')?.className || ''
-      })`),
-      tabGuest.evaluate(`({
-        pill: document.getElementById('connStatePill')?.textContent || '',
-        pillCls: document.getElementById('connStatePill')?.className || '',
-        badgeCls: document.getElementById('lobbyRoomBadge')?.className || ''
-      })`)
-    ]).then(([h, g]) => (
-      h.pill.includes('P2P') && h.pillCls.includes('ok') &&
-        h.badgeCls.includes('ok') && g.pill.includes('P2P') &&
-        g.pillCls.includes('ok') && g.badgeCls.includes('ok') ? true : null
-    )), 15000, 'Both Host & Guest display green P2P CONNECTED badges');
+    await tabGuest.evaluate(`document.getElementById('connectBtn').click()`);
+    const readP2p = (t) => t.evaluate(`({
+      p: document.getElementById('connStatePill')?.textContent || '',
+      pc: document.getElementById('connStatePill')?.className || '',
+      bc: document.getElementById('lobbyRoomBadge')?.className || ''
+    })`);
+    await waitFor(() => Promise.all([readP2p(tabHost), readP2p(tabGuest)])
+      .then(([h, g]) => (
+        h.p.includes('P2P') && h.pc.includes('ok') && h.bc.includes('ok') &&
+        g.p.includes('P2P') && g.pc.includes('ok') && g.bc.includes('ok')
+          ? true : null
+      )), 15000, 'Both Host & Guest display green P2P CONNECTED badges');
 
-    // 4. Localhost Host (.bat) shows Pinggy/Nostr live health pill
     app = createCoopServer({
       logAccess: false, logsDir: path.join(tmpDir, 'logs'),
       savesDir: path.join(tmpDir, 'saves'),
@@ -309,8 +289,40 @@ async function testChromeConnectionStatusIndicators() {
       `(document.getElementById('connStatePill')?.textContent || '')` +
         `.includes('HOST')`
     ), 10000, 'Localhost Host displays live Pinggy/Nostr host-ready pill');
+    const romFile = fs.readdirSync(path.join(ROOT_DIR, 'local', 'nes'))
+      .find((f) => f.toLowerCase().includes('super mario'));
+    const b64 = fs.readFileSync(path.join(ROOT_DIR, 'local', 'nes', romFile))
+      .toString('base64');
+    await tabHost.evaluate(`(() => {
+      const s = atob(${JSON.stringify(b64)}), u = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+      const dt = new DataTransfer();
+      dt.items.add(new File([u], 'cached_smb.nes'));
+      const inp = document.getElementById('romFileInput');
+      inp.files = dt.files; inp.dispatchEvent(new Event('change'));
+    })()`);
+    await waitFor(() => tabHost.evaluate(
+      `document.getElementById('cacheFolderBtn')?.textContent?.includes('(1)')`
+    ), 10000, 'Cache button shows (1) after loading ROM');
+    await tabHost.send('Page.reload', {});
+    const cachedVal = await waitFor(() => tabHost.evaluate(`(() => {
+      const sel = document.getElementById('localRomSelect');
+      const o = [...(sel?.options || [])].find((x) =>
+        x.value.startsWith('cached:') && x.textContent.includes('cached_smb')
+      );
+      const b = document.getElementById('cacheFolderBtn')?.textContent || '';
+      return o && b.includes('(1)') ? o.value : null;
+    })()`), 10000, 'Reloaded Chrome tab lists [CACHED] ROM in dropdown');
+    await tabHost.evaluate(`(() => {
+      const sel = document.getElementById('localRomSelect');
+      sel.value = ${JSON.stringify(cachedVal)};
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(() => tabHost.evaluate(
+      `document.getElementById('romBadge')?.textContent.includes('cached_smb')`
+    ), 10000, 'Selecting [CACHED] ROM after reload boots cleanly');
     console.log(
-      '[PASS] 4/4 Real Chrome Host/Client Color-Coded Connection & Health UX'
+      '[PASS] 4/4 Real Chrome Connection UX + Post-Reload Auto-Cache Dropdown'
     );
     try { tabHost.close(); tabGuest.close(); tabLocal.close(); } catch {}
   } finally {

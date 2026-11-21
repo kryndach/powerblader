@@ -313,6 +313,7 @@ export function createRomSyncManager(state, ui, audio) {
         sel.value = '';
       }
     } catch (e) { ui.logDebug(`Local ROM check failed: ${e.message}`); }
+    state.onCacheUpdated?.();
     ui.updateStatusStrip();
   }
 

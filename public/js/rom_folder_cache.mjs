@@ -10,6 +10,7 @@ const KEY_PREFIX_RE = /^([0-9A-F]{8}|WASM_[A-Z0-9_]+)__(.+)$/i;
 const WASM_FILE_RE = /^(WASM_[A-Z0-9_]+)\.wasm$/i;
 
 let dirHandle = null;
+let pendingSavedHandle = null;
 const fileIndex = new Map();
 
 function sanitizeFileName(name = 'rom.bin') {
@@ -63,6 +64,7 @@ export function isFolderCacheSupported() {
 export async function attachCacheDirectory(handle, { persist = true } = {}) {
   if (!handle || typeof handle.values !== 'function') return null;
   dirHandle = handle;
+  pendingSavedHandle = null;
   fileIndex.clear();
   for await (const entry of handle.values()) {
     if (entry.kind !== 'file') continue;
@@ -113,11 +115,36 @@ export async function restoreSavedCacheFolder() {
     const saved = await loadPersistedDirHandle();
     if (!saved || typeof saved.queryPermission !== 'function') return null;
     const perm = await saved.queryPermission({ mode: 'readwrite' });
-    if (perm !== 'granted') return null;
+    if (perm !== 'granted') {
+      if (perm === 'prompt') pendingSavedHandle = saved;
+      return null;
+    }
     return await attachCacheDirectory(saved, { persist: false });
   } catch {
     return null;
   }
+}
+
+export function getPendingSavedFolderName() {
+  return !dirHandle && pendingSavedHandle ? pendingSavedHandle.name || '' : '';
+}
+
+export async function reconnectSavedCacheFolder() {
+  if (!pendingSavedHandle || typeof pendingSavedHandle.requestPermission !==
+      'function') return null;
+  const saved = pendingSavedHandle;
+  const perm = await saved.requestPermission({ mode: 'readwrite' });
+  if (perm !== 'granted') return null;
+  return attachCacheDirectory(saved, { persist: false });
+}
+
+export function listFolderCachedRoms() {
+  const out = [];
+  for (const [crc, entry] of fileIndex.entries()) {
+    if (crc.startsWith('WASM_')) continue;
+    out.push({ crc, romName: entry.romName || crc, source: 'folder' });
+  }
+  return out;
 }
 
 export async function getCachedFileFromFolder(keyRaw) {
@@ -177,5 +204,6 @@ export function getFolderCacheInfo() {
 
 export function clearFolderCacheForTests() {
   dirHandle = null;
+  pendingSavedHandle = null;
   fileIndex.clear();
 }

@@ -1,7 +1,8 @@
 // Persistent Disk Folder, IndexedDB & In-Memory ROM/WASM Cache by CRC32
 import {
   getCachedFileFromFolder, putCachedFileToFolder, deleteCachedFileFromFolder,
-  attachCacheDirectory, getFolderCacheInfo, clearFolderCacheForTests
+  attachCacheDirectory, getFolderCacheInfo, clearFolderCacheForTests,
+  listFolderCachedRoms
 } from './rom_folder_cache.mjs';
 
 export { attachCacheDirectory, getFolderCacheInfo, clearFolderCacheForTests };
@@ -63,10 +64,51 @@ export async function putCachedRomByCrc(crc, romName, u8) {
   }
   const db = await openRomIdb();
   if (!db) return;
-  try {
-    const tx = db.transaction(IDB_STORE, 'readwrite');
-    tx.objectStore(IDB_STORE).put({ romName, u8, ts: Date.now() }, key);
-  } catch {}
+  await new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put({ romName, u8, ts: Date.now() }, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    } catch { resolve(); }
+  });
+}
+
+export async function listCachedRoms() {
+  const byCrc = new Map();
+  for (const item of listFolderCachedRoms()) byCrc.set(item.crc, item);
+  for (const [crc, val] of memCacheFallback.entries()) {
+    if (!crc.startsWith('WASM_') && !byCrc.has(crc)) {
+      byCrc.set(crc, { crc, romName: val.romName || crc, source: 'mem' });
+    }
+  }
+  const db = await openRomIdb();
+  if (db) {
+    await new Promise((resolve) => {
+      try {
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const st = tx.objectStore(IDB_STORE);
+        const req = st.openCursor();
+        req.onsuccess = () => {
+          const cur = req.result;
+          if (!cur) return resolve();
+          const crc = String(cur.key || '').toUpperCase();
+          if (crc && !crc.startsWith('WASM_') && !byCrc.has(crc)) {
+            byCrc.set(crc, {
+              crc, romName: cur.value?.romName || crc,
+              ts: cur.value?.ts || 0, source: 'idb'
+            });
+          }
+          cur.continue();
+        };
+        req.onerror = () => resolve();
+      } catch { resolve(); }
+    });
+  }
+  return [...byCrc.values()].sort((a, b) =>
+    (b.ts || 0) - (a.ts || 0) || a.romName.localeCompare(b.romName)
+  );
 }
 
 export async function deleteCachedRomByCrc(crc) {
