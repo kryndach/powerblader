@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Netplay Deck — 2-PC Automated Network &amp; P2P Benchmark</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="./css/autotest.css">
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div class="hero-top">
+        <div class="title">
+          <span>⚡</span>
+          <span>2-PC Automated Network, P2P &amp; Netplay Benchmark</span>
+          <span class="badge info">AUTOBENCH v3.0</span>
+        </div>
+        <div class="btn-row">
+          <a id="backToGameBtn" href="./?room=NOVA" class="btn">
+            🎮 ← Back to Netplay Deck
+          </a>
+          <a id="netDebugLink" href="./net_debug.html" class="btn">
+            🔬 Interactive Debugger
+          </a>
+          <button id="rerunBtn" class="btn primary">
+            ▶ Re-Run Full Benchmark
+          </button>
+          <button id="copyBtn" class="btn success">
+            📋 Copy Full Report
+          </button>
+        </div>
+      </div>
+
+      <div class="status-banner">
+        <div class="status-left">
+          <span id="stateBadge" class="badge warn">WAITING FOR 2ND PC</span>
+          <span id="stateText">
+            Open this exact page on both PCs — the 8-stage full-stack benchmark
+            starts automatically as soon as both PCs are connected!
+          </span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <span id="roleLabel" class="badge info">You: --</span>
+          <span id="partnerLabel" class="badge">Partner: Offline</span>
+        </div>
+      </div>
+
+      <div class="progress-track">
+        <div id="progressBar" class="progress-bar"></div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <div class="panel-title">
+          <span>1. Automated 8-Stage Full-Stack Benchmark Suite</span>
+          <span id="suiteBadge" class="badge">IDLE</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Stage</th>
+              <th>Status</th>
+              <th>Metrics &amp; Details</th>
+            </tr>
+          </thead>
+          <tbody id="stagesBody">
+            <tr>
+              <td colspan="3" style="color:var(--muted);">
+                Waiting for both PCs to join room "AUTO"...
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">
+          <span>2. WebRTC P2P &amp; STUN/TURN Discovery Matrix</span>
+          <span id="p2pBadge" class="badge">PENDING</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Profile (STUN / TURN)</th>
+              <th>Result</th>
+              <th>Candidates &amp; Pair</th>
+              <th>P2P RTT</th>
+            </tr>
+          </thead>
+          <tbody id="rtcBody">
+            <tr>
+              <td colspan="4" style="color:var(--muted);">
+                Will test 3 STUN/TURN profiles automatically in Stage 2...
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">
+        <span>
+          3. Combined 2-PC Benchmark Report
+          (Auto-Saved to Disk: logs/autotest_latest.txt)
+        </span>
+        <button id="copyBtn2" class="btn success">
+          📋 Copy Report to Clipboard
+        </button>
+      </div>
+      <textarea id="reportBox" class="report-box" readonly>
+Waiting for benchmark to start...
+      </textarea>
+    </div>
+  </div>
+
+  <script type="module" src="./js/autotest_app.mjs"></script>
+</body>
+</html>

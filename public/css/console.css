@@ -1,0 +1,337 @@
+/* Main NES Netplay Console Layout, Top Deck, Bezel & Lobby Overlay */
+:root {
+  --bg: #0f1015;
+  --panel: #181a22;
+  --panel-alt: #20232e;
+  --border: #2e3244;
+  --nes-red: #e11d48;
+  --nes-red-dark: #be123c;
+  --text: #f1f5f9;
+  --muted: #94a3b8;
+  --ok: #22c55e;
+  --warn: #eab308;
+  --err: #ef4444;
+  --cyan: #38bdf8;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Consolas", "Courier New", monospace;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px;
+  gap: 12px;
+  user-select: none;
+}
+
+.top-deck {
+  width: 100%;
+  max-width: 1080px;
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-top: 4px solid var(--nes-red);
+  border-radius: 6px;
+  padding: 10px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-logo {
+  background: var(--nes-red);
+  color: #fff;
+  font-weight: 900;
+  font-size: 0.85rem;
+  padding: 4px 8px;
+  border-radius: 3px;
+  letter-spacing: 1px;
+}
+
+.brand-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.deck-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+select,
+input[type="text"],
+input[type="password"] {
+  background: #0b0c10;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 0.8rem;
+  outline: none;
+}
+
+select:focus,
+input[type="text"]:focus,
+input[type="password"]:focus {
+  border-color: var(--nes-red);
+}
+
+button,
+.btn-label {
+  background: var(--panel-alt);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  text-decoration: none;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+button:hover,
+.btn-label:hover {
+  background: #2b3040;
+  border-color: #475569;
+}
+
+button.primary {
+  background: var(--nes-red);
+  border-color: #f43f5e;
+  color: #fff;
+}
+
+button.primary:hover {
+  background: var(--nes-red-dark);
+}
+
+button.active-toggle {
+  background: #1e293b;
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.btn-autotest {
+  border-color: var(--ok);
+  color: #4ade80;
+}
+
+.btn-nettest {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+#localRomSelect { width: 170px; text-overflow: ellipsis; }
+#topInputDelaySelect { width: 148px; }
+#connectBtn { min-width: 82px; justify-content: center; }
+
+.save-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #0d0e12;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+#saveSlotSelect { width: 118px; border: none; padding: 4px; }
+
+.vol-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #0d0e12;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 7px;
+}
+
+.mute-btn {
+  padding: 2px 6px;
+  border: none;
+  background: transparent;
+  font-size: 0.82rem;
+}
+
+.vol-slider {
+  width: 68px;
+  accent-color: var(--nes-red);
+  cursor: pointer;
+}
+
+.vol-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  min-width: 30px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.status-strip {
+  width: 100%;
+  max-width: 1080px;
+  height: 36px;
+  background: #13151c;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 14px;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.8rem;
+  overflow: hidden;
+}
+
+.status-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+#statusText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-right {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  flex: 0 0 auto;
+  gap: 8px;
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+#romBadge {
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+}
+
+#roleBadge {
+  width: 118px;
+  text-align: center;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+#pingBadge {
+  width: 86px;
+  text-align: right;
+  display: inline-block;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.led {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+  display: inline-block;
+  flex-shrink: 0;
+}
+.led.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.led.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.led.err { background: var(--err); box-shadow: 0 0 8px var(--err); }
+
+.workspace {
+  width: 100%;
+  max-width: 1080px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.tv-bezel {
+  background: #07080b;
+  border: 3px solid #262938;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.7);
+  position: relative;
+}
+
+.canvas-wrap {
+  position: relative;
+  width: 512px;
+  height: 480px;
+  background: #000;
+  border: 2px solid #111;
+  overflow: hidden;
+}
+
+@media (min-width: 900px) {
+  .canvas-wrap.large {
+    width: 768px;
+    height: 720px;
+  }
+}
+
+canvas {
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  display: block;
+}
+
+.crt-scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    rgba(18, 16, 16, 0) 50%,
+    rgba(0, 0, 0, 0.28) 50%
+  );
+  background-size: 100% 4px;
+  display: none;
+}
+
+.crt-scanlines.enabled {
+  display: block;
+}

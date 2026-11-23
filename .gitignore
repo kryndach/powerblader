@@ -1,0 +1,45 @@
+# Local ROMs, saves, secrets & runtime artifacts (never committed)
+local/
+saves/
+logs/
+dist-pages/
+dist/
+node_modules/
+
+# ROM images, cartridge dumps, archives & save states
+*.nes
+*.fds
+*.unf
+*.sfc
+*.smc
+*.fig
+*.swc
+*.gen
+*.smd
+*.sms
+*.gg
+*.gba
+*.gbc
+*.gb
+*.nds
+*.3ds
+*.cia
+*.iso
+*.chd
+*.cue
+*.rom
+*.bin
+*.chr
+*.prg
+*.sav
+*.srm
+*.state
+*.fc0
+*.zip
+*.rar
+*.7z
+*.bundle
+
+# Environment & local secrets
+.env
+.env.*

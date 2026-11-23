@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Netplay Deck - Multi-Console Rollback Multiplayer</title>
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="./css/console.css" />
+  <link rel="stylesheet" href="./css/console_debug.css" />
+  <link rel="stylesheet" href="./css/console_controls.css" />
+</head>
+<body>
+
+  <!-- Minimalist Retro Top Control Bar -->
+  <header class="top-deck">
+    <div class="brand">
+      <span class="brand-logo">RETRO</span>
+      <span class="brand-title">NETPLAY DECK</span>
+    </div>
+    <div class="deck-group">
+      <select id="localRomSelect" title="Select ROM or Archive from local/">
+        <option value="">-- Select Game --</option>
+      </select>
+      <label class="btn-label" for="romFileInput"
+        title="Load NES/SNES/Sega/Arcade ROM or .zip/.rar/.7z Archive">
+        Load ROM
+      </label>
+      <input type="file" id="romFileInput"
+        accept=".nes,.sfc,.smc,.md,.gen,.smd,.bin,.sms,.gg,.zip,.rar,.7z"
+        style="display:none" />
+      <button id="topSendRomBtn" title="Send Loaded ROM File to Partner">
+        Send ROM
+      </button>
+    </div>
+
+    <!-- Online Room Connection -->
+    <div class="deck-group">
+      <input type="text" id="nickInput" value="Player" maxlength="14"
+        style="width:95px" title="Your Nickname" />
+      <input type="text" id="roomInput" value="NOVA" maxlength="10"
+        style="width:78px;text-transform:uppercase;font-weight:700;"
+        title="Room Code" />
+      <button id="connectBtn" class="primary">Connect</button>
+      <select id="tunnelRouteSelect" style="display:none"
+        title="Host Tunnel Route (Auto-Detect Fastest or Switch Live!)">
+        <option value="auto">Route: Auto</option>
+      </select>
+      <button id="copyLinkBtn" title="Copy direct invite link for Player 2">
+        Copy Link
+      </button>
+    </div>
+
+    <!-- Console Controls -->
+    <div class="deck-group">
+      <button id="resetBtn" title="Reset console at Frame #0">Reset</button>
+      <div class="save-box" title="Save &amp; Load Slots (F6/F8) + Local File">
+        <select id="saveSlotSelect" title="Select Save Slot (Keys 1-5)">
+          <option value="1">Slot 1 [Empty]</option>
+          <option value="2">Slot 2 [Empty]</option>
+          <option value="3">Slot 3 [Empty]</option>
+          <option value="4">Slot 4 [Empty]</option>
+          <option value="5">Slot 5 [Empty]</option>
+        </select>
+        <button id="quickSaveBtn" title="Fast Save to Slot (F6)">Save</button>
+        <button id="quickLoadBtn" title="Fast Load from Slot (F8)">Load</button>
+        <button id="exportSaveFileBtn"
+          title="Download Save State to Local File (.sav.json)">File↓</button>
+        <button id="importSaveFileBtn"
+          title="Load Save State from Local File (.sav.json)">File↑</button>
+        <input type="file" id="saveFileInput" accept=".json,.sav"
+          style="display:none" />
+      </div>
+      <div class="speed-box" title="Game Speed / Turbo Fast-Forward">
+        <button class="speed-btn active-toggle" data-speed="1">1x</button>
+        <button class="speed-btn" data-speed="2">2x</button>
+        <button class="speed-btn" data-speed="4">4x</button>
+        <button class="speed-btn" data-speed="8">8x</button>
+      </div>
+      <button id="swapAbBtn" title="Quick Swap A &amp; B (Z &lt;-&gt; X)">
+        A/B: Z/X
+      </button>
+      <button id="keysBtn" title="Customize Controller Key Bindings">
+        Keys
+      </button>
+      <select id="topInputDelaySelect"
+        title="Select Local Input Lag vs Smoothness (Independent per PC)">
+        <option value="0">Lag: 0f (0ms Instant)</option>
+        <option value="1">Lag: 1f (16ms Ultra Fast)</option>
+        <option value="2" selected>Lag: 2f (33ms Fast)</option>
+        <option value="3">Lag: 3f (50ms Balanced)</option>
+        <option value="4">Lag: 4f (66ms Smooth)</option>
+        <option value="5">Lag: 5f (83ms Extra Smooth)</option>
+        <option value="auto">Lag: Auto (RTT)</option>
+      </select>
+      <div class="vol-box" title="Game Audio Volume">
+        <button id="muteBtn" class="mute-btn" title="Toggle Mute">Vol</button>
+        <input type="range" id="volumeSlider" class="vol-slider"
+          min="0" max="100" step="5" value="80" />
+        <span id="volumeValLabel" class="vol-label">80%</span>
+      </div>
+      <button id="centerViewBtn" title="Scroll Game Screen to Middle of Window">
+        Center
+      </button>
+      <button id="fullscreenBtn" title="Toggle Fullscreen (F11)">Full</button>
+      <button id="crtToggleBtn" title="Toggle CRT scanlines">CRT: OFF</button>
+      <button id="overclockToggleBtn"
+        title="NES Anti-Lag Overclock: ON / MAX / OFF">OC: ON</button>
+      <button id="debugToggleBtn" title="Show/Hide Debug Panel">Debug</button>
+      <a class="btn-label btn-autotest" id="autoBenchLink"
+        href="./autotest.html"
+        title="Switch to Zero-Click 2-PC Network AutoTest Suite">AutoTest</a>
+      <a class="btn-label btn-nettest" id="netBenchLink"
+        href="./net_debug.html"
+        title="Open Manual 2-PC Network Debugger">NetDebug</a>
+    </div>
+  </header>
+
+  <!-- Minimalist Live Connection Banner -->
+  <div class="status-strip">
+    <div class="status-left">
+      <span id="statusLed" class="led"></span>
+      <strong id="statusText">
+        EMPTY CONSOLE - Select a ROM above or click Connect
+      </strong>
+    </div>
+    <div class="status-right">
+      <span id="romBadge" style="color:var(--text);font-weight:700;">
+        ROM: None
+      </span>
+      <span id="roleBadge">Port: P1</span>
+      <span id="miniPadP1" class="mini-pad" title="P1 Input">P1: Idle</span>
+      <span id="miniPadP2" class="mini-pad" title="P2 Input">P2: Idle</span>
+      <span id="pingBadge">Ping: --</span>
+    </div>
+  </div>
+  <main class="workspace">
+    <div class="tv-bezel" id="dropTarget">
+      <div class="canvas-wrap large" id="canvasWrap">
+        <canvas id="nesCanvas" width="256" height="240"></canvas>
+        <div class="crt-scanlines" id="scanlinesOverlay"></div>
+        <div class="lobby-overlay" id="lobbyOverlay">
+          <div class="lobby-card">
+            <div class="lobby-hdr">
+              <span id="lobbyTitleText">MULTI-CONSOLE CO-OP DECK</span>
+              <span id="lobbyRoomBadge" class="badge warn">SOLO / OFFLINE</span>
+            </div>
+            <div class="lobby-slot waiting" id="lobbySlotP1">
+              <div>
+                <div style="font-weight:700;color:var(--cyan);"
+                  id="lobbyP1Name">Player 1</div>
+                <div style="font-size:0.74rem;color:var(--muted);margin-top:2px"
+                  id="lobbyP1Rom">Waiting for ROM file selection...</div>
+              </div>
+              <span class="badge warn" id="lobbyP1Badge">SELECT ROM</span>
+            </div>
+            <div class="lobby-slot waiting" id="lobbySlotP2">
+              <div>
+                <div style="font-weight:700;color:#f472b6;"
+                  id="lobbyP2Name">Player 2</div>
+                <div style="font-size:0.74rem;color:var(--muted);margin-top:2px"
+                  id="lobbyP2Rom">Not connected (Solo Mode)</div>
+              </div>
+              <span class="badge warn" id="lobbyP2Badge">OFFLINE</span>
+            </div>
+            <div class="lobby-footer" id="lobbyFooterText">
+              Select any <strong>NES/SNES/Sega/Arcade/.ZIP/.7Z</strong> above
+              or drag &amp; drop onto screen.<br />For 2-PC Online: both players
+              select the <strong>same ROM</strong> on their own PC!
+            </div>
+            <div class="lobby-actions" id="lobbyActionsRow">
+              <button id="startMatchNowBtn" class="primary"
+                style="display:none">Start / Reset Match at Frame #0</button>
+              <button id="sendRomManualBtn"
+                title="Transfer your loaded ROM file to partner"
+                style="display:none">Send ROM to Partner</button>
+            </div>
+          </div>
+        </div>
+        <div class="screen-banner" id="screenBanner"></div>
+      </div>
+      <div class="bezel-footer">
+        <div id="bezelKeyHint">
+          Move: <span class="kbd">WASD</span> A/B:
+          <span class="kbd">Z</span>/<span class="kbd">X</span>
+          Sel/Sta: <span class="kbd">Shift</span>/<span class="kbd">Enter</span>
+          Save/Load: <span class="kbd">F6</span>/<span class="kbd">F8</span>
+        </div>
+        <div><span id="fpsLabel">60.0 FPS</span></div>
+      </div>
+    </div>
+
+    <!-- Toggleable Debug View -->
+    <aside class="debug-drawer" id="debugDrawer">
+      <div class="dbg-section">
+        <div class="dbg-title">
+          <span>1. Deterministic Sync</span>
+          <span id="dbgSyncBadge" class="badge ok">SYNC OK</span>
+        </div>
+        <div class="dbg-row"><span class="k">Emulator Frame:</span>
+          <span class="v" id="dbgFrame">0</span></div>
+        <div class="dbg-row"><span class="k">Verified Frame:</span>
+          <span class="v" id="dbgVerifiedFrame">--</span></div>
+        <div class="dbg-row"><span class="k">Local RAM CRC32:</span>
+          <span class="v" id="dbgLocalHash">00000000</span></div>
+        <div class="dbg-row"><span class="k">Remote RAM CRC32:</span>
+          <span class="v" id="dbgRemoteHash">00000000</span></div>
+        <div class="dbg-row"><span class="k">Desync Count:</span>
+          <span class="v" id="dbgDesyncs">0</span></div>
+        <div style="display:flex;gap:6px;margin-top:4px;">
+          <button id="forceResyncBtn"
+            style="width:100%;justify-content:center;">
+            Force State Resync Now
+          </button>
+        </div>
+      </div>
+
+      <div class="dbg-section">
+        <div class="dbg-title">
+          <span>2. Transport &amp; P2P Status</span>
+          <span id="dbgTransportBadge" class="badge warn">OFFLINE</span>
+        </div>
+        <div class="dbg-row"><span class="k">WebSocket Relay (WSS):</span>
+          <span class="v" id="dbgWssState">Disconnected</span></div>
+        <div class="dbg-row"><span class="k">WebRTC P2P Channel:</span>
+          <span class="v" id="dbgRtcState">Idle</span></div>
+        <div class="dbg-row"><span class="k">Round-Trip Ping / Jitter:</span>
+          <span class="v" id="dbgRtt">-- ms / +/-0 ms</span></div>
+        <div class="dbg-row">
+          <span class="k">Packets (Tx / Rx / sec):</span>
+          <span class="v" id="dbgPktRate">0 / 0</span>
+        </div>
+        <div class="dbg-row">
+          <span class="k">Transport Mode:</span>
+          <select id="transportModeSelect"
+            style="padding:3px 6px;font-size:0.74rem;">
+            <option value="auto">Auto (P2P + WSS Fallback)</option>
+            <option value="wss">Force WSS Relay (Port 443)</option>
+            <option value="p2p">Force WebRTC P2P Only</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="dbg-section">
+        <div class="dbg-title">
+          <span>3. Rollback Engine</span>
+          <span id="dbgStepTime" style="color:var(--muted);font-size:0.7rem;">
+            0.2ms/f
+          </span>
+        </div>
+        <div class="dbg-row">
+          <span class="k">Input Delay Frames:</span>
+          <select id="inputDelaySelect"
+            style="padding:2px 6px;font-size:0.74rem;">
+            <option value="0">0 frames (0ms - Max Rollback)</option>
+            <option value="1">1 frame (16ms - Ultra Fast)</option>
+            <option value="2" selected>2 frames (33ms - Fast)</option>
+            <option value="3">3 frames (50ms - Balanced)</option>
+            <option value="4">4 frames (66ms - Smooth)</option>
+            <option value="5">5 frames (83ms)</option>
+            <option value="6">6 frames (100ms - High Ping)</option>
+            <option value="auto">Auto (RTT Adaptive)</option>
+          </select>
+        </div>
+        <div class="dbg-row">
+          <span class="k">Rollbacks/sec (Total):</span>
+          <span class="v" id="dbgRollbacks">0/s (0)</span>
+        </div>
+        <div class="dbg-row">
+          <span class="k">Rollback Depth (Last/Max):</span>
+          <span class="v" id="dbgRbDepth">0f / 0f</span>
+        </div>
+        <div class="dbg-row">
+          <span class="k">Frame Advantage / Stalls:</span>
+          <span class="v" id="dbgAdvantage">0f / 0 stalls</span>
+        </div>
+        <div class="dbg-row">
+          <span class="k">GGPO Clock Rift / Paced:</span>
+          <span class="v" id="dbgRift">0.0f / 0 waits</span>
+        </div>
+      </div>
+
+      <div class="dbg-section">
+        <div class="dbg-title"><span>4. Live Controller Bus</span></div>
+        <div class="pad-grid">
+          <div class="nes-pad">
+            <div class="nes-pad-hdr">
+              <strong>P1 Input</strong><span id="dbgP1Hex">0x00</span>
+            </div>
+            <div class="nes-pad-btns" id="dbgP1Btns">
+              <span class="pbtn" data-bit="16">U</span>
+              <span class="pbtn" data-bit="32">D</span>
+              <span class="pbtn" data-bit="64">L</span>
+              <span class="pbtn" data-bit="128">R</span>
+              <span class="pbtn" data-bit="4">SEL</span>
+              <span class="pbtn" data-bit="8">STA</span>
+              <span class="pbtn" data-bit="2">B</span>
+              <span class="pbtn" data-bit="1">A</span>
+            </div>
+          </div>
+          <div class="nes-pad">
+            <div class="nes-pad-hdr">
+              <strong>P2 Input</strong><span id="dbgP2Hex">0x00</span>
+            </div>
+            <div class="nes-pad-btns" id="dbgP2Btns">
+              <span class="pbtn" data-bit="16">U</span>
+              <span class="pbtn" data-bit="32">D</span>
+              <span class="pbtn" data-bit="64">L</span>
+              <span class="pbtn" data-bit="128">R</span>
+              <span class="pbtn" data-bit="4">SEL</span>
+              <span class="pbtn" data-bit="8">STA</span>
+              <span class="pbtn" data-bit="2">B</span>
+              <span class="pbtn" data-bit="1">A</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="dbg-section">
+        <div class="dbg-title">
+          <span>5. Test Lag Simulator</span>
+          <span id="dbgSimLabel" style="color:var(--muted);">0ms / 0%</span>
+        </div>
+        <div class="dbg-row">
+          <span class="k">Added Latency:</span>
+          <input type="range" id="simLagSlider" min="0" max="220" step="10"
+            value="0" style="width:130px" />
+        </div>
+        <div class="dbg-row">
+          <span class="k">Simulated Loss:</span>
+          <input type="range" id="simLossSlider" min="0" max="10" step="1"
+            value="0" style="width:130px" />
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;">
+        <span style="font-size:0.72rem;color:var(--muted);">
+          Auto-saved to logs/gameplay_telemetry_latest.txt
+        </span>
+        <button id="copyTelemetryBtn"
+          style="padding:3px 8px;font-size:0.72rem;">Copy Telemetry</button>
+      </div>
+      <div class="dbg-log" id="dbgLog"></div>
+    </aside>
+  </main>
+
+  <script src="./vendor/jsnes.js"></script>
+  <script type="module" src="./js/console_app.mjs"></script>
+</body>
+</html>

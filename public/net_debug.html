@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>2-PC Network, Protocol &amp; Data Transfer Debugger</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="./css/net_debug.css" />
+</head>
+<body>
+  <div class="container">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-tag">NETBENCH</span>
+        <span class="brand-title">
+          2-PC Connection, Protocol & Data Transfer Debugger
+        </span>
+      </div>
+      <div class="controls">
+        <input type="text" id="nickInput" value="PC" maxlength="14"
+          style="width:90px" title="Your PC Label" />
+        <input type="text" id="roomInput" value="NOVA" maxlength="10"
+          style="width:76px; text-transform:uppercase; font-weight:700;"
+          title="Room Code" />
+        <button id="connectBtn" class="primary">Connect Room</button>
+        <button id="copyInviteBtn" title="Copy direct /nettest link for 2nd PC">
+          Copy Test Link
+        </button>
+        <button id="runAutoSuiteBtn" class="run-suite"
+          title="Run automated 5-stage protocol & transfer test">
+          ▶ Run Auto Suite (2-PC)
+        </button>
+        <button id="copyReportBtn" title="Copy JSON diagnostic report">
+          📋 Copy Report
+        </button>
+        <a class="btn" id="autoTestLink" href="./autotest.html">⚡ AutoTest</a>
+        <a class="btn" id="backToNesLink" href="./">🎮 Netplay Deck</a>
+      </div>
+    </header>
+
+    <div class="banner">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span id="roomBadge" class="badge warn">DISCONNECTED</span>
+        <strong id="roomStatusText">
+          Click "Connect Room" and open the copied link on the 2nd PC
+        </strong>
+      </div>
+      <div style="display:flex; gap:14px; color:var(--muted);">
+        <span id="localRoleLabel">You: --</span>
+        <span id="peerRoleLabel">Partner: Not in room</span>
+        <span id="wsCloseLabel">WS Drops: 0 (Last code: --)</span>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <section class="card">
+        <div class="card-hdr">
+          <span class="card-title">1. Live Protocol &amp; Ping Matrix</span>
+          <span id="activePeersBadge" class="badge warn">1 / 2 PCs</span>
+        </div>
+        <div class="kv-grid">
+          <div class="kv">
+            <span class="k">WSS Relay State:</span>
+            <span class="v" id="wssStateVal">Closed</span>
+          </div>
+          <div class="kv">
+            <span class="k">HTTPS Tunnel (/api/http-tunnel):</span>
+            <span class="v" id="httpStateVal">Idle</span>
+          </div>
+          <div class="kv">
+            <span class="k">Browser ↔ Relay Server RTT:</span>
+            <span class="v" id="srvRttVal">-- ms</span>
+          </div>
+          <div class="kv">
+            <span class="k">PC1 ↔ PC2 via HTTPS Tunnel RTT:</span>
+            <span class="v" id="httpPeerRttVal">-- ms (±0ms)</span>
+          </div>
+          <div class="kv">
+            <span class="k">PC1 ↔ PC2 via WSS Relay RTT:</span>
+            <span class="v" id="wssPeerRttVal">-- ms (±0ms)</span>
+          </div>
+          <div class="kv">
+            <span class="k">WSS / HTTPS Pings (Rx/Tx):</span>
+            <span class="v" id="wssPingCountVal">0 / 0</span>
+          </div>
+          <div class="kv">
+            <span class="k">PC1 ↔ PC2 via WebRTC Fast (UDP):</span>
+            <span class="v" id="rtcFastRttVal">-- ms (±0ms)</span>
+          </div>
+          <div class="kv">
+            <span class="k">PC1 ↔ PC2 via WebRTC Reliable:</span>
+            <span class="v" id="rtcRelRttVal">-- ms (±0ms)</span>
+          </div>
+        </div>
+        <div class="card-hdr" style="margin-top:4px;">
+          <span class="card-title" style="font-size:12px;">
+            Automated Diagnostic Suite Scorecard
+          </span>
+          <span id="suiteStatusBadge" class="badge warn">IDLE</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Test Stage</th>
+                <th>Protocol</th>
+                <th>Result</th>
+                <th>Measured Metrics</th>
+              </tr>
+            </thead>
+            <tbody id="suiteTableBody">
+              <tr>
+                <td colspan="4" style="color:var(--muted);">
+                  Click "▶ Run Auto Suite (2-PC)" once both PCs are connected.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-hdr">
+          <span class="card-title">
+            2. WebRTC P2P, STUN &amp; ICE Candidate Inspector
+          </span>
+          <span id="rtcOverallBadge" class="badge warn">IDLE</span>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          <span style="color:var(--muted);">STUN Profile:</span>
+          <select id="stunProfileSelect">
+            <option value="mixed">
+              Google + Cloudflare STUN (Recommended)
+            </option>
+            <option value="cloudflare">
+              Cloudflare STUN Only (stun.cloudflare.com:3478)
+            </option>
+            <option value="google">
+              Google STUN Only (stun.l.google.com:19302)
+            </option>
+            <option value="none">No STUN (LAN / Host Candidates Only)</option>
+          </select>
+          <button id="renegotiateRtcBtn">Re-Test WebRTC P2P</button>
+        </div>
+        <div class="kv-grid">
+          <div class="kv">
+            <span class="k">ICE Connection / Gathering:</span>
+            <span class="v" id="iceStateVal">new / new</span>
+          </div>
+          <div class="kv">
+            <span class="k">Selected Candidate Pair:</span>
+            <span class="v" id="selectedPairVal">--</span>
+          </div>
+          <div class="kv">
+            <span class="k">DC Fast (Unordered UDP):</span>
+            <span class="v" id="dcFastStateVal">closed</span>
+          </div>
+          <div class="kv">
+            <span class="k">DC Reliable (Ordered SCTP):</span>
+            <span class="v" id="dcRelStateVal">closed</span>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Side</th>
+                <th>Type</th>
+                <th>Protocol</th>
+                <th>Address / Port</th>
+              </tr>
+            </thead>
+            <tbody id="iceTableBody">
+              <tr>
+                <td colspan="4" style="color:var(--muted);">
+                  No ICE candidates gathered yet.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <div class="grid-2">
+      <section class="card">
+        <div class="card-hdr">
+          <span class="card-title">
+            3. Data Transfer &amp; Payload Size Tester (CRC32 Verified)
+          </span>
+          <div style="display:flex; gap:6px; align-items:center;">
+            <span style="color:var(--muted); font-size:11px;">Via:</span>
+            <select id="transferTransportSelect">
+              <option value="auto">Auto (Best Open Path)</option>
+              <option value="wss">WSS Relay (WebSocket)</option>
+              <option value="http">HTTPS Tunnel (/api/http-tunnel)</option>
+              <option value="rtc_rel">WebRTC Reliable DC</option>
+              <option value="rtc_fast">WebRTC Fast DC</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:6px;">
+          <button data-xfer-kb="1" data-xfer-mode="single" class="xfer-btn">
+            Send 1 KB
+          </button>
+          <button data-xfer-kb="16" data-xfer-mode="single" class="xfer-btn">
+            Send 16 KB
+          </button>
+          <button data-xfer-kb="64" data-xfer-mode="single" class="xfer-btn">
+            Send 64 KB
+          </button>
+          <button data-xfer-kb="256" data-xfer-mode="single" class="xfer-btn">
+            Send 256 KB (1 Frame)
+          </button>
+          <button data-xfer-kb="256" data-xfer-mode="chunked"
+            class="xfer-btn primary">Send 256 KB (16KB Chunks)</button>
+          <button data-xfer-kb="512" data-xfer-mode="chunked"
+            class="xfer-btn primary">Send 512 KB (16KB Chunks)</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Direction</th>
+                <th>Payload</th>
+                <th>Via</th>
+                <th>Time / Speed</th>
+                <th>CRC32</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="transferTableBody">
+              <tr>
+                <td colspan="6" style="color:var(--muted);">
+                  No data transfers run yet.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card-hdr" style="margin-top:4px;">
+          <span class="card-title">
+            4. 60Hz Packet Stream &amp; Tunnel Clumping Analyzer
+          </span>
+          <div style="display:flex; gap:6px;">
+            <select id="streamTransportSelect">
+              <option value="auto">Auto (Best Open)</option>
+              <option value="wss">WSS Relay</option>
+              <option value="http">HTTPS Tunnel</option>
+              <option value="rtc_fast">WebRTC Fast (UDP)</option>
+              <option value="rtc_rel">WebRTC Reliable</option>
+            </select>
+            <button id="startStreamBtn" class="primary">
+              Run 5s (300f) @ 60Hz
+            </button>
+          </div>
+        </div>
+        <div class="kv-grid">
+          <div class="kv">
+            <span class="k">Stream Progress (Tx / Rx):</span>
+            <span class="v" id="streamProgressVal">0 / 0 (Loss: 0%)</span>
+          </div>
+          <div class="kv">
+            <span class="k">Out-of-Order / Duplicates:</span>
+            <span class="v" id="streamOrderVal">0 / 0</span>
+          </div>
+          <div class="kv">
+            <span class="k">Arrival Gap (Avg / P95 / Max):</span>
+            <span class="v" id="streamGapVal">-- / -- / -- ms</span>
+          </div>
+          <div class="kv">
+            <span class="k">Tunnel Clumping (&lt;3ms bursts):</span>
+            <span class="v" id="streamClumpVal">0%</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-hdr">
+          <span class="card-title">
+            5. Manual 2-PC Live Input &amp; Cursor Sandbox (60Hz)
+          </span>
+          <div style="display:flex; gap:6px; align-items:center;">
+            <span style="color:var(--muted); font-size:11px;">Live Path:</span>
+            <select id="arenaTransportSelect">
+              <option value="auto">Auto (WebRTC -&gt; WSS -&gt; HTTPS)</option>
+              <option value="wss">Force WSS Relay</option>
+              <option value="http">Force HTTPS Tunnel</option>
+              <option value="rtc_fast">Force WebRTC Fast (UDP)</option>
+              <option value="rtc_rel">Force WebRTC Reliable</option>
+            </select>
+          </div>
+        </div>
+        <div class="arena-wrap">
+          <canvas id="arenaCanvas" width="320" height="170"></canvas>
+          <div style="flex:1;min-width:200px;display:flex;
+            flex-direction:column;gap:6px">
+            <div class="kv">
+              <span class="k">Red Box (PC 1):</span>
+              <span class="v" id="p1PosVal">x:80, y:85 | btn:0x00</span>
+            </div>
+            <div class="kv">
+              <span class="k">Cyan Box (PC 2):</span>
+              <span class="v" id="p2PosVal">x:240, y:85 | btn:0x00</span>
+            </div>
+            <div class="kv">
+              <span class="k">Live Rx Rate / Gap:</span>
+              <span class="v" id="arenaRateVal">0 pkt/s | -- ms</span>
+            </div>
+            <div style="color:var(--muted);font-size:11.5px;
+              line-height:1.4;padding:4px">
+              Move your box with <strong>WASD / Arrows</strong> or
+              <strong>Drag Mouse</strong> inside the canvas.
+            </div>
+          </div>
+        </div>
+        <div class="card-hdr" style="margin-top:2px;">
+          <span class="card-title" style="font-size:12px;">
+            Live Protocol Event Log
+          </span>
+          <button id="clearLogBtn" style="padding:2px 7px; font-size:11px;">
+            Clear
+          </button>
+        </div>
+        <div class="log-box" id="logBox"></div>
+      </section>
+    </div>
+  </div>
+  <script type="module" src="./js/net_debug_app.mjs"></script>
+</body>
+</html>
