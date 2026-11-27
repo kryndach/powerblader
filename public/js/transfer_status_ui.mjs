@@ -167,7 +167,7 @@ export function bindRomDropAndPicker(state, ui, romSync, unpackRomIfNeeded) {
       });
       const rawU8 = new Uint8Array(await file.arrayBuffer());
       const { romName, romUint8, serverCachedCrc } = await unpackRomIfNeeded(
-        rawU8, file.name, state.roomCode
+        rawU8, file.name, state.roomCode, state
       );
       state.localServerRomKey = null;
       await romSync.loadRomFromUint8(romUint8, romName, {

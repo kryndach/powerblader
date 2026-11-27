@@ -1,4 +1,8 @@
 // RFC 6455 C++ WebSocket Ping Wire-RTT Prober & Raw Netplay Input Fast-Path
+import {
+  extractBinaryInputDedupKey, decodeNetplayPacketBinary
+} from '../src/binary_net_codec.mjs';
+
 export function createWireRttProber(rooms, intervalMs = 1500) {
   function pingSock(s) {
     if (!s || s.readyState !== 1) return;
@@ -80,4 +84,31 @@ export function relayRawNetplayInput(rooms, peer, msg, rawStr, seenInputKey) {
       if (dst.httpOutbox.length > 400) dst.httpOutbox.shift();
     }
   }
+}
+
+export function relayBinaryNetplayInput(rooms, peer, rawBuf, seenInputKey) {
+  const meta = extractBinaryInputDedupKey(rawBuf);
+  if (!meta) return false;
+  if (seenInputKey(peer, meta.dedupKey)) return true;
+  const roomMap = rooms.get(peer.roomCode);
+  if (!roomMap) return true;
+  for (const dst of roomMap.values()) {
+    if (dst.clientId === peer.clientId) continue;
+    let sent = false;
+    const sendAux = !dst.ws?._isLocalHost &&
+      ((meta.startFrame & 1) === 0 || meta.hasHash);
+    const socks = sendAux ? [dst.ws, dst.wsAux] : [dst.ws];
+    for (const s of socks) {
+      if (s?.readyState !== 1) continue;
+      try { s.send(rawBuf); dst.lastTxAt = Date.now(); sent = true; } catch {}
+    }
+    if (!sent) {
+      const dec = decodeNetplayPacketBinary(rawBuf);
+      if (dec) {
+        dst.httpOutbox.push({ ...dec, _seq: dst.nextSeq++ });
+        if (dst.httpOutbox.length > 400) dst.httpOutbox.shift();
+      }
+    }
+  }
+  return true;
 }

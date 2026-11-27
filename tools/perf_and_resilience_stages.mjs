@@ -95,7 +95,7 @@ export async function runTest5ReconnectAndZombieEviction() {
     });
     ws2F5.send(JSON.stringify({
       type: 'join_room', roomCode: 'F5ROOM',
-      clientId: 'cid_p2_f5', nick: 'BroF5'
+      clientId: 'cid_p2_f5', nick: 'GuestF5'
     }));
     const joinedB = await f5JoinedPromise;
     assert.strictEqual(joinedB.playerIndex, 2);
@@ -332,8 +332,12 @@ export function benchmarkAndVerifyZeroGc(
   const saveMs = tSave / 10, loadMs = tLoad / 10;
   const rb5Ms = loadMs + 4 * headMs + saveMs + visMs;
   const rb10Ms = loadMs + 9 * headMs + 2 * saveMs + visMs;
-  const stateKb = isNes
-    ? 18.5 : (slot.usedLen || slot.stateBytes?.length || 0) / 1024;
+  const nesBytes = isNes
+    ? (slot.cpuMem?.byteLength || 0) + (slot.vramMem?.byteLength || 0) +
+      (slot.spriteMem?.byteLength || 0) + (slot.ppuScalars?.byteLength || 0)
+    : 0;
+  const stateKb = (isNes
+    ? nesBytes : (slot.usedLen || slot.stateBytes?.length || 0)) / 1024;
   console.log(
     `[BENCH+0GC] ${label.padEnd(20)} | Vis=${visMs.toFixed(2)}ms | ` +
       `Head=${headMs.toFixed(2)}ms | Save=${saveMs.toFixed(2)}ms ` +

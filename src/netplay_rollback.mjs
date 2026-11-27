@@ -2,16 +2,17 @@
 export function computeRecommendedInputDelay(
   rttMs, jitterMs = 0, rxClumpFrames = 0, currentDelay = null
 ) {
-  if (!Number.isFinite(rttMs) || rttMs <= 0) return 2;
+  if (!Number.isFinite(rttMs) || rttMs <= 0) return 1;
   const clumpMs = Math.min(25, Math.max(0, (rxClumpFrames || 0) - 1) * 5);
   const eff = rttMs + Math.min(35, Math.max(0, jitterMs) * 0.5) + clumpMs;
-  const base = eff <= 85 ? 2 : eff <= 165 ? 3 : eff <= 310 ? 4 : 5;
+  const base = eff <= 25 ? 0 : eff <= 75 ? 1 : eff <= 155 ? 2
+    : eff <= 265 ? 3 : eff <= 360 ? 4 : 5;
   if (!Number.isFinite(currentDelay) || base === currentDelay) return base;
-  const b = [0, 0, 85, 165, 310, 9999];
-  if (base > currentDelay && currentDelay >= 2 && currentDelay <= 4) {
+  const b = [25, 75, 155, 265, 360, 9999];
+  if (base > currentDelay && currentDelay >= 0 && currentDelay <= 4) {
     return eff > b[currentDelay] + 15 ? base : currentDelay;
   }
-  if (base < currentDelay && currentDelay >= 3 && currentDelay <= 5) {
+  if (base < currentDelay && currentDelay >= 1 && currentDelay <= 5) {
     return eff < b[currentDelay - 1] - 20 ? base : currentDelay;
   }
   return base;
@@ -104,6 +105,10 @@ export function executeRollbackIfNeeded(engine) {
 
   const curFb = engine.core.getFrameBuffer();
   if (engine.enableVisualSmoothing && depth >= 4 && curFb) {
+    if (!engine._preRollbackBuffer) {
+      engine._preRollbackBuffer = new Uint32Array(engine._pixelCount);
+      engine._smoothedDisplayBuffer = new Uint32Array(engine._pixelCount);
+    }
     engine._preRollbackBuffer.set(curFb);
     engine.lastRollbackBlendAlpha = depth >= 6 ? 0.25 : 0.18;
   }

@@ -130,7 +130,7 @@ export function createKeyBindingsManager(state, ui) {
         `Sel/Sta: <span class="kbd">${sel}</span>/` +
         `<span class="kbd">${sta}</span> ` +
         `Turbo: <span class="kbd">${trb}</span> ` +
-        `Save/Load: <span class="kbd">F5</span>/<span class="kbd">F8</span>`;
+        `Save/Load: <span class="kbd">F6</span>/<span class="kbd">F8</span>`;
     }
   }
 

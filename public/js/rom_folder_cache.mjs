@@ -194,11 +194,13 @@ export async function deleteCachedFileFromFolder(keyRaw) {
 }
 
 export function getFolderCacheInfo() {
+  const keys = [...fileIndex.keys()];
+  const romCount = keys.filter((k) => !k.startsWith('WASM_')).length;
   return {
     connected: Boolean(dirHandle),
     folderName: dirHandle?.name || null,
-    count: fileIndex.size,
-    keys: [...fileIndex.keys()]
+    count: romCount,
+    keys
   };
 }
 

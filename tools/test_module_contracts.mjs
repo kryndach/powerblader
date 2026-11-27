@@ -88,15 +88,14 @@ function testInputRouterDeduplicationContract() {
 }
 
 function testRollbackDelayHysteresisAndWasmHelpers() {
-  assert.strictEqual(computeRecommendedInputDelay(50, 5, 0, null), 2);
-  assert.strictEqual(computeRecommendedInputDelay(120, 5, 0, null), 3);
-  assert.strictEqual(computeRecommendedInputDelay(230, 10, 1, null), 4);
+  assert.strictEqual(computeRecommendedInputDelay(15, 2, 0, null), 0);
+  assert.strictEqual(computeRecommendedInputDelay(50, 5, 0, null), 1);
+  assert.strictEqual(computeRecommendedInputDelay(120, 5, 0, null), 2);
+  assert.strictEqual(computeRecommendedInputDelay(230, 10, 1, null), 3);
   assert.strictEqual(computeRecommendedInputDelay(350, 20, 2, null), 5);
-  // Hysteresis prevents jittering from 4 -> 5 at boundary 315ms
-  assert.strictEqual(computeRecommendedInputDelay(315, 0, 0, 4), 4);
-
-  assert.strictEqual(RGB565_TO_BGR24[0xf800], 0x0000ff); // Pure red RGB565
-  assert.strictEqual(RGB565_TO_BGR24[0x001f], 0xff0000); // Pure blue RGB565
+  assert.strictEqual(computeRecommendedInputDelay(270, 0, 0, 3), 3);
+  assert.strictEqual(RGB565_TO_BGR24[0xf800], 0x0000ff);
+  assert.strictEqual(RGB565_TO_BGR24[0x001f], 0xff0000);
   const miniZip = createMinimalArcadeTestZip();
   assert.deepStrictEqual(listZipEntryNames(miniZip), ['d26-01.ic7']);
 

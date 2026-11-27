@@ -195,6 +195,7 @@ export function createViewportAndSpeedController(state, ui, romSync = null) {
     const mode = state.nesOverclockMode ?? (state.nesOverclockEnabled ? 1 : 0);
     if (state.nes && state.nes.ppu) {
       setNesOverclockEnabled(state.nes, mode);
+      state.engine?.shadowRollback?.setOverclockMode?.(mode);
     }
     syncOverclockButtonUI();
   }

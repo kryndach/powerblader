@@ -128,23 +128,19 @@ export function createAutotestStagesManager(ctx, webrtcMgr, profiles) {
   function startLocal60HzTx(totalFrames = 180) {
     return new Promise((resolve) => {
       let sent = 0;
-      const batchSize = 3;
+      const tStart = performance.now();
       const timer = setInterval(() => {
-        const frames = [];
-        for (let k = 0; k < batchSize && sent < totalFrames; k++) {
-          frames.push({
-            seq: sent,
-            p1: sent & 0xff,
-            p2: (sent * 3) & 0xff
-          });
+        const target = Math.min(
+          totalFrames, Math.floor((performance.now() - tStart) / 16.667) + 1
+        );
+        while (sent < target) {
+          const f = { seq: sent, p1: sent & 0xff, p2: (sent * 3) & 0xff };
           sent++;
+          (ctx.sendDualWs || ctx.sendWs)({
+            type: 'autotest_stream_pkt', seq: f.seq, frames: [f],
+            t: performance.now()
+          });
         }
-        (ctx.sendDualWs || ctx.sendWs)({
-          type: 'autotest_stream_pkt',
-          seq: frames[0].seq,
-          frames,
-          t: performance.now()
-        });
         if (sent >= totalFrames) {
           clearInterval(timer);
           setTimeout(() => {
@@ -152,7 +148,7 @@ export function createAutotestStagesManager(ctx, webrtcMgr, profiles) {
             resolve();
           }, 250);
         }
-      }, 50);
+      }, 16);
     });
   }
 

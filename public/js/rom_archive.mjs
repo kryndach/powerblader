@@ -7,6 +7,7 @@ import { bindRomDropAndPicker } from './transfer_status_ui.mjs';
 import {
   extractRomFromZipBrowser, extractArchiveViaServer, unpackRomIfNeeded
 } from './rom_zip_unpacker.mjs';
+import { encodeBinaryRomChunk } from '../../src/binary_net_codec.mjs';
 
 export {
   uploadRomToServerCache, fetchRomBytesWithProgress,
@@ -75,15 +76,21 @@ export async function streamRomToPeer(
       await new Promise((r) => setTimeout(r, 8));
     const endOff = Math.min(totalBytes, (i + 1) * chunkSize);
     const slice = wireBytes.subarray(i * chunkSize, endOff);
-    state.ws.send(JSON.stringify({
-      type: 'rom_chunk_data', sessionId, index: i,
-      dataB64: uint8ToBase64(slice)
-    }));
+    if (isP2p) {
+      state.ws.send(encodeBinaryRomChunk(sessionId, i, slice));
+    } else {
+      state.ws.send(JSON.stringify({
+        type: 'rom_chunk_data', sessionId, index: i,
+        dataB64: uint8ToBase64(slice)
+      }));
+    }
     const now = performance.now();
     if (state.peerAckedTransferSessionId !== sessionId &&
         (i === 0 || now - lastUiAt >= 180)) {
       lastUiAt = now;
-      const inFlight = Math.round((state.ws.bufferedAmount || 0) * 0.72);
+      const inFlight = isP2p
+        ? (state.ws.bufferedAmount || 0)
+        : Math.round((state.ws.bufferedAmount || 0) * 0.72);
       const sentEst = Math.max(0, endOff - inFlight);
       const pct = Math.max(1, Math.min(95, Math.round(
         (sentEst / totalBytes) * 100
@@ -100,7 +107,7 @@ export async function streamRomToPeer(
   if (state.ws?.readyState === 1 && state.sendingRomSessionId === sessionId) {
     state.ws.send(JSON.stringify({ type: 'rom_chunk_end', sessionId }));
     if (state.peerAckedTransferSessionId !== sessionId) {
-      setXfer('partner-core', 100, { pct: 100 });
+      setXfer('partner-core', 0, { pct: 0 });
     }
   }
 }
@@ -134,7 +141,7 @@ export function handleRomTransferMessage(
   const finishLoad = async (u8, rName, autoDef, dropKey, syncSt) => {
     state.activeRomAbortCtrl = null; state.activeRomDownload = null;
     ui.setTransferStatus?.({
-      phase: 'loading-core', romName: rName, pct: 100,
+      phase: 'loading-core', romName: rName, pct: 0,
       detail: 'Starting emulator...'
     });
     await romSync.loadRomFromUint8(u8, rName, {
@@ -147,7 +154,7 @@ export function handleRomTransferMessage(
   const applyCacheHit = (hit, dropKey, syncSt, sid = '') => {
     sendWs({
       type: 'rom_transfer_progress', sessionId: sid,
-      stage: 'cache-hit', pct: 100
+      stage: 'cache-hit', pct: 0
     });
     ui.logDebug?.(`ROM CRC32 ${msg.romCrc32} cache hit - 0 KB downloaded!`);
     return finishLoad(
@@ -258,14 +265,15 @@ export function handleRomTransferMessage(
       ? await gunzipBytes(full) : full;
     sendWs({
       type: 'rom_transfer_progress', sessionId: xfer.sessionId,
-      stage: 'loading-core', pct: 100
+      stage: 'loading-core', pct: 0
     });
     return finishLoad(
       romBytes, xfer.romName, xfer.isAutoDefaultRom, null, xfer.syncState
     );
   };
   if (msg.type === 'rom_chunk_data' && xfer?.sessionId === msg.sessionId) {
-    const part = base64ToUint8(msg.dataB64);
+    const part = msg.data instanceof Uint8Array
+      ? msg.data : base64ToUint8(msg.dataB64);
     if (!xfer.chunks.has(msg.index)) {
       xfer.chunks.set(msg.index, part);
       xfer.receivedBytes += part.byteLength;

@@ -136,6 +136,36 @@ function verifySafeWaitBody(m, start, end) {
   return true;
 }
 
+function isShortLeafHelper(m, pc) {
+  for (let off = 0; off <= 36; off++) {
+    const op = m[(pc + off) & 0xffff];
+    if (op === 0x60) return true; // RTS within 36 bytes
+    if (op === 0x20) return false; // Nested JSR -> active game logic
+  }
+  return false;
+}
+
+function isPcInJmpWaitLoop(m, pc, sp) {
+  const sp8 = sp & 0xff;
+  for (let off = -3; off <= 36; off++) {
+    const a = (pc + off) & 0xffff;
+    if (m[a] !== 0x4c) continue;
+    const target = m[(a + 1) & 0xffff] | (m[(a + 2) & 0xffff] << 8);
+    const span = a - target;
+    if (target <= pc && pc <= a + 2 && span > 0 && span <= 40) {
+      if (m[(target - 1) & 0xffff] === 0x58 || sp8 === 0xff) return true;
+      if (span >= 4 && span <= 12) {
+        const br = (a - 2) & 0xffff;
+        if (WAIT_BRANCH_OPS.has(m[br]) && m[(br + 1) & 0xffff] === 0x03 &&
+            verifySafeWaitBody(m, target, br)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export function isCpuInTightWaitLoop(cpu) {
   const pc = (cpu.REG_PC + 1) & 0xffff;
   const m = cpu.mem;
@@ -155,23 +185,10 @@ export function isCpuInTightWaitLoop(cpu) {
     if (distPc <= span + 2 && verifySafeWaitBody(m, target, br)) return true;
   }
 
-  for (let off = -3; off <= 36; off++) {
-    const a = (pc + off) & 0xffff;
-    if (m[a] !== 0x4c) continue;
-    const target = m[(a + 1) & 0xffff] | (m[(a + 2) & 0xffff] << 8);
-    const span = a - target;
-    if (target <= pc && pc <= a + 2 && span > 0 && span <= 40) {
-      if (m[(target - 1) & 0xffff] === 0x58 || cpu.REG_SP === 0x01ff) {
-        return true;
-      }
-      if (span >= 4 && span <= 12) {
-        const br = (a - 2) & 0xffff;
-        if (WAIT_BRANCH_OPS.has(m[br]) && m[(br + 1) & 0xffff] === 0x03 &&
-            verifySafeWaitBody(m, target, br)) {
-          return true;
-        }
-      }
-    }
+  if (isPcInJmpWaitLoop(m, pc, cpu.REG_SP)) return true;
+  if ((cpu.REG_SP & 0xff) === 0xfd && isShortLeafHelper(m, pc)) {
+    const retPc = ((m[0x01fe] | (m[0x01ff] << 8)) + 1) & 0xffff;
+    if (isPcInJmpWaitLoop(m, retPc, 0x01ff)) return true;
   }
   return false;
 }
@@ -241,8 +258,11 @@ export function patchPostRenderOverclock(nes) {
       if (waiting) {
         this._hasTightWaitLoop = true;
         this._overclockCapped = false;
+        this._overclockCooldown = 0;
       } else if (
-        mode === 2 || (this._hasTightWaitLoop && !this._overclockCapped)
+        mode === 2 ||
+        (this._hasTightWaitLoop && !this._overclockCapped &&
+          !(this._overclockCooldown > 0))
       ) {
         const cap = mode === 2
           ? MAX_FORCE_OVERCLOCK_SCANLINES
@@ -256,8 +276,11 @@ export function patchPostRenderOverclock(nes) {
         }
         if (mode === 1) {
           this._overclockCapped = true;
-          this._hasTightWaitLoop = false;
+          this._overclockCooldown = 8;
         }
+      } else if (this._overclockCooldown > 0) {
+        this._overclockCooldown--;
+        if (this._overclockCooldown === 0) this._overclockCapped = false;
       }
     }
     this._overclockScanlines = 0;

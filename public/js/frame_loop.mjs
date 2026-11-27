@@ -1,5 +1,22 @@
-// 60.0988 Hz NTSC Fixed-Timestep Loop, Sub-Frame Time-Sync & Input Polling
-import { INPUT_BITS } from '../src/netplay_engine.mjs';
+// 60 Hz Fixed-Timestep Loop, Sub-Frame Time-Sync & Input Polling
+import { INPUT_BITS } from '../../src/netplay_engine.mjs';
+import { encodeNetplayPacketBinary } from '../../src/binary_net_codec.mjs';
+
+export const FRAME_DURATION_MS = 1000 / 60;
+
+export function stepPacingAccumulator(
+  accumulatorMs, dt, rift = 0, fromRaf = false
+) {
+  let effectiveFrameMs = FRAME_DURATION_MS;
+  if (Math.abs(rift) > 0.25) {
+    const scale = Math.max(-0.025, Math.min(0.025, rift * 0.007));
+    effectiveFrameMs = FRAME_DURATION_MS * (1 + scale);
+  }
+  const nextAcc = fromRaf && dt >= 14.2 && dt <= 19.2 && Math.abs(rift) <= 0.25
+    ? effectiveFrameMs
+    : Math.min(accumulatorMs + dt, effectiveFrameMs * 2);
+  return { accumulatorMs: nextAcc, effectiveFrameMs };
+}
 
 const KEY_MAP = {
   KeyZ: INPUT_BITS.A,
@@ -124,7 +141,6 @@ export function startConsoleFrameLoop(
     }
   });
 
-  const FRAME_DURATION_MS = 1000 / 60.0988;
   let lastTickTime = performance.now();
   let lastRafAt = performance.now();
   let accumulatorMs = 0;
@@ -137,7 +153,6 @@ export function startConsoleFrameLoop(
     const dt = Math.min(100, Math.max(0, now - lastTickTime));
     lastTickTime = now;
 
-    let effectiveFrameMs = FRAME_DURATION_MS;
     let rift = 0;
     if (
       state.engine &&
@@ -146,17 +161,10 @@ export function startConsoleFrameLoop(
       !state.engine.syncPaused
     ) {
       rift = state.engine.riftFrames || 0;
-      if (Math.abs(rift) > 0.25) {
-        const scale = Math.max(-0.025, Math.min(0.025, rift * 0.007));
-        effectiveFrameMs = FRAME_DURATION_MS * (1 + scale);
-      }
     }
-
-    if (fromRaf && dt >= 14.2 && dt <= 19.2 && Math.abs(rift) < 1.8) {
-      accumulatorMs = effectiveFrameMs;
-    } else {
-      accumulatorMs = Math.min(accumulatorMs + dt, effectiveFrameMs * 2);
-    }
+    const paced = stepPacingAccumulator(accumulatorMs, dt, rift, fromRaf);
+    accumulatorMs = paced.accumulatorMs;
+    const effectiveFrameMs = paced.effectiveFrameMs;
 
     let ticksInRaf = 0;
     while (accumulatorMs >= effectiveFrameMs) {
@@ -191,7 +199,7 @@ export function startConsoleFrameLoop(
       }
       ticksInRaf++;
       if (performance.now() - stepStartMs > 14.2) {
-        accumulatorMs = 0;
+        accumulatorMs = Math.min(accumulatorMs, effectiveFrameMs * 0.5);
         break;
       }
     }
@@ -213,13 +221,15 @@ export function startConsoleFrameLoop(
         ui.transportModeSelect?.value !== 'wss';
       if (p2pOpen) {
         try {
-          state.rtcChannel.send(JSON.stringify({
-            type: 'peer_ping', t: Date.now()
-          }));
+          state.rtcChannel.send(
+            encodeNetplayPacketBinary({ type: 'peer_ping', t: Date.now() })
+          );
         } catch {}
-      } else if (
+      }
+      if (
         state.ws && state.ws.readyState === 1 &&
-        (!state.peerConnected || now - (state._lastWireRttAt || 0) > 4500)
+        (!state.peerConnected || now - (state._lastWireRttAt || 0) > 4500) &&
+        (!p2pOpen || ui.transportModeSelect?.value === 'auto')
       ) {
         const pingType = state.peerConnected ? 'peer_ping' : 'ping';
         state.ws.send(JSON.stringify({ type: pingType, t: Date.now() }));

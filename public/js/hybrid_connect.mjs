@@ -316,26 +316,31 @@ export function setupHybridConnectionUi(state, ui, hooks) {
     );
   }
 
+  let reconnectAttempts = 0;
   function schedulePinggyAutoReconnect() {
     if (!state.usedNostrDiscovery || reconnectTimer) return;
+    if (reconnectAttempts >= 6) {
+      return setConnectionPhase(state, ui, {
+        phase: 'error', pill: 'HOST OFFLINE',
+        headline: 'Auto-reconnect paused after 6 attempts.',
+        nextStep: 'Ask Host to restart, then click Retry.'
+      });
+    }
+    const factor = Math.pow(1.4, reconnectAttempts++);
+    const delayMs = Math.min(12000, Math.round(2200 * factor));
     ui.showScreenBanner(
-      'TUNNEL ROTATED — AUTO-RECONNECTING VIA NOSTR...', 'warn', 4000
+      `TUNNEL ROTATED — RECONNECTING (${reconnectAttempts}/6)...`, 'warn', 4000
     );
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
-      state.apiBaseUrl = '';
-      state.wsBaseUrl = '';
+      state.apiBaseUrl = state.wsBaseUrl = '';
       smartConnect();
-    }, 2200);
+    }, delayMs);
   }
-
   Promise.all([backendCheckPromise, refreshRoomAuth()]).then(([, { pass }]) => {
     if (!isStaticOrigin && pass && isLocalHostRuntime() &&
-        !state.isExternalServer) {
-      syncHostPasswordToServer();
-    }
+        !state.isExternalServer) syncHostPasswordToServer();
   });
-
   return {
     smartConnect, startServerlessHost, refreshRoomAuth,
     schedulePinggyAutoReconnect, whenReady: () => backendCheckPromise,

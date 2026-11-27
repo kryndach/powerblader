@@ -1,7 +1,11 @@
 // HTTP Room-ROM Range/Striped Cache (/api/room-rom) & Saves (/api/save-slot)
 import fs from 'fs';
 import path from 'path';
+import { promisify } from 'util';
 import zlib from 'zlib';
+
+const gzipAsync = promisify(zlib.gzip);
+const gunzipAsync = promisify(zlib.gunzip);
 
 const HOST_ONLY_PATHS = new Set([
   '/api/join-file', '/api/tunnel-routes',
@@ -97,14 +101,15 @@ export function cacheRoomRom(
   const roomCode = cleanRoom(roomCodeRaw);
   const crc = cleanCrc(crcRaw);
   const isZip = String(romName).toLowerCase().endsWith('.zip');
-  const gzipBuffer =
-    preGzipBuf ||
-    (!isZip && romBuffer.length > 16384
-      ? zlib.gzipSync(romBuffer, { level: 1 })
-      : null);
   const entry = {
-    romName, crc, romBuffer, gzipBuffer, updatedAt: Date.now()
+    romName, crc, romBuffer, gzipBuffer: preGzipBuf || null,
+    updatedAt: Date.now()
   };
+  if (!preGzipBuf && !isZip && romBuffer.length > 16384) {
+    gzipAsync(romBuffer, { level: 1 })
+      .then((gz) => { entry.gzipBuffer = gz; })
+      .catch(() => {});
+  }
   if (roomCode) roomRomCache.set(roomCode, entry);
   if (crc) roomRomCache.set(`CRC:${crc}`, entry);
   while (roomRomCache.size > 16) {
@@ -159,7 +164,7 @@ export function handleRoomRomApi(req, urlObj, res, sendJson) {
       if (total > 64 * 1024 * 1024) return req.destroy();
       chunks.push(chunk);
     });
-    req.on('end', () => {
+    req.on('end', async () => {
       try {
         const rawBody = Buffer.concat(chunks);
         if (!rawBody.length) {
@@ -187,7 +192,7 @@ export function handleRoomRomApi(req, urlObj, res, sendJson) {
             }, true);
           }
           pendingMultipart.delete(key);
-          const romBuf = isGzipBody ? zlib.gunzipSync(st.buf) : st.buf;
+          const romBuf = isGzipBody ? await gunzipAsync(st.buf) : st.buf;
           const gzPart = isGzipBody ? st.buf : null;
           cacheRoomRom(roomCode, crc, romName, romBuf, gzPart);
           return sendJson(res, 200, {
@@ -196,7 +201,7 @@ export function handleRoomRomApi(req, urlObj, res, sendJson) {
           }, true);
         }
 
-        const romBuffer = isGzipBody ? zlib.gunzipSync(rawBody) : rawBody;
+        const romBuffer = isGzipBody ? await gunzipAsync(rawBody) : rawBody;
         const gzBuf = isGzipBody ? rawBody : null;
         cacheRoomRom(roomCode, crc, romName, romBuffer, gzBuf);
         sendJson(res, 200, {

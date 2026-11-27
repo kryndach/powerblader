@@ -2,6 +2,10 @@
 import { INPUT_BITS, computeDeterministicHash } from './crc32.mjs';
 import { CPU_SCALAR_PROPS, PPU_SCALAR_PROPS } from './ppu_register_tables.mjs';
 import { patchJsnes8x16Sprites } from './jsnes_ppu_patches.mjs';
+import {
+  saveObjectZeroGc, restoreObjectZeroGc
+} from './jsnes_zero_gc_state.mjs';
+import { invalidateMapperBankCaches } from './mapper_bank_cache.mjs';
 
 export function createFastSnapshotSlot() {
   return {
@@ -95,25 +99,18 @@ export function saveFastState(nes, slot, frameNum = 0) {
     slot.ppuScalars[i] = ppu[PPU_SCALAR_PROPS[i]];
   }
 
-  slot.mmapState = nes.mmap ? nes.mmap.toJSON() : null;
-  slot.papuState = nes.papu ? nes.papu.toJSON() : null;
-  slot.ctrl1State = nes.controllers[1].toJSON();
-  slot.ctrl2State = nes.controllers[2].toJSON();
+  saveObjectZeroGc(nes.mmap, slot, 'mmapState');
+  saveObjectZeroGc(nes.papu, slot, 'papuState');
+  saveObjectZeroGc(nes.controllers[1], slot, 'ctrl1State');
+  saveObjectZeroGc(nes.controllers[2], slot, 'ctrl2State');
 }
 
 export function loadFastState(nes, slot) {
   const cpu = nes.cpu;
   const ppu = nes.ppu;
 
-  if (nes.mmap && slot.mmapState) {
-    nes.mmap.fromJSON(slot.mmapState);
-  }
-  if (nes.mmap) {
-    nes.mmap._bankAt8000 = -1;
-    nes.mmap._bankAtC000 = -1;
-    nes.mmap._vromAt0000 = -1;
-    nes.mmap._vromAt1000 = -1;
-  }
+  restoreObjectZeroGc(nes.mmap, slot, 'mmapState');
+  invalidateMapperBankCaches(nes.mmap);
 
   cpu.mem.set(slot.cpuMem);
   for (let i = 0; i < CPU_SCALAR_PROPS.length; i++) {
@@ -164,15 +161,9 @@ export function loadFastState(nes, slot) {
     ppu.spriteRamWriteUpdate(i, ppu.spriteMem[i]);
   }
 
-  if (nes.papu && slot.papuState) {
-    nes.papu.fromJSON(slot.papuState);
-  }
-  if (slot.ctrl1State) {
-    nes.controllers[1].fromJSON(slot.ctrl1State);
-  }
-  if (slot.ctrl2State) {
-    nes.controllers[2].fromJSON(slot.ctrl2State);
-  }
+  restoreObjectZeroGc(nes.papu, slot, 'papuState');
+  restoreObjectZeroGc(nes.controllers[1], slot, 'ctrl1State');
+  restoreObjectZeroGc(nes.controllers[2], slot, 'ctrl2State');
 }
 
 export function applyControllerMask(nes, controllerIdx, mask) {
@@ -242,12 +233,7 @@ export function restoreCompactNesState(nes, syncObj) {
   if (!syncObj || !syncObj.nesState) return false;
   patchJsnes8x16Sprites(nes);
   const s = syncObj.nesState;
-  if (nes.mmap) {
-    nes.mmap._bankAt8000 = -1;
-    nes.mmap._bankAtC000 = -1;
-    nes.mmap._vromAt0000 = -1;
-    nes.mmap._vromAt1000 = -1;
-  }
+  invalidateMapperBankCaches(nes.mmap);
   nes.mmap.fromJSON(s.mmap);
   nes.cpu.fromJSON(s.cpu);
 

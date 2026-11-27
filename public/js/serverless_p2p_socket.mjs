@@ -3,19 +3,13 @@ import {
   deriveUniversalKeys, decryptJsonAesGcm, signUniversalNostrEvent
 } from '../../src/nostr_browser_crypto.mjs';
 import { deriveRoomSecret, normalizeRoomCode } from '../../src/room_auth.mjs';
+import { buildGameplayIceServers } from './ice_config.mjs';
 
 export const DEFAULT_NOSTR_RELAYS = [
   'wss://relay.damus.io',
   'wss://nos.lol',
   'wss://relay.primal.net',
   'wss://relay.snort.social'
-];
-
-const DEFAULT_ICE = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun.nextcloud.com:443' }
 ];
 
 function waitForIceComplete(rtc, maxMs = 1500) {
@@ -99,9 +93,10 @@ export function subscribeEncryptedNostr(relays, keys, onPayload) {
 
 export function createServerlessP2pSocket({
   role = 'host', roomCode = 'NOVA', password = '', nick = 'Player',
-  relays = DEFAULT_NOSTR_RELAYS, iceServers = DEFAULT_ICE,
+  relays = DEFAULT_NOSTR_RELAYS, iceServers = null,
   existingOffer = null, onStatus = null
 }) {
+  const resolvedIce = iceServers || buildGameplayIceServers();
   const room = normalizeRoomCode(roomCode);
   const myIndex = role === 'host' ? 1 : 2;
   const peerIndex = myIndex === 1 ? 2 : 1;
@@ -109,7 +104,7 @@ export function createServerlessP2pSocket({
   const sid = existingOffer?.sid ||
     `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 
-  let rtc = null, ctrlDc = null, inputDc = null;
+  let rtc = null, ctrlDc = null, inputDc = null, discTimer = null;
   let stopSub = null, closed = false, peerInfo = null;
   let localJoinInfo = { nick, romCrc32: null, romName: null };
 
@@ -118,11 +113,21 @@ export function createServerlessP2pSocket({
     readyState: 0,
     onopen: null, onmessage: null, onclose: null, onerror: null,
     get bufferedAmount() { return ctrlDc?.bufferedAmount || 0; },
-    send(rawStr) {
+    send(raw) {
       if (closed || !ctrlDc || ctrlDc.readyState !== 'open') return;
-      let msg = null;
-      try { msg = JSON.parse(rawStr); } catch { return; }
-      if (msg.type === 'join_room') {
+      if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+        const u8 = raw instanceof ArrayBuffer
+          ? new Uint8Array(raw)
+          : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+        const fast = u8[0] === 0x4e || u8[0] === 0x50 || u8[0] === 0x51;
+        const dc = fast && inputDc?.readyState === 'open' ? inputDc : ctrlDc;
+        try { dc.send(raw); } catch {}
+        return;
+      }
+      if (typeof raw !== 'string') return;
+      if (raw.startsWith('{"type":"join_room"')) {
+        let msg = null;
+        try { msg = JSON.parse(raw); } catch { return; }
         localJoinInfo = {
           nick: msg.nick || nick, romCrc32: msg.romCrc32 || null,
           romName: msg.romName || null,
@@ -139,12 +144,13 @@ export function createServerlessP2pSocket({
         });
         return;
       }
-      const useUnordered = msg.type === 'netplay_input' ||
-        msg.type === 'peer_ping' || msg.type === 'peer_pong';
+      const useUnordered = raw.startsWith('{"type":"netplay_input"') ||
+        raw.startsWith('{"type":"peer_ping"') ||
+        raw.startsWith('{"type":"peer_pong"');
       if (useUnordered && inputDc?.readyState === 'open') {
-        try { inputDc.send(rawStr); return; } catch {}
+        try { inputDc.send(raw); return; } catch {}
       }
-      try { ctrlDc.send(rawStr); } catch {}
+      try { ctrlDc.send(raw); } catch {}
     },
     async getIceSummary() {
       if (!rtc?.getStats) return null;
@@ -172,6 +178,7 @@ export function createServerlessP2pSocket({
     close() {
       if (closed) return;
       closed = true;
+      if (discTimer) { clearTimeout(discTimer); discTimer = null; }
       sock.readyState = 3;
       try { stopSub?.(); } catch {}
       try { ctrlDc?.close(); } catch {}
@@ -185,10 +192,15 @@ export function createServerlessP2pSocket({
     if (!closed) sock.onmessage?.({ data: JSON.stringify(obj) });
   }
 
-  function handlePeerChannelData(rawStr) {
-    let msg = null;
-    try { msg = JSON.parse(rawStr); } catch { return; }
-    if (msg.type === 'p2p_hello') {
+  function handlePeerChannelData(rawData) {
+    if (closed) return;
+    if (typeof rawData !== 'string') {
+      sock.onmessage?.({ data: rawData });
+      return;
+    }
+    if (rawData.startsWith('{"type":"p2p_hello"')) {
+      let msg = null;
+      try { msg = JSON.parse(rawData); } catch { return; }
       peerInfo = {
         clientId: msg.clientId || 'p2p_peer', playerIndex: peerIndex,
         nick: msg.nick || `Player ${peerIndex}`,
@@ -198,11 +210,12 @@ export function createServerlessP2pSocket({
       emitLocal({ type: 'peer_joined', peer: peerInfo });
       return;
     }
-    emitLocal(msg);
+    sock.onmessage?.({ data: rawData });
   }
 
   function attachCtrlChannel(dc) {
     ctrlDc = dc;
+    try { dc.binaryType = 'arraybuffer'; } catch {}
     dc.onopen = () => {
       if (closed) return;
       try { stopSub?.(); stopSub = null; } catch {}
@@ -216,6 +229,7 @@ export function createServerlessP2pSocket({
 
   function attachInputChannel(dc) {
     inputDc = dc;
+    try { dc.binaryType = 'arraybuffer'; } catch {}
     dc.onmessage = (ev) => handlePeerChannelData(ev.data);
   }
 
@@ -225,10 +239,19 @@ export function createServerlessP2pSocket({
       if (!secret) throw new Error('Password required for Serverless P2P');
       const offerKeys = await deriveUniversalKeys(secret, '_p2p_offer');
       const ansKeys = await deriveUniversalKeys(secret, '_p2p_answer');
-      rtc = new RTCPeerConnection({ iceServers });
+      rtc = new RTCPeerConnection({ iceServers: resolvedIce });
       rtc.onconnectionstatechange = () => {
         const st = rtc?.connectionState;
-        if (st === 'failed' || st === 'disconnected' || st === 'closed') {
+        if (st === 'connected') {
+          if (discTimer) { clearTimeout(discTimer); discTimer = null; }
+        } else if (st === 'disconnected') {
+          if (!discTimer) {
+            discTimer = setTimeout(() => {
+              discTimer = null;
+              if (rtc?.connectionState !== 'connected') sock.close();
+            }, 4000);
+          }
+        } else if (st === 'failed' || st === 'closed') {
           sock.close();
         }
       };

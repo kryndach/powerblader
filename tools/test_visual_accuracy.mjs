@@ -93,7 +93,7 @@ function runBattletoadsCharSelect(romBin, overclockOn) {
     glitches.length, 0,
     `Battletoads (${overclockOn ? 'ON' : 'OFF'}) blinked ${glitches.length}x`
   );
-  assert.strictEqual(nes.ppu._hasTightWaitLoop, false);
+  assert.strictEqual(nes.ppu._hasTightWaitLoop, overclockOn);
 }
 
 function testBattletoadsCharacterSelectStability() {

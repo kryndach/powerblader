@@ -44,6 +44,7 @@ export function patchJsnes8x16Sprites(nes) {
       const origLoadROM = nes.loadROM.bind(nes);
       nes.loadROM = function (data) {
         const prevMode = readOcMode(this);
+        this._lastRomBinary = data;
         const res = origLoadROM(data);
         resetOverclockRuntimeFlags(this.ppu);
         patchJsnes8x16Sprites(this);

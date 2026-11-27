@@ -239,44 +239,46 @@ export function createConsoleUI(state) {
       ? `ROOM "${state.roomCode}" [${via}] - MATCHED`
       : `ROOM "${state.roomCode}" CONNECTED [${via}]`;
 
+    const esc = (s) => String(s || '').replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const pNick = esc(state.peerNick), pRom = esc(state.partnerRomName);
+    const lRom = esc(state.romName);
+    const setAct = (r, s, m) => {
+      ui.lobbyActionsRow.style.display = r;
+      ui.startMatchNowBtn.style.display = s;
+      ui.sendRomManualBtn.style.display = m;
+    };
     if (!state.romCrc32 && !state.partnerRomCrc32) {
       ui.lobbyFooterText.innerHTML =
-        '<div class="next-step-box ok"><strong>Connected to ' +
-        `${state.peerNick}!</strong> Next step: pick a <strong>ROM</strong> ` +
-        'above (or drag &amp; drop) and click <strong>Send ROM</strong>.</div>';
+        `<div class="next-step-box ok"><strong>Connected to ${pNick}!` +
+        '</strong> Next step: pick a <strong>ROM</strong> above (or drag ' +
+        '&amp; drop) and click <strong>Send ROM</strong>.</div>';
       ui.lobbyActionsRow.style.display = 'none';
     } else if (!state.romCrc32 && state.partnerRomCrc32) {
       ui.lobbyFooterText.innerHTML =
-        '<div class="next-step-box ok"><strong>Connected!</strong> Partner ' +
-        `loaded <strong>${state.partnerRomName}</strong>. Wait for Partner ` +
-        'to click <strong>Send ROM</strong> (or select the same file).</div>';
+        `<div class="next-step-box ok"><strong>Connected!</strong> Partner ` +
+        `loaded <strong>${pRom}</strong>. Wait for Partner to click ` +
+        '<strong>Send ROM</strong> (or select the same file).</div>';
       ui.lobbyActionsRow.style.display = 'none';
     } else if (state.romCrc32 && !state.partnerRomCrc32) {
       ui.lobbyFooterText.innerHTML =
         '<div class="next-step-box warn"><strong>Connected!</strong> Next ' +
-        `step: click <strong>Send ROM to Partner</strong> below to start ` +
-        `<strong>${state.romName}</strong>!</div>`;
-      ui.lobbyActionsRow.style.display = 'flex';
-      ui.startMatchNowBtn.style.display = 'none';
-      ui.sendRomManualBtn.style.display = 'inline-flex';
+        'step: click <strong>Send ROM to Partner</strong> below to start ' +
+        `<strong>${lRom}</strong>!</div>`;
+      setAct('flex', 'none', 'inline-flex');
     } else if (!crcMatched) {
       ui.lobbyFooterText.innerHTML =
         '<div class="next-step-box err"><strong>Different games loaded!' +
         '</strong> Click <strong>Send ROM to Partner</strong> to sync both ' +
         'PCs to the same game.</div>';
-      ui.lobbyActionsRow.style.display = 'flex';
-      ui.startMatchNowBtn.style.display = 'none';
-      ui.sendRomManualBtn.style.display = 'inline-flex';
+      setAct('flex', 'none', 'inline-flex');
     } else {
       ui.lobbyFooterText.innerHTML =
-        `<div class="next-step-box ok"><strong>Both PCs matched ` +
-        `"${state.romName}"!</strong> Synchronizing Frame #0...</div>`;
-      ui.lobbyActionsRow.style.display = 'flex';
-      ui.startMatchNowBtn.style.display = 'inline-flex';
-      ui.sendRomManualBtn.style.display = 'none';
+        `<div class="next-step-box ok"><strong>Both PCs matched "${lRom}"!` +
+        '</strong> Synchronizing Frame #0...</div>';
+      setAct('flex', 'inline-flex', 'none');
     }
   };
-
   ui.updateStatusStrip = function () {
     ui.roleBadge.textContent = `YOU: P${state.localPlayerIndex}`;
     const shortRom = state.romName

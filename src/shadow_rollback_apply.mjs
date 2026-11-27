@@ -1,7 +1,30 @@
 // Pure Helpers for Shadow Rollback Snapshot Selection & Catch-Up Application
+import {
+  encodeNesStateBytes, decodeNesStateBytes
+} from './universal_worker_core_factory.mjs';
+
 export const MAX_APPLY_GAP = 3;
 export const FALLBACK_APPLY_GAP = 8;
 export const MAX_SLICE_LEN = 200;
+
+function readCoreStateBytes(core) {
+  if (typeof core.saveStateBytes === 'function') return core.saveStateBytes();
+  if (core.cpu && core.ppu) return encodeNesStateBytes(core);
+  if (core.rawCore?.saveStateBytes) return core.rawCore.saveStateBytes();
+  if (core.rawCore?.cpu && core.rawCore?.ppu) {
+    return encodeNesStateBytes(core.rawCore);
+  }
+  return null;
+}
+
+function writeCoreStateBytes(core, bytes) {
+  const raw = core.rawCore || core;
+  if (typeof raw.loadStateBytes === 'function') {
+    raw.loadStateBytes(bytes);
+    return;
+  }
+  if (raw.cpu && raw.ppu) decodeNesStateBytes(raw, bytes);
+}
 
 export function findEarliestMisprediction(engine, fromFrame) {
   const start = Math.max(engine.timelineStartFrame, fromFrame);
@@ -25,7 +48,8 @@ export function resolveSnapshotForSync(engine, core) {
     cur === engine.timelineStartFrame ||
     engine.lastConfirmedRemoteFrame >= cur - 1
   ) {
-    return { frame: cur, bytes: core.saveStateBytes() };
+    const bytes = readCoreStateBytes(core);
+    return bytes ? { frame: cur, bytes } : null;
   }
   let f = Math.max(
     engine.timelineStartFrame,
@@ -79,14 +103,18 @@ export function applyShadowCatchupState(engine, msg, stats, staleDropStreak) {
   const depth = Math.max(1, engine.currentFrame - baseF);
   const curFb = engine.core.getFrameBuffer();
   if (engine.enableVisualSmoothing && depth >= 4 && curFb) {
+    if (!engine._preRollbackBuffer ||
+        engine._preRollbackBuffer.length !== curFb.length) {
+      engine._preRollbackBuffer = new Uint32Array(curFb.length);
+    }
     engine._preRollbackBuffer.set(curFb);
     engine.lastRollbackBlendAlpha = depth >= 6 ? 0.25 : 0.18;
   }
   engine._rollbackDeclickL = engine._lastEmittedAudioL || 0;
   engine._rollbackDeclickR = engine._lastEmittedAudioR || 0;
   engine._rollbackDeclickSamples = 48;
-  engine.core.rawCore.loadStateBytes(
-    new Uint8Array(msg.stateBuf, 0, msg.stateLen)
+  writeCoreStateBytes(
+    engine.core, new Uint8Array(msg.stateBuf, 0, msg.stateLen)
   );
 
   const H = engine.historySize;
@@ -124,6 +152,9 @@ export function applyShadowCatchupState(engine, msg, stats, staleDropStreak) {
   engine.earliestMispredictedFrame = findEarliestMisprediction(
     engine, msg.fromFrame
   );
+  for (const k of engine.localHashes.keys()) {
+    if (k > msg.usedConfFrame) engine.localHashes.delete(k);
+  }
   engine._verifyConfirmedHashes();
   return { applied: true, gap };
 }

@@ -26,8 +26,12 @@ import {
   createConsoleState, resetPeerSessionState
 } from './session_store.mjs';
 import {
-  createShadowRollbackHost
+  createShadowRollbackHost, shouldAttachShadowWorker
 } from '../src/shadow_rollback_host.mjs';
+import {
+  decodeNetplayPacketBinary, isBinaryNetplayPacket,
+  decodeBinaryRomChunk, isBinaryRomChunk
+} from '../../src/binary_net_codec.mjs';
 
 const state = createConsoleState();
 Object.assign(state, resolveServerEndpoints());
@@ -59,7 +63,7 @@ const saveSlots = createSaveSlotsManager(state, ui, romSync);
 const keyBindings = createKeyBindingsManager(state, ui);
 const viewportCtrl = createViewportAndSpeedController(state, ui, romSync);
 state.onEngineCreated = () => {
-  if (state.engine?.systemId === 'arcade' && state.nes?.getWasmModule) {
+  if (shouldAttachShadowWorker(state.engine?.systemId) && state.nes) {
     state.engine.attachShadowRollback(createShadowRollbackHost(state.nes));
   }
 };
@@ -96,6 +100,7 @@ let hybridConn = null;
 
 function attachSocketLifecycle(ws, code, nick) {
   state.ws = ws;
+  try { ws.binaryType = 'arraybuffer'; } catch {}
   ws.onopen = () => {
     ui.dbgWssState.textContent = ws.isServerlessP2p
       ? 'Connected (P2P)' : 'Connected';
@@ -118,7 +123,15 @@ function attachSocketLifecycle(ws, code, nick) {
   };
   ws.onmessage = (ev) => {
     try {
-      protocol.handleIncomingNetMessage(JSON.parse(ev.data), 'wss');
+      const msg = isBinaryNetplayPacket(ev.data)
+        ? decodeNetplayPacketBinary(ev.data, state.engine?.sessionId)
+        : isBinaryRomChunk(ev.data)
+          ? decodeBinaryRomChunk(ev.data, state.incomingRomTransfer?.sessionId)
+          : JSON.parse(ev.data);
+      if (msg) {
+        const src = ws.isServerlessP2p ? 'p2p' : 'wss';
+        protocol.handleIncomingNetMessage(msg, src);
+      }
     } catch {}
   };
   ws.onclose = () => {
@@ -176,7 +189,9 @@ const tunnelCtrl = setupHostTunnelController(state, ui, {
   onOptimizeRoute: () =>
     state.routeOptimizer?.triggerOptimization({ auto: false })
 });
-state.routeOptimizer = createRouteOptimizer(state, ui, tunnelCtrl);
+state.routeOptimizer = createRouteOptimizer(state, ui, tunnelCtrl, {
+  onHotRouteSwitch: () => { syncBenchLinks(); connectToRoom(); }
+});
 const cacheFolderUi = setupRomCacheFolderUi(state, ui, () => {
   if (state.partnerRomCrc32) {
     protocol?.maybeAutoLoadCachedPartnerRom?.(
@@ -203,31 +218,21 @@ ui.resetBtn.addEventListener('click', () => {
 });
 
 ui.startMatchNowBtn.addEventListener('click', () => {
-  if (
-    state.ws &&
-    state.ws.readyState === 1 &&
-    state.peerConnected &&
-    state.romCrc32 &&
-    state.partnerRomCrc32 === state.romCrc32
-  ) {
+  if (state.ws?.readyState === 1 && state.peerConnected &&
+      state.romCrc32 && state.partnerRomCrc32 === state.romCrc32) {
     romSync.startLockstepMatchAtFrameZero('Start Match Button Clicked', true);
   }
 });
-
 function handleSendRomClick() {
-  if (
-    state.ws && state.ws.readyState === 1 &&
-    state.peerConnected && state.romUint8 && state.engine
-  ) {
+  if (state.ws?.readyState === 1 && state.peerConnected &&
+      state.romUint8 && state.engine) {
     romSync.sendRomAndStateToPeer({ resetToZero: true });
   } else {
     ui.showScreenBanner('CONNECT TO PARTNER & LOAD ROM FIRST', 'warn', 2200);
   }
 }
 ui.sendRomManualBtn.addEventListener('click', handleSendRomClick);
-if (ui.topSendRomBtn) {
-  ui.topSendRomBtn.addEventListener('click', handleSendRomClick);
-}
+ui.topSendRomBtn?.addEventListener('click', handleSendRomClick);
 
 function applyInputDelaySelection(newValue) {
   if (ui.topInputDelaySelect && ui.topInputDelaySelect.value !== newValue) {
@@ -316,21 +321,19 @@ ui.saveFileInput?.addEventListener('change', () => {
   if (f) saveSlots.importSaveFromFile(f);
   ui.saveFileInput.value = '';
 });
-
 startConsoleFrameLoop(
   state, ui, transport, telemetry, saveSlots, keyBindings, viewportCtrl
 );
 function syncBenchLinks() {
   const c = (ui.roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
+  const b = state.apiBaseUrl;
   if (ui.autoBenchLink) {
     ui.autoBenchLink.href = buildSubPageUrl(
-      './autotest.html', { gameRoom: c }, state.apiBaseUrl
+      './autotest.html', { gameRoom: c }, b
     );
   }
   if (ui.netBenchLink) {
-    ui.netBenchLink.href = buildSubPageUrl(
-      './net_debug.html', { room: c }, state.apiBaseUrl
-    );
+    ui.netBenchLink.href = buildSubPageUrl('./net_debug.html', { room: c }, b);
   }
 }
 ui.autoBenchLink?.addEventListener('click', syncBenchLinks);

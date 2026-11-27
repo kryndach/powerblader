@@ -1,8 +1,16 @@
-// Host Controller for Off-Thread Web Worker / worker_threads Shadow Rollback
+// Universal Host Controller for Off-Thread Shadow Rollback (All 4 Consoles)
 import {
   findEarliestMisprediction, resolveSnapshotForSync, applyShadowHashes,
   buildWorkerInputSlice, applyShadowCatchupState
 } from './shadow_rollback_apply.mjs';
+
+const WASM_SHADOW_SYSTEMS = new Set([
+  'arcade', 'snes', 'sega_md', 'sega_sms'
+]);
+
+export function shouldAttachShadowWorker(systemId) {
+  return WASM_SHADOW_SYSTEMS.has(systemId);
+}
 
 async function createPlatformTransport(onMessage, onError) {
   const sendWith = (w) => (m, x) =>
@@ -23,6 +31,8 @@ async function createPlatformTransport(onMessage, onError) {
 }
 
 export function createShadowRollbackHost(core, options = {}) {
+  const systemId = options.systemId || core?.systemId ||
+    (core?.cpu && core?.ppu ? 'nes' : 'arcade');
   let transport = null;
   let workerBooted = false;
   let failed = false;
@@ -41,11 +51,18 @@ export function createShadowRollbackHost(core, options = {}) {
   const syncWaiters = [];
   const flushWaiters = new Map();
   const stats = {
-    shadowSwaps: 0, shadowDroppedStale: 0, maxGap: 0, totalGap: 0
+    shadowSwaps: 0, shadowDroppedStale: 0, maxGap: 0, totalGap: 0,
+    pooledReuses: 0
   };
 
   function post(msg, xfer = null) {
     if (!destroyed && !failed && transport) transport.postMessage(msg, xfer);
+  }
+
+  function recycleBuffer(buf) {
+    if (buf instanceof ArrayBuffer && buf.byteLength > 0) {
+      try { post({ type: 'recycle_buf', buf }, [buf]); } catch {}
+    }
   }
 
   function resolveWaiters(list, val) {
@@ -83,6 +100,7 @@ export function createShadowRollbackHost(core, options = {}) {
     lastSentTargetFrame = snap.frame;
     lastSentConfirmedFrame = snap.frame - 1;
     catchupInFlight = false;
+    if (pendingCatchup?.stateBuf) recycleBuffer(pendingCatchup.stateBuf);
     pendingCatchup = null;
     staleDropStreak = 0;
     post({
@@ -113,7 +131,10 @@ export function createShadowRollbackHost(core, options = {}) {
       if (fn) { flushWaiters.delete(msg.id); fn(true); }
       return;
     }
-    if (msg.epoch !== epoch) return;
+    if (msg.epoch !== epoch) {
+      if (msg.stateBuf) recycleBuffer(msg.stateBuf);
+      return;
+    }
     if (msg.type === 'synced') {
       syncedEpoch = epoch;
       workerConfirmedFrame = msg.frame;
@@ -128,7 +149,11 @@ export function createShadowRollbackHost(core, options = {}) {
     if (msg.type === 'catchup_state') {
       catchupInFlight = false;
       workerConfirmedFrame = Math.max(workerConfirmedFrame, msg.usedConfFrame);
+      if (typeof msg.pooledReuses === 'number') {
+        stats.pooledReuses = msg.pooledReuses;
+      }
       applyShadowHashes(attachedEngine, msg.hashes);
+      if (pendingCatchup?.stateBuf) recycleBuffer(pendingCatchup.stateBuf);
       pendingCatchup = msg;
     }
   }
@@ -148,11 +173,16 @@ export function createShadowRollbackHost(core, options = {}) {
   const startInit = (tr) => {
     if (destroyed) { tr.terminate?.(); return; }
     transport = tr;
+    const romBytes = core.getRomBytes?.() ||
+      core._lastRomBinary || core._romBinaryString || null;
     post({
       type: 'init',
+      systemId,
       wasmModule: core.getWasmModule?.() || null,
-      romBytes: core.getRomBytes?.() || null,
-      romName: core.getRomName?.() || 'tgm2p.zip'
+      wasmBinary: core.getWasmBinary?.() || null,
+      romBytes,
+      romName: core.getRomName?.() || (systemId === 'nes' ? 'game.nes' : 'rom'),
+      overclockMode: core._overclockMode || core.ppu?._overclockMode || 0
     });
   };
   if (options.transport) {
@@ -174,12 +204,16 @@ export function createShadowRollbackHost(core, options = {}) {
     },
     isReady,
     trySyncFromEngine,
+    setOverclockMode(mode) {
+      post({ type: 'set_overclock', mode: Number(mode) || 0 });
+    },
     onTimelineReset(engine) {
       attachedEngine = engine;
       epoch++;
       syncedEpoch = -1;
       syncSentEpoch = -1;
       catchupInFlight = false;
+      if (pendingCatchup?.stateBuf) recycleBuffer(pendingCatchup.stateBuf);
       pendingCatchup = null;
       staleDropStreak = 0;
       trySyncFromEngine(engine);
@@ -202,6 +236,7 @@ export function createShadowRollbackHost(core, options = {}) {
         const res = applyShadowCatchupState(
           engine, msg, stats, staleDropStreak
         );
+        recycleBuffer(msg.stateBuf);
         staleDropStreak = res.applied ? 0 : staleDropStreak + 1;
       }
       const mis = engine.earliestMispredictedFrame ??
@@ -248,9 +283,11 @@ export function createShadowRollbackHost(core, options = {}) {
     },
     getStats() {
       return {
-        ready: isReady(), failed, catchupInFlight, workerConfirmedFrame,
+        systemId, ready: isReady(), failed, catchupInFlight,
+        workerConfirmedFrame,
         shadowSwaps: stats.shadowSwaps,
         shadowDroppedStale: stats.shadowDroppedStale,
+        pooledReuses: stats.pooledReuses,
         maxGap: stats.maxGap,
         avgGap: stats.shadowSwaps > 0
           ? Number((stats.totalGap / stats.shadowSwaps).toFixed(2)) : 0
@@ -263,6 +300,7 @@ export function createShadowRollbackHost(core, options = {}) {
       try { transport?.terminate?.(); } catch {}
       transport = null;
       attachedEngine = null;
+      pendingCatchup = null;
       resolveWaiters(syncWaiters, false);
       for (const fn of flushWaiters.values()) fn(false);
       flushWaiters.clear();

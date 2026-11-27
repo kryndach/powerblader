@@ -1,11 +1,12 @@
-// Platform-Agnostic Shadow Rollback Worker State Machine (Browser & Node)
-import { createFbneoArcadeCore } from './fbneo_arcade_core.mjs';
+// Platform-Agnostic Universal Shadow Rollback Worker (Browser & Node)
+import { createUniversalWorkerCore } from './universal_worker_core_factory.mjs';
 
 const HIST_SIZE = 512;
 const CHUNK_FRAMES = 4;
+const MAX_BUF_POOL = 3;
 
 export function createShadowWorkerController(postMsg, options = {}) {
-  const coreFactory = options.coreFactory || createFbneoArcadeCore;
+  const coreFactory = options.coreFactory || createUniversalWorkerCore;
   const chunkFrames = options.chunkFrames || CHUNK_FRAMES;
 
   let core = null;
@@ -22,19 +23,55 @@ export function createShadowWorkerController(postMsg, options = {}) {
   const p1Ring = new Uint32Array(HIST_SIZE);
   const p2Ring = new Uint32Array(HIST_SIZE);
   const inTag = new Int32Array(HIST_SIZE).fill(-1);
+  const bufPool = [];
+  let pooledReuses = 0;
 
   let latestConf = -1;
   let latestTarget = 0;
   let needCatchup = false;
   let pendingFlushId = null;
+  let pendingOverclockMode = null;
   let job = null;
   let jobTimer = null;
+  let yieldPending = false;
+
+  const yieldCh = typeof MessageChannel === 'function'
+    ? new MessageChannel() : null;
+  if (yieldCh) {
+    yieldCh.port1.onmessage = () => {
+      if (!yieldPending) return;
+      yieldPending = false;
+      runJobChunk();
+    };
+  }
+
+  function scheduleChunk() {
+    if (yieldCh) {
+      if (!yieldPending) {
+        yieldPending = true;
+        yieldCh.port2.postMessage(0);
+      }
+      return;
+    }
+    jobTimer = setTimeout(runJobChunk, 0);
+  }
 
   function cancelJobTimer() {
+    yieldPending = false;
     if (jobTimer !== null) {
       clearTimeout(jobTimer);
       jobTimer = null;
     }
+  }
+
+  function takeTransferBuffer(minLen) {
+    for (let i = bufPool.length - 1; i >= 0; i--) {
+      if (bufPool[i].byteLength >= minLen) {
+        pooledReuses++;
+        return bufPool.splice(i, 1)[0];
+      }
+    }
+    return new ArrayBuffer(minLen);
   }
 
   function readStateView() {
@@ -99,17 +136,17 @@ export function createShadowWorkerController(postMsg, options = {}) {
     const cur = job;
     job = null;
     const view = readStateView();
-    const copy = new Uint8Array(view.length);
-    copy.set(view);
+    const outBuf = takeTransferBuffer(view.length);
+    new Uint8Array(outBuf, 0, view.length).set(view);
     const simP1 = Uint32Array.from(cur.simP1);
     const simP2 = Uint32Array.from(cur.simP2);
     lastReportedConf = Math.max(lastReportedConf, cur.usedConfFrame);
     postMsg({
       type: 'catchup_state', epoch: cur.epoch, frame: cur.cursor,
       fromFrame: cur.fromFrame, usedConfFrame: cur.usedConfFrame,
-      simP1, simP2, stateBuf: copy.buffer, stateLen: copy.byteLength,
-      hashes: cur.hashes
-    }, [copy.buffer, simP1.buffer, simP2.buffer]);
+      simP1, simP2, stateBuf: outBuf, stateLen: view.length,
+      hashes: cur.hashes, pooledReuses
+    }, [outBuf, simP1.buffer, simP2.buffer]);
     if (needCatchup) startOrPumpWork();
     else maybeReplyFlush();
   }
@@ -161,7 +198,7 @@ export function createShadowWorkerController(postMsg, options = {}) {
       job.cursor < latestTarget &&
       inTag[job.cursor % HIST_SIZE] === job.cursor
     ) {
-      jobTimer = setTimeout(runJobChunk, 0);
+      scheduleChunk();
       return;
     }
     finishJob();
@@ -200,8 +237,11 @@ export function createShadowWorkerController(postMsg, options = {}) {
     if (msg.type === 'init') {
       try {
         core = await coreFactory({
+          systemId: msg.systemId || 'arcade',
           romBytes: msg.romBytes, romName: msg.romName,
-          wasmModuleOverride: msg.wasmModule
+          wasmModuleOverride: msg.wasmModule,
+          wasmBinaryOverride: msg.wasmBinary,
+          overclockMode: pendingOverclockMode ?? (msg.overclockMode || 0)
         });
         postMsg({ type: 'worker_booted' });
       } catch (err) {
@@ -209,8 +249,22 @@ export function createShadowWorkerController(postMsg, options = {}) {
       }
       return;
     }
+    if (msg.type === 'recycle_buf') {
+      if (msg.buf instanceof ArrayBuffer && bufPool.length < MAX_BUF_POOL) {
+        bufPool.push(msg.buf);
+      }
+      return;
+    }
+    if (msg.type === 'set_overclock') {
+      pendingOverclockMode = Number(msg.mode) || 0;
+      core?.setOverclockMode?.(pendingOverclockMode);
+      return;
+    }
     if (msg.type === 'destroy') {
-      cancelJobTimer(); job = null; core = null; synced = false;
+      cancelJobTimer();
+      try { yieldCh?.port1?.close?.(); yieldCh?.port2?.close?.(); } catch {}
+      core?.destroy?.();
+      job = null; core = null; synced = false; bufPool.length = 0;
       return;
     }
     if (!core) return;

@@ -1,6 +1,6 @@
 // Room Session Manager, Dual-WebSocket Striping & Message Relay
 import {
-  createWireRttProber, relayRawNetplayInput
+  createWireRttProber, relayRawNetplayInput, relayBinaryNetplayInput
 } from './wire_rtt_prober.mjs';
 import {
   handleAutotestReportWs, handleGameplayTelemetryWs
@@ -97,8 +97,11 @@ export function createRoomManager(trackers, options = {}) {
         }
       }
       const used = new Set(Array.from(roomMap.values(), (p) => p.playerIndex));
+      const preferP2 = Boolean(wsInstance) && !wsInstance._isLocalHost &&
+        options.hasActiveTunnel?.() && roomMap.size === 0;
+      const pIdx = preferP2 ? 2 : (used.has(1) ? 2 : 1);
       peer = {
-        clientId, roomCode, playerIndex: used.has(1) ? 2 : 1,
+        clientId, roomCode, playerIndex: pIdx,
         nick: String(info.nick || 'Player').slice(0, 20),
         romCrc32: info.romCrc32 || null, romName: info.romName || null,
         isAutoDefaultRom: typeof info.isAutoDefaultRom === 'boolean'
@@ -223,7 +226,24 @@ export function createRoomManager(trackers, options = {}) {
       ws.peerSession = null;
       wireProber.attachPongHandler(ws);
 
-      ws.on('message', (data) => {
+      ws.on('message', (data, isBinary) => {
+        if (isBinary && ws.peerSession) {
+          const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+          ws.peerSession.lastSeenAt = Date.now();
+          if (relayBinaryNetplayInput(
+            rooms, ws.peerSession, buf, seenInputKey
+          )) return;
+          const rm = rooms.get(ws.peerSession.roomCode);
+          if (rm) {
+            for (const dst of rm.values()) {
+              if (dst.clientId !== ws.peerSession.clientId &&
+                  dst.ws?.readyState === 1) {
+                try { dst.ws.send(buf); } catch {}
+              }
+            }
+          }
+          return;
+        }
         const rawStr = data.toString();
         let msg;
         try { msg = JSON.parse(rawStr); } catch { return; }

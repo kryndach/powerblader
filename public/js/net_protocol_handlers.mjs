@@ -15,26 +15,18 @@ export function createProtocolHandlers(
   const inputRouter = createInputRouter(state);
 
   function sendWs(obj) {
-    if (state.ws && state.ws.readyState === 1) {
-      state.ws.send(JSON.stringify(obj));
-    }
+    if (state.ws?.readyState === 1) state.ws.send(JSON.stringify(obj));
   }
-
-  function clearTransfers() { clearActiveRomTransfers(state, ui); }
-
+  const clearTransfers = () => clearActiveRomTransfers(state, ui);
   function maybeAutoLoadCachedPartnerRom(crc, romName, forceOnP2 = false) {
-    if (!crc || crc === state.romCrc32 || state.loadingCachedRomCrc === crc) {
+    if (!crc || crc === state.romCrc32 || state.loadingCachedRomCrc === crc)
       return;
-    }
-    const allow = forceOnP2 || state.localPlayerIndex === 2 ||
-      state.isAutoDefaultRom || !state.romUint8;
-    if (!allow) return;
+    if (!forceOnP2 && state.localPlayerIndex !== 2 &&
+        !state.isAutoDefaultRom && state.romUint8) return;
     state.loadingCachedRomCrc = crc;
     getCachedRomByCrc(crc).then(async (hit) => {
       if (!hit?.u8 || state.romCrc32 === crc) return;
-      ui.logDebug?.(
-        `ROM CRC32 ${crc} cache hit (${hit.source || 'cache'}) - 0 KB!`
-      );
+      ui.logDebug?.(`ROM ${crc} cache hit (${hit.source || 'cache'}) - 0 KB!`);
       await romSync.loadRomFromUint8(hit.u8, romName || hit.romName, {
         broadcastToPeer: true, isAutoDefault: false, fromCache: true
       });
@@ -84,11 +76,13 @@ export function createProtocolHandlers(
       romName: state.romName, isAutoDefaultRom: false
     });
   }
-
   function handleRoomJoined(msg) {
     state.roomCode = msg.roomCode;
     state.localClientId = msg.clientId || null;
     state.localPlayerIndex = msg.playerIndex;
+    if (state.connStatus?.phase === 'error') {
+      setConnectionPhase(state, ui, { phase: 'connected', tone: 'ok' });
+    }
     transport.connectAuxWebSocket(state.roomCode, state.localClientId);
     const otherPeers = (msg.peers || []).filter(
       (p) => p.playerIndex !== state.localPlayerIndex
@@ -144,7 +138,7 @@ export function createProtocolHandlers(
     pushGameplayTelemetryToServer();
   }
 
-  function handleIncomingNetMessage(msg) {
+  function handleIncomingNetMessage(msg, src = 'wss') {
     if (msg.type === 'aux_bound') return;
     if (msg.type === 'auth_required') {
       ui.dbgWssState.textContent = 'Auth Failed';
@@ -163,11 +157,19 @@ export function createProtocolHandlers(
     }
     state.rxCountThisSec++;
     if (msg.type === 'peer_ping') {
-      return sendWs({ type: 'peer_pong', t: msg.t });
+      if (src === 'p2p' && state.rtcChannel?.readyState === 'open') {
+        try {
+          state.rtcChannel.send(
+            JSON.stringify({ type: 'peer_pong', t: msg.t, via: 'p2p' })
+          );
+          return;
+        } catch {}
+      }
+      return sendWs({ type: 'peer_pong', t: msg.t, via: 'wss' });
     }
     if (msg.type === 'wire_rtt' || msg.type === 'peer_pong' ||
         (msg.type === 'pong' && !state.peerConnected)) {
-      return handlePongAndAutoDelay(msg);
+      return handlePongAndAutoDelay(msg, src);
     }
     if (msg.type === 'room_joined') return handleRoomJoined(msg);
 

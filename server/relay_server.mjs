@@ -104,7 +104,8 @@ export function createCoopServer(options = {}) {
   const beacon = createRendezvousBeacon(ROOT_DIR, options);
   const roomMgr = createRoomManager(trackers, {
     ...options,
-    getRequiredRoomAuth: () => beacon.getRoomAuthStatus()
+    getRequiredRoomAuth: () => beacon.getRoomAuthStatus(),
+    hasActiveTunnel: () => Boolean(tunnelInfo.publicUrl)
   });
   const {
     rooms, getOrCreateRoom, getRoomPeersInfo, joinOrUpdatePeerSession,
@@ -190,7 +191,17 @@ export function createCoopServer(options = {}) {
       }
     }
 
+    const checkRomAuth = () => {
+      const reqAuth = beacon.getRoomAuthStatus();
+      if (!reqAuth.authToken || isLocalHostRequest(req)) return true;
+      const got = urlObj.searchParams.get('auth') || req.headers['x-room-auth'];
+      if (got === reqAuth.authToken) return true;
+      sendJson(res, 403, { ok: false, error: 'Room password required' }, true);
+      return false;
+    };
+
     if (pathname === '/api/http-tunnel' && req.method === 'POST') {
+      if (!checkRomAuth()) return;
       readJsonBody(req, res, 8 * 1024 * 1024, (payload) => {
         const roomCode = String(payload.roomCode || 'NOVA')
           .trim().toUpperCase().slice(0, 12);
@@ -230,14 +241,6 @@ export function createCoopServer(options = {}) {
       return;
     }
 
-    const checkRomAuth = () => {
-      const reqAuth = beacon.getRoomAuthStatus();
-      if (!reqAuth.authToken || isLocalHostRequest(req)) return true;
-      const got = urlObj.searchParams.get('auth') || req.headers['x-room-auth'];
-      if (got === reqAuth.authToken) return true;
-      sendJson(res, 403, { ok: false, error: 'Room password required' }, true);
-      return false;
-    };
     if (pathname === '/api/local-roms') {
       return checkRomAuth() && handleLocalRomsApi(res, ROOT_DIR, sendJson);
     }
@@ -253,7 +256,7 @@ export function createCoopServer(options = {}) {
       return checkRomAuth() && handleRoomRomApi(req, urlObj, res, sendJson);
     }
     if (pathname === '/api/save-slot') {
-      return handleSaveSlotApi(
+      return checkRomAuth() && handleSaveSlotApi(
         req, urlObj, res, ROOT_DIR, sendJson, options.savesDir || null
       );
     }
@@ -283,17 +286,22 @@ export function createCoopServer(options = {}) {
     const isVendor = pathname.startsWith('/vendor/');
     const cType = MIME_TYPES[ext] || 'application/octet-stream';
     if (isVendor) {
-      let vEntry = vendorMemCache.get(filePath);
       const mtime = fs.statSync(filePath).mtimeMs;
-      if (!vEntry || vEntry.mtime !== mtime) {
-        const raw = fs.readFileSync(filePath);
-        vEntry = { mtime, raw, gz: zlib.gzipSync(raw, { level: 6 }) };
-        vendorMemCache.set(filePath, vEntry);
-      }
-      return sendBinaryWithRange(req, res, vEntry.raw, vEntry.gz, {
+      const sendCached = (e) => sendBinaryWithRange(req, res, e.raw, e.gz, {
         'Content-Type': cType,
         'Cache-Control': 'public, max-age=31536000, immutable'
       });
+      const vEntry = vendorMemCache.get(filePath);
+      if (vEntry && vEntry.mtime === mtime) return sendCached(vEntry);
+      fs.readFile(filePath, (err, raw) => {
+        if (err) { res.writeHead(404); return res.end('Not found'); }
+        zlib.gzip(raw, { level: 6 }, (zErr, gz) => {
+          const entry = { mtime, raw, gz: zErr ? null : gz };
+          vendorMemCache.set(filePath, entry);
+          sendCached(entry);
+        });
+      });
+      return;
     }
     res.writeHead(200, { 'Content-Type': cType, 'Cache-Control': 'no-cache' });
     fs.createReadStream(filePath).pipe(res);

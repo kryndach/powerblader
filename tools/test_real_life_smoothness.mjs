@@ -199,7 +199,7 @@ async function runNetemChromeSuite() {
 
     proxy.resetStats();
     proxy.setProfile({
-      rttMs: 240, jitterMs: 20, kbpsCap: 170,
+      rttMs: 240, jitterMs: 20, kbpsCap: 170, sharedPipe: true,
       clumpEveryMs: 1400, clumpHoldMs: 120
     });
     const f1StartNes = await tab1.evaluate(
@@ -224,9 +224,10 @@ async function runNetemChromeSuite() {
       m1.frame - f1StartNes >= 120 && m2.frame - f1StartNes >= 120,
       `NES 0f stalled: dF=${m1.frame - f1StartNes}/${m2.frame - f1StartNes}`
     );
-    assert.ok(kb1 <= 65, `NES wire traffic bloated (${kb1} KB/s > 65)`);
+    assert.ok(kb1 <= 20, `NES binary wire bloated (${kb1} KB/s > 20)`);
     assert.ok(ping1 >= 180 && ping1 <= 330, `Ping out of bounds: ${m1.ping}`);
-    assert.ok(m1.freezes <= 3, `NES 0f Tab 1 had ${m1.freezes} >50ms freezes`);
+    assert.strictEqual(m1.freezes, 0, `NES 0f Tab 1 had ${m1.freezes} freezes`);
+    assert.ok(m1.p95 <= 24, `NES 0f Tab 1 p95=${m1.p95}ms (>24ms)`);
     assert.strictEqual(m1.audio.underruns, 0, 'NES 0f Audio underrun!');
 
     // Verify OC: ON default & P1 -> P2 live sync (ON -> MAX -> OFF) over 240ms
@@ -290,7 +291,7 @@ async function runNetemChromeSuite() {
       t1.frame - f1StartTgm >= 140 && t2.frame - f1StartTgm >= 140,
       `Tetris 0f stalled: dF=${t1.frame - f1StartTgm}/${t2.frame - f1StartTgm}`
     );
-    assert.ok(kb2 <= 65, `Tetris wire traffic bloated (${kb2} KB/s > 65)`);
+    assert.ok(kb2 <= 20, `Tetris binary wire bloated (${kb2} KB/s > 20)`);
     assert.ok(
       t1.rafCount >= 100,
       `Expected foreground rAF samples >= 100, got ${t1.rafCount}`
@@ -343,7 +344,6 @@ async function main() {
   console.log('=== Real-Life 240ms Pinggy Netem Chromium Smoothness ===\n');
   await runNetemChromeSuite();
 }
-
 main().catch((err) => {
   console.error('\n[FAIL] Real-Life Smoothness Gate Failed:', err);
   process.exit(1);

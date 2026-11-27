@@ -23,9 +23,9 @@ function createByteTracker(totalBytes, onProgress) {
     const now = performance.now();
     const rawPct = totalBytes > 0
       ? (loaded >= totalBytes ? 100
-        : loaded > 0 ? Math.max(1, Math.min(99, Math.round(
-          (loaded / totalBytes) * 100
-        ))) : 0)
+        : loaded > 0
+          ? Math.max(1, Math.min(99, Math.round((loaded / totalBytes) * 100)))
+          : 0)
       : 0;
     const pct = lastPct >= 0 ? Math.max(lastPct, rawPct) : rawPct;
     const firstReal = lastPct <= 0 && pct > 0;
@@ -33,10 +33,9 @@ function createByteTracker(totalBytes, onProgress) {
       if (lastPct >= 0 && pct === lastPct && now - lastEmit < 180) return;
       if (lastPct >= 0 && now - lastEmit < 90 && pct < 100) return;
     }
-    lastPct = pct;
-    lastEmit = now;
-    const dtSec = Math.max(0.05, (now - t0) / 1000);
-    const bps = loaded > 0 ? Math.round(loaded / dtSec) : 0;
+    lastPct = pct; lastEmit = now;
+    const bps = loaded > 0
+      ? Math.round(loaded / Math.max(0.05, (now - t0) / 1000)) : 0;
     onProgress(pct, { pct, loadedBytes: loaded, totalBytes, bps });
   };
   return {
@@ -53,8 +52,7 @@ export async function gzipBytes(u8) {
     const s = new Blob([u8]).stream().pipeThrough(cs);
     return new Uint8Array(await new Response(s).arrayBuffer());
   }
-  const zlib = await import('node:zlib');
-  return new Uint8Array(zlib.gzipSync(u8, { level: 6 }));
+  return new Uint8Array((await import('node:zlib')).gzipSync(u8, { level: 6 }));
 }
 export async function gunzipBytes(u8) {
   if (typeof DecompressionStream === 'function') {
@@ -314,8 +312,11 @@ export async function uploadRomToServerCache(state, onProgress = null) {
         body = await gzipBytes(body);
         headers['X-Rom-Encoding'] = 'gzip';
       }
+      if (state.roomAuth) headers['X-Room-Auth'] = state.roomAuth;
+      const authQ = state.roomAuth
+        ? `&auth=${encodeURIComponent(state.roomAuth)}` : '';
       const q = `room=${encodeURIComponent(rm)}&crc=${encodeURIComponent(crc)}`
-        + `&name=${encodeURIComponent(state.romName)}`;
+        + `&name=${encodeURIComponent(state.romName)}${authQ}`;
       const ok = await uploadStripedRom(
         `${base}/api/room-rom?${q}`, body, headers,
         { onProgress: (p, info) => state.roomRomOnProgress?.(p, info) }

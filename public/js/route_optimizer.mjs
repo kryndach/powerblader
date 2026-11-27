@@ -114,11 +114,13 @@ export function buildMigratedClientUrl(targetBaseUrl, currentHref) {
   return next.toString();
 }
 
-export function createRouteOptimizer(state, ui, tunnelCtrl) {
+export function createRouteOptimizer(state, ui, tunnelCtrl, hooks = {}) {
   let activeProbe = null;
   let autoTimer = null;
+  let hotOptimized = false;
 
   const isClientOptimized = () => {
+    if (hotOptimized) return true;
     try {
       const q = new URLSearchParams(window.location.search);
       return q.get('optimized') === '1';
@@ -252,13 +254,32 @@ export function createRouteOptimizer(state, ui, tunnelCtrl) {
       return true;
     }
     if (msg.type === 'route_migrate') {
-      const url = String(msg.url || '');
+      const url = String(msg.url || '').replace(/\/+$/, '');
       if (!/^https?:\/\//i.test(url)) return true;
-      const nextUrl = buildMigratedClientUrl(url, window.location.href);
       const msTxt = msg.rttMs ? ` (${msg.rttMs}ms)` : '';
       ui.showScreenBanner(
         `SWITCHING TO FASTER ROUTE: ${msg.label || ''}${msTxt}...`, 'ok', 4000
       );
+      const canHotSwitch =
+        typeof hooks.onHotRouteSwitch === 'function' &&
+        (state.isExternalServer || state.isStaticOrigin);
+      if (canHotSwitch) {
+        hotOptimized = true;
+        state.apiBaseUrl = url;
+        state.wsBaseUrl = url.replace(/^http/i, 'ws');
+        state.isExternalServer = true;
+        try {
+          const next = new URL(window.location.href);
+          if (next.searchParams.has('server') || state.isStaticOrigin) {
+            next.searchParams.set('server', url);
+          }
+          next.searchParams.set('optimized', '1');
+          window.history?.replaceState?.(null, '', next.toString());
+        } catch {}
+        setTimeout(() => hooks.onHotRouteSwitch(url), 80);
+        return true;
+      }
+      const nextUrl = buildMigratedClientUrl(url, window.location.href);
       setTimeout(() => { window.location.replace(nextUrl); }, 250);
       return true;
     }

@@ -25,7 +25,8 @@ export {
   SUPPORTED_ROM_EXTENSIONS, detectSystemFromRomName, detectSystemFromRomBytes,
   isSupportedRomFile, NesCoreAdapter, GenericCoreAdapter, ensureCoreAdapter,
   crc32Bytes, computeRomCrc32, formatHex32, computeDeterministicHash,
-  patchJsnes8x16Sprites, saveFastState, loadFastState, applyControllerMask
+  patchJsnes8x16Sprites, saveFastState, loadFastState, applyControllerMask,
+  computeRecommendedInputDelay
 };
 
 export class RollbackNetplayEngine {
@@ -45,8 +46,10 @@ export class RollbackNetplayEngine {
     this.sessionId = options.sessionId || 'default';
     this.syncPaused = false;
     this._pixelCount = this.core.pixelCount || 256 * 240;
-    this._preRollbackBuffer = new Uint32Array(this._pixelCount);
-    this._smoothedDisplayBuffer = new Uint32Array(this._pixelCount);
+    this._preRollbackBuffer = this.enableVisualSmoothing
+      ? new Uint32Array(this._pixelCount) : null;
+    this._smoothedDisplayBuffer = this.enableVisualSmoothing
+      ? new Uint32Array(this._pixelCount) : null;
     this.lastRollbackBlendAlpha = 0;
     this.suppressCallbacks = false;
     this.shadowRollback = null;
@@ -139,9 +142,6 @@ export class RollbackNetplayEngine {
     this.p1Simulated[idx] = m1; this.p2Simulated[idx] = m2;
     this.simulatedFrameTag[idx] = f;
     this.lastConfirmedRemoteFrame = f; this.lastLocalScheduledFrame = f;
-    if (this.systemId === 'nes') {
-      this.core.saveState(this.saveRing[f % this.saveBufferSize], f);
-    }
     this.suppressCallbacks = false;
     this.core.stepFrame(m1, m2, false);
     this.currentFrame++;
@@ -236,7 +236,8 @@ export class RollbackNetplayEngine {
     this.core.stepFrame(p1Mask, p2Mask, Boolean(options?.skipPacket));
     this.currentFrame++;
     this.shadowRollback?.notifyFrameStepped?.(this);
-    if (this.systemId !== 'arcade' && this.currentFrame % 30 === 0) {
+    if (!useShadow && this.systemId !== 'arcade' &&
+        this.currentFrame % 30 === 0) {
       this.localHashes.set(this.currentFrame, this.core.computeHash());
       this._cleanupOldHashes();
     }

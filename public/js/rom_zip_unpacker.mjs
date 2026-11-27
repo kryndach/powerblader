@@ -1,5 +1,6 @@
 // Client-Side Browser ZIP Extractor & Server Archive Unpacker
 import { isLocalHostRuntime } from './rom_fast_transfer.mjs';
+import { buildApiUrl } from './server_endpoint.mjs';
 
 const ROM_EXTS = [
   '.nes', '.sfc', '.smc', '.fig', '.swc', '.md', '.gen', '.smd',
@@ -70,14 +71,19 @@ export async function extractRomFromZipBrowser(u8) {
   return null;
 }
 
-export async function extractArchiveViaServer(u8, fileName, roomCode = 'NOVA') {
+export async function extractArchiveViaServer(
+  u8, fileName, roomCode = 'NOVA', state = null
+) {
+  const authQ = state?.roomAuth
+    ? `&auth=${encodeURIComponent(state.roomAuth)}` : '';
   const q = `name=${encodeURIComponent(fileName)}&room=${encodeURIComponent(
     roomCode || 'NOVA'
-  )}`;
-  const res = await fetch(`/api/extract-rom?${q}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
-    body: u8
-  });
+  )}${authQ}`;
+  const headers = { 'Content-Type': 'application/octet-stream' };
+  if (state?.roomAuth) headers['X-Room-Auth'] = state.roomAuth;
+  const url = state ? buildApiUrl(state, `/api/extract-rom?${q}`)
+    : `/api/extract-rom?${q}`;
+  const res = await fetch(url, { method: 'POST', headers, body: u8 });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
     try { const j = await res.json(); if (j.error) msg = j.error; } catch {}
@@ -91,7 +97,9 @@ export async function extractArchiveViaServer(u8, fileName, roomCode = 'NOVA') {
   };
 }
 
-export async function unpackRomIfNeeded(u8, fileName, roomCode = 'NOVA') {
+export async function unpackRomIfNeeded(
+  u8, fileName, roomCode = 'NOVA', state = null
+) {
   if (!isArchiveNameOrMagic(fileName, u8)) {
     return { romName: fileName, romUint8: u8 };
   }
@@ -104,11 +112,12 @@ export async function unpackRomIfNeeded(u8, fileName, roomCode = 'NOVA') {
     if (u8.byteLength >= 30 && u8[0] === 0x50 && u8[1] === 0x4b) {
       if (isLocalHostRuntime() && u8.byteLength < 64 * 1024 * 1024 &&
           typeof fetch === 'function') {
-        try { return await extractArchiveViaServer(u8, fileName, roomCode); }
-        catch {}
+        try {
+          return await extractArchiveViaServer(u8, fileName, roomCode, state);
+        } catch {}
       }
       return { romName: baseName(fileName), romUint8: u8 };
     }
   }
-  return extractArchiveViaServer(u8, fileName, roomCode);
+  return extractArchiveViaServer(u8, fileName, roomCode, state);
 }

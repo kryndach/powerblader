@@ -196,10 +196,11 @@ export function processRemoteInputPacket(
   }
 
   if (newlyConfirmedCount > 0) {
+    let gapMs = 0;
     if (engine._lastRxAtMs > 0 && nowMs >= engine._lastRxAtMs) {
-      const gapMs = nowMs - engine._lastRxAtMs;
+      gapMs = nowMs - engine._lastRxAtMs;
       engine._rxGapSamples.push(gapMs);
-      if (engine._rxGapSamples.length > 40) engine._rxGapSamples.shift();
+      if (engine._rxGapSamples.length > 20) engine._rxGapSamples.shift();
       const sorted = engine._rxGapSamples.slice().sort((a, b) => a - b);
       const p95Idx = Math.min(
         sorted.length - 1,
@@ -208,11 +209,8 @@ export function processRemoteInputPacket(
       engine.rxGapP95Ms = Number(sorted[p95Idx].toFixed(1));
     }
     engine._lastRxAtMs = nowMs;
-    const burstClump = Math.max(
-      0,
-      newlyConfirmedCount - 1,
-      (engine.rxGapP95Ms - 20) / 16.667
-    );
+    const gapClump = gapMs > 25 ? (gapMs - 20) / 16.667 : 0;
+    const burstClump = Math.max(0, newlyConfirmedCount - 1, gapClump);
     engine.rxClumpFrames = Number(
       (engine.rxClumpFrames * 0.8 + Math.min(8, burstClump) * 0.2).toFixed(2)
     );
@@ -246,7 +244,7 @@ export function processRemoteInputPacket(
     engine.clumpBiasFrames = Number(
       Math.max(-1.5, Math.min(1.5, clumpDiff)).toFixed(2)
     );
-    const sampleRift = rawRift + engine.clumpBiasFrames;
+    const sampleRift = rawRift - engine.clumpBiasFrames;
     engine.riftFrames = Number(
       (engine.riftFrames * 0.7 + sampleRift * 0.3).toFixed(2)
     );

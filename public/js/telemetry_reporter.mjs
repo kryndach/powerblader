@@ -94,27 +94,37 @@ export function createTelemetryReporter(state, ui, romSync) {
     } catch {}
   }
 
-  function handlePongAndAutoDelay(msg) {
-    const p2pOpen = Boolean(
-      state.ws?.isServerlessP2p ||
-      (state.rtcChannel && state.rtcChannel.readyState === 'open' &&
-        ui.transportModeSelect?.value !== 'wss')
+  function handlePongAndAutoDelay(msg, src = 'wss') {
+    const mode = ui.transportModeSelect?.value || 'auto';
+    const rtcOpen = state.rtcChannel?.readyState === 'open';
+    const isP2pMsg = Boolean(
+      state.ws?.isServerlessP2p || src === 'p2p' || msg.via === 'p2p'
     );
-    const nowPerf = performance.now();
-    if (msg.type === 'wire_rtt') {
-      if (p2pOpen) return;
-      state._lastWireRttAt = nowPerf;
-    } else if (
-      msg.type === 'peer_pong' && !p2pOpen &&
-      nowPerf - (state._lastWireRttAt || 0) < 5000
-    ) {
-      return;
-    }
-
     const sampleRtt = msg.type === 'wire_rtt'
       ? Math.max(1, Math.round(msg.rttMs || 1))
       : Math.max(1, Date.now() - msg.t);
     if (sampleRtt > 1500 || (state.engine?.syncPaused && sampleRtt > 500)) {
+      return;
+    }
+    const nowPerf = performance.now();
+    if (isP2pMsg) {
+      state.p2pRttMs = sampleRtt;
+    } else {
+      state.wssRttMs = sampleRtt;
+      if (msg.type === 'wire_rtt') state._lastWireRttAt = nowPerf;
+    }
+    const p2pActive = Boolean(
+      state.ws?.isServerlessP2p ||
+      (rtcOpen && mode === 'p2p') ||
+      (rtcOpen && mode === 'auto' && state._usingP2pAuto !== false &&
+        !(state.wssRttMs > 0 && state.p2pRttMs > state.wssRttMs + 12))
+    );
+    if (msg.type === 'wire_rtt' && p2pActive) return;
+    if (isP2pMsg && !p2pActive) return;
+    if (
+      msg.type === 'peer_pong' && !isP2pMsg && !p2pActive &&
+      nowPerf - (state._lastWireRttAt || 0) < 5000
+    ) {
       return;
     }
     if (!state._rttSamples) state._rttSamples = [];
@@ -145,8 +155,10 @@ export function createTelemetryReporter(state, ui, romSync) {
         state.engine.inputDelayFrames
       );
       const isArc = state.engine.core?.systemId === 'arcade';
-      const recDelay = isArc
-        ? Math.max(state.rttMs >= 160 ? 5 : 4, rawRec) : rawRec;
+      const hasShadow = Boolean(state.engine.shadowRollback?.isReady?.());
+      const recDelay = !isArc ? rawRec
+        : hasShadow ? Math.min(2, Math.max(1, rawRec))
+        : Math.max(state.rttMs >= 160 ? 4 : 3, rawRec);
       const autoOpt = ui.inputDelaySelect.querySelector('option[value="auto"]');
       if (autoOpt) {
         autoOpt.textContent = `Auto (${recDelay}f @ ${state.rttMs}ms)`;

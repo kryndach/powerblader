@@ -1,8 +1,10 @@
 // Sega (Genesis Plus GX) & Super Nintendo (Snes9x) Libretro WASM Cores
 import { INPUT_BITS, crc32Bytes } from './crc32.mjs';
 import {
-  RGB565_TO_BGR24, loadNodeVendorWasm
+  RGB565_TO_BGR24, loadNodeVendorWasm, resampleStereoS16Linear
 } from './wasm_runtime_loader.mjs';
+
+export { resampleStereoS16Linear };
 
 const RUNTIMES = {
   gpgx: { file: 'genesis_plus_gx_libretro', factory: null, wasmBinary: null },
@@ -14,26 +16,42 @@ const GPGX_EXT = [
 ];
 const GPGX_EXT_LEN = 248;
 
-export async function ensureLibretroRuntime(coreKey = 'gpgx') {
+export async function ensureLibretroRuntime(
+  coreKey = 'gpgx', wasmBinaryOverride = null
+) {
   const rt = RUNTIMES[coreKey] || RUNTIMES.gpgx;
+  if (wasmBinaryOverride && rt.factory) {
+    return { factory: rt.factory, wasmBinary: wasmBinaryOverride };
+  }
   if (rt.factory && rt.wasmBinary) {
     return { factory: rt.factory, wasmBinary: rt.wasmBinary };
   }
   if (rt.promise) return rt.promise;
   rt.promise = (async () => {
-    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+    if (!globalThis.process?.versions?.node && typeof fetch === 'function') {
       const jsUrl = new URL(`../vendor/${rt.file}.js?v=2`, import.meta.url);
       const wasmUrl = new URL(`../vendor/${rt.file}.wasm?v=2`, import.meta.url);
-      const [ns, res] = await Promise.all([
-        import(jsUrl.href),
-        fetch(wasmUrl.href)
+      const xferUrl = new URL('../js/rom_fast_transfer.mjs', import.meta.url);
+      const [ns, xfer] = await Promise.all([
+        import(jsUrl.href), import(xferUrl.href).catch(() => null)
       ]);
       rt.factory = ns.default;
-      rt.wasmBinary = new Uint8Array(await res.arrayBuffer());
+      if (wasmBinaryOverride) rt.wasmBinary = wasmBinaryOverride;
+      else {
+        const key = `WASM_${coreKey.toUpperCase()}_V2`;
+        const hit = xfer
+          ? await xfer.getCachedRomByCrc(key).catch(() => null) : null;
+        if (hit?.u8?.byteLength > 200000) rt.wasmBinary = hit.u8;
+        else {
+          const res = await fetch(wasmUrl.href);
+          rt.wasmBinary = new Uint8Array(await res.arrayBuffer());
+          xfer?.putCachedRomByCrc?.(key, `${rt.file}.wasm`, rt.wasmBinary);
+        }
+      }
     } else {
       const { factory, wasmBytes } = await loadNodeVendorWasm(rt.file);
       rt.factory = factory;
-      rt.wasmBinary = wasmBytes;
+      rt.wasmBinary = wasmBinaryOverride || wasmBytes;
     }
     return { factory: rt.factory, wasmBinary: rt.wasmBinary };
   })().catch((err) => { rt.promise = null; throw err; });
@@ -99,10 +117,12 @@ function wireLibretroEnv(mod, coreState) {
 
 export async function createSegaGpgxCore({
   romBytes, romName = 'Game.md', systemId = 'sega_md',
-  onFrame = null, onAudioSample = null
+  onFrame = null, onAudioSample = null, wasmBinaryOverride = null
 }) {
   const coreKey = systemId === 'snes' ? 'snes9x' : 'gpgx';
-  const { factory, wasmBinary } = await ensureLibretroRuntime(coreKey);
+  const { factory, wasmBinary } = await ensureLibretroRuntime(
+    coreKey, wasmBinaryOverride
+  );
   const mod = await factory({
     wasmBinary, noInitialRun: true, print: () => {}, printErr: () => {}
   });
@@ -157,18 +177,11 @@ export async function createSegaGpgxCore({
 
   const audioBatchCb = mod.addFunction((dataPtr, frames) => {
     if (!dataPtr || frames <= 0 || coreState.headless ||
-        core.ppu._headlessFrame || !core.opts.onAudioSample) {
-      return frames;
-    }
-    const cb = core.opts.onAudioSample;
-    const s16 = mod.HEAP16;
-    const base = dataPtr >>> 1;
+        core.ppu._headlessFrame || !core.opts.onAudioSample) return frames;
     const outCount = Math.round((frames * 48000) / coreState.audioSampleRate);
-    const scale = 1 / 32768;
-    for (let i = 0; i < outCount; i++) {
-      const srcIdx = Math.min(frames - 1, ((i * frames) / outCount) | 0) * 2;
-      cb(s16[base + srcIdx] * scale, s16[base + srcIdx + 1] * scale);
-    }
+    resampleStereoS16Linear(
+      mod.HEAP16, dataPtr >>> 1, frames, outCount, core.opts.onAudioSample
+    );
     return frames;
   }, 'iii');
   mod._retro_set_audio_sample_batch(audioBatchCb);
@@ -221,6 +234,7 @@ export async function createSegaGpgxCore({
   mod.HEAPU8.fill(0, core._statePtr, core._statePtr + alignedSz);
 
   core.stepFrame = function (p1Mask, p2Mask, headless = false) {
+    if (core._destroyed) return;
     coreState.ports[0] = toRetroPadMask(p1Mask, systemId);
     coreState.ports[1] = toRetroPadMask(p2Mask, systemId);
     coreState.headless = Boolean(headless);
@@ -290,33 +304,40 @@ export async function createSegaGpgxCore({
   };
 
   const tmpSlot = { frame: 0, usedLen: 0, stateBytes: null };
-  core.saveStateBytes = function () {
+  core.saveStateBytes = () => {
     core.saveStateInto(tmpSlot, 0);
     return tmpSlot.stateBytes.slice(0, tmpSlot.usedLen);
   };
-  core.loadStateBytes = function (bytes) {
-    core.loadStateFromSlot({
-      frame: 0, usedLen: bytes.length, stateBytes: bytes
-    });
-  };
-
-  core.computeHash = function () {
-    const ramPtr = mod._retro_get_memory_data(2);
-    const ramLen = mod._retro_get_memory_size(2);
-    const vramPtr = mod._retro_get_memory_data(3);
-    const vramLen = mod._retro_get_memory_size(3);
-    let h = 0;
-    if (ramPtr && ramLen) h = crc32Bytes(mod.HEAPU8, ramPtr, ramLen, h);
-    if (vramPtr && vramLen) h = crc32Bytes(mod.HEAPU8, vramPtr, vramLen, h);
+  core.loadStateBytes = (bytes) => core.loadStateFromSlot({
+    frame: 0, usedLen: bytes.length, stateBytes: bytes
+  });
+  core.computeHash = () => {
+    const rP = mod._retro_get_memory_data(2);
+    const rL = mod._retro_get_memory_size(2);
+    const vP = mod._retro_get_memory_data(3);
+    const vL = mod._retro_get_memory_size(3);
+    let h = rP && rL ? crc32Bytes(mod.HEAPU8, rP, rL, 0) : 0;
+    if (vP && vL) h = crc32Bytes(mod.HEAPU8, vP, vL, h);
     return h >>> 0;
   };
-
   core.stepFrame(0, 0, true);
   core._initialBootState = core.saveStateBytes();
-  core.loadROM = function () {
-    if (core._initialBootState) core.loadStateBytes(core._initialBootState);
+  core.loadROM = () =>
+    core._initialBootState && core.loadStateBytes(core._initialBootState);
+  core.getWasmBinary = () => wasmBinary;
+  core.getRomBytes = () => u8;
+  core.getRomName = () => romName;
+  core.destroy = function () {
+    if (core._destroyed) return;
+    core._destroyed = true;
+    try { mod._retro_unload_game?.(); mod._retro_deinit?.(); } catch {}
+    try {
+      if (core._statePtr) mod._free?.(core._statePtr);
+      if (dataPtr) mod._free?.(dataPtr);
+      for (const p of coreState.ptrs) mod._free?.(p);
+    } catch {}
+    coreState.ptrs.length = 0;
   };
-
   return core;
 }
 

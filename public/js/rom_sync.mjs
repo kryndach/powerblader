@@ -22,19 +22,21 @@ export function createRomSyncManager(state, ui, audio) {
     const sel = ui.topInputDelaySelect || ui.inputDelaySelect;
     const val = (sel ? sel.value : '2') || '2';
     const sysId = sysIdOverride || state.engine?.core?.systemId || 'nes';
-    const arcMin = state.rttMs >= 160 ? 5 : 4;
     if (val === 'auto') {
       const clump = state.engine ? state.engine.rxClumpFrames : 0;
       const rec = NesNetplayEngine.computeRecommendedInputDelay(
         state.rttMs, state.jitterMs, clump
       );
-      return sysId === 'arcade' && state.peerConnected
-        ? Math.max(arcMin, rec) : rec;
+      if (sysId === 'arcade' && state.peerConnected) {
+        if (state.engine?.shadowRollback?.isReady?.()) {
+          return Math.min(2, Math.max(1, rec));
+        }
+        return Math.max(state.rttMs >= 160 ? 4 : 3, rec);
+      }
+      return rec;
     }
     const parsed = Number(val);
-    const delay = Number.isFinite(parsed) ? parsed : 2;
-    if (sysId === 'arcade' && state.peerConnected && delay === 2) return arcMin;
-    return delay;
+    return Number.isFinite(parsed) ? parsed : 2;
   }
 
   function ensureRomInDropdown(name, u8) {
@@ -147,6 +149,9 @@ export function createRomSyncManager(state, ui, audio) {
       audio.pushSample(l, r);
     };
 
+    const prevCore = state.nes;
+    state.nes = null; state.engine?.destroy?.(); state.engine = null;
+    prevCore?.destroy?.();
     if (sysId === 'arcade') {
       state.nes = await createFbneoArcadeCore({
         romBytes: u8, romName: state.romName, onFrame, onAudioSample,
@@ -176,7 +181,6 @@ export function createRomSyncManager(state, ui, audio) {
     const isOnline = Boolean(
       state.ws && state.ws.readyState === 1 && state.peerConnected
     );
-    state.engine?.destroy?.();
     state.engine = new NesNetplayEngine(state.nes, {
       localPlayer: state.localPlayerIndex, online: isOnline,
       enableRiftPacing: false,
@@ -192,21 +196,17 @@ export function createRomSyncManager(state, ui, audio) {
     );
     ui.romBadge.textContent = `ROM: ${shortName} [${state.romCrc32}]`;
     const mType = state.nes.rom.mapperType;
-    const isChrRam = state.nes.rom.vromCount === 0;
     ui.logDebug(
-      `Loaded ROM "${state.romName}" (Sys=${sysId}, ` +
-        `CRC32=${state.romCrc32}, Mapper=${mType}, CHR-RAM=${isChrRam})`
+      `Loaded "${state.romName}" (Sys=${sysId}, CRC=${state.romCrc32}, ` +
+        `Mapper=${mType}, CHR-RAM=${state.nes.rom.vromCount === 0})`
     );
-
     if (!isAutoDefault) {
-      const msg = options.fromCache
+      ui.showScreenBanner(options.fromCache
         ? `LOADED "${state.romName}" FROM CACHE (0 KB)!`
-        : `LOADED "${state.romName}" [${state.romCrc32}]`;
-      ui.showScreenBanner(msg, 'ok', 2800);
+        : `LOADED "${state.romName}" [${state.romCrc32}]`, 'ok', 2800);
     }
     ui.resetSendRomButtons?.();
-
-    if (state.ws && state.ws.readyState === 1) {
+    if (state.ws?.readyState === 1) {
       state.ws.send(JSON.stringify({
         type: 'rom_status', romCrc32: state.romCrc32,
         romName: state.romName, isAutoDefaultRom: false
@@ -217,22 +217,18 @@ export function createRomSyncManager(state, ui, audio) {
         startLockstepMatchAtFrameZero('Both PCs selected same ROM');
       }
     }
-    if (typeof state.onRomLoaded === 'function') state.onRomLoaded();
+    state.onRomLoaded?.();
     ui.updateStatusStrip();
   }
-
   async function sendRomAndStateToPeer({
     resetToZero = false, forceChunks = false
   } = {}) {
-    if (!state.romUint8 || !state.engine) {
+    if (!state.romUint8 || !state.engine)
       return ui.showScreenBanner('LOAD A ROM BEFORE SENDING', 'warn', 3000);
-    }
-    if (!state.ws || state.ws.readyState !== 1) {
+    if (state.ws?.readyState !== 1)
       return ui.showScreenBanner('NOT CONNECTED - JOIN A ROOM', 'err', 3500);
-    }
-    if (!state.peerConnected) {
+    if (!state.peerConnected)
       return ui.showScreenBanner('WAITING FOR PARTNER TO JOIN', 'warn', 3500);
-    }
     const rnd = Math.random().toString(36).slice(2, 7);
     const newSessionId = `${Date.now().toString(36)}_${rnd}`;
     state.engine.localPlayer = state.localPlayerIndex;
@@ -259,33 +255,27 @@ export function createRomSyncManager(state, ui, audio) {
       state, ui, newSessionId, syncState, uint8ToBase64, forceChunks
     );
   }
-
   function sendStateSyncToPeer({ resetToZero = false } = {}) {
-    if (!state.ws || state.ws.readyState !== 1 || !state.engine) return;
-    if (resetToZero && state.partnerRomCrc32 === state.romCrc32) {
+    if (state.ws?.readyState !== 1 || !state.engine) return;
+    if (resetToZero && state.partnerRomCrc32 === state.romCrc32)
       return startLockstepMatchAtFrameZero('Reset to Frame #0');
-    }
     const newSessionId =
       `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     if (resetToZero && state.nes && state.romBinaryString) {
       state.nes.loadROM(state.romBinaryString);
       state.engine.resetTimeline(0, newSessionId);
     } else state.engine.sessionId = newSessionId;
-
     const syncState = state.engine.exportSyncState();
     state.engine.localPlayer = state.localPlayerIndex;
     state.engine.online = true;
     state.engine.importSyncState(syncState);
     state.engine.syncPaused = true;
     armSyncAckWatchdog(newSessionId);
-
     state.ws.send(JSON.stringify({
       type: 'state_sync', romName: state.romName,
       romCrc32: state.romCrc32, syncState
     }));
-    ui.logDebug(
-      `Sent lockstep state snapshot at frame #${syncState.frame}`
-    );
+    ui.logDebug(`Sent state snapshot at frame #${syncState.frame}`);
     ui.showScreenBanner(`LOCKSTEP SYNCING "${state.romName}"...`, 'warn', 0);
     ui.updateStatusStrip();
   }
@@ -300,6 +290,10 @@ export function createRomSyncManager(state, ui, audio) {
       if (res.ok) {
         const data = await res.json();
         const sel = ui.localRomSelect;
+        const prevVal = sel.value;
+        const customOpts = [...sel.options].filter(
+          (o) => o.value && state.customRomsMap.has(o.value)
+        );
         sel.innerHTML = '<option value="">-- Select Game --</option>';
         for (const f of data.files || []) {
           serverRomsSet.add(f);
@@ -310,7 +304,12 @@ export function createRomSyncManager(state, ui, audio) {
             ? `[${f.slice(0, s).toUpperCase()}] ${f.slice(s + 1)}` : f;
           sel.appendChild(opt);
         }
-        sel.value = '';
+        for (const o of customOpts) {
+          if (!serverRomsSet.has(o.value)) sel.appendChild(o);
+        }
+        if (prevVal && [...sel.options].some((o) => o.value === prevVal)) {
+          sel.value = prevVal;
+        }
       }
     } catch (e) { ui.logDebug(`Local ROM check failed: ${e.message}`); }
     state.onCacheUpdated?.();

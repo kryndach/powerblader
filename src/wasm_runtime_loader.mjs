@@ -10,6 +10,24 @@ for (let p = 0; p < 65536; p++) {
     (((g6 << 2) | (g6 >>> 4)) << 8) | ((r5 << 3) | (r5 >>> 2));
 }
 
+export function resampleStereoS16Linear(s16, base, frames, outCount, cb) {
+  if (frames <= 0 || outCount <= 0) return;
+  const scale = 1 / 32768;
+  const maxIdx = Math.max(0, frames - 1);
+  const step = frames / outCount;
+  for (let i = 0; i < outCount; i++) {
+    const pos = i * step;
+    const i0 = Math.min(maxIdx, pos | 0);
+    const i1 = Math.min(maxIdx, i0 + 1);
+    const frac = pos - i0;
+    const b0 = base + i0 * 2, b1 = base + i1 * 2;
+    cb(
+      (s16[b0] + (s16[b1] - s16[b0]) * frac) * scale,
+      (s16[b0 + 1] + (s16[b1 + 1] - s16[b0 + 1]) * frac) * scale
+    );
+  }
+}
+
 export function listZipEntryNames(u8) {
   const names = [];
   if (!u8 || u8.byteLength < 30) return names;

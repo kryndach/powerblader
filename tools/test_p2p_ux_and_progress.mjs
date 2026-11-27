@@ -36,8 +36,9 @@ async function testUnitP2pPingAndIceConfig() {
     'Blocked stun.cloudflare.com still in DEFAULT_ICE'
   );
   assert.ok(
-    src.includes("'peer_ping'") && src.includes("'peer_pong'"),
-    'peer_ping/peer_pong must route over unordered inputDc'
+    src.includes('peer_ping') && src.includes('peer_pong') &&
+      src.includes('0x50') && src.includes('0x51'),
+    'peer_ping/peer_pong (JSON + binary) must route over unordered inputDc'
   );
   console.log('[PASS] 1/4 P2P Unordered Ping Channel & Non-Cloudflare STUN');
 }

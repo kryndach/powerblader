@@ -8,9 +8,11 @@ export function startNetemProxy(targetPort, initialOpts = {}) {
     kbpsCap: 0,
     clumpEveryMs: 0,
     clumpHoldMs: 0,
+    sharedPipe: false,
     ...initialOpts
   };
   let bytesUp = 0, bytesDown = 0, maxQueueMs = 0;
+  let sharedDeliverUp = 0, sharedDeliverDown = 0;
   let nextTokenAt = 0;
   let seq = 0;
   const openSockets = new Set();
@@ -40,9 +42,16 @@ export function startNetemProxy(targetPort, initialOpts = {}) {
       capReadyAt = nextTokenAt;
     }
     const rawTarget = Math.max(now, capReadyAt) + oneWay + jit + clump;
-    const prevAt = srcSock._lastDeliverAt || 0;
+    const prevAt = cfg.sharedPipe
+      ? (isUp ? sharedDeliverUp : sharedDeliverDown)
+      : (srcSock._lastDeliverAt || 0);
     const deliverAt = Math.max(prevAt, rawTarget);
-    srcSock._lastDeliverAt = deliverAt;
+    if (cfg.sharedPipe) {
+      if (isUp) sharedDeliverUp = deliverAt;
+      else sharedDeliverDown = deliverAt;
+    } else {
+      srcSock._lastDeliverAt = deliverAt;
+    }
     const delayMs = Math.max(0, Math.round(deliverAt - now));
     if (delayMs > maxQueueMs) maxQueueMs = delayMs;
 
@@ -82,7 +91,11 @@ export function startNetemProxy(targetPort, initialOpts = {}) {
         port: srv.address().port,
         setProfile(next) { cfg = { ...cfg, ...next }; },
         resetStats() { bytesUp = 0; bytesDown = 0; maxQueueMs = 0; },
-        getStats() { return { bytesUp, bytesDown, maxQueueMs }; },
+        getStats() {
+          return {
+            bytesUp, bytesDown, maxQueueMs, sharedPipe: Boolean(cfg.sharedPipe)
+          };
+        },
         close() {
           for (const s of openSockets) { try { s.destroy(); } catch {} }
           openSockets.clear();

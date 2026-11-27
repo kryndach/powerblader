@@ -160,8 +160,11 @@ export function runTest8MidGameLobbyPopupAndDelayGuard() {
       telemetry
     );
 
-    // 1. High-RTT (246ms) Arcade input delay defaults to 5f (prevents >3f RB)
-    assert.strictEqual(romSync.resolveDesiredInputDelay('arcade'), 5);
+    // 1. High-RTT (246ms) Arcade respects explicit 2f & auto-scales w/o shadow
+    assert.strictEqual(romSync.resolveDesiredInputDelay('arcade'), 2);
+    ui.topInputDelaySelect.value = ui.inputDelaySelect.value = 'auto';
+    assert.strictEqual(romSync.resolveDesiredInputDelay('arcade'), 4);
+    ui.topInputDelaySelect.value = ui.inputDelaySelect.value = '2';
 
     // 2. Before match starts, Lobby overlay is visible
     ui.updateLobbyOverlay();
