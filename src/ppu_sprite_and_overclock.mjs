@@ -145,12 +145,17 @@ function isShortLeafHelper(m, pc) {
   return false;
 }
 
-function isPcInJmpWaitLoop(m, pc, sp) {
+function isPcInJmpWaitLoop(m, pc, sp, fromLeaf = false) {
   const sp8 = sp & 0xff;
+  if (!fromLeaf && sp8 === 0xff && m[pc] === 0x20) {
+    const callee = m[(pc + 1) & 0xffff] | (m[(pc + 2) & 0xffff] << 8);
+    if (!isShortLeafHelper(m, callee)) return false;
+  }
   for (let off = -3; off <= 36; off++) {
     const a = (pc + off) & 0xffff;
     if (m[a] !== 0x4c) continue;
     const target = m[(a + 1) & 0xffff] | (m[(a + 2) & 0xffff] << 8);
+    if (target >= 0x2000 && target < 0x6000) continue;
     const span = a - target;
     if (target <= pc && pc <= a + 2 && span > 0 && span <= 40) {
       if (m[(target - 1) & 0xffff] === 0x58 || sp8 === 0xff) return true;
@@ -188,7 +193,12 @@ export function isCpuInTightWaitLoop(cpu) {
   if (isPcInJmpWaitLoop(m, pc, cpu.REG_SP)) return true;
   if ((cpu.REG_SP & 0xff) === 0xfd && isShortLeafHelper(m, pc)) {
     const retPc = ((m[0x01fe] | (m[0x01ff] << 8)) + 1) & 0xffff;
-    if (isPcInJmpWaitLoop(m, retPc, 0x01ff)) return true;
+    if (
+      m[(retPc - 3) & 0xffff] === 0x20 &&
+      isPcInJmpWaitLoop(m, retPc, 0x01ff, true)
+    ) {
+      return true;
+    }
   }
   return false;
 }
@@ -211,6 +221,7 @@ export function setNesOverclockEnabled(nes, enabledOrMode) {
   ppu._overclockScanlines = 0;
   ppu._inOverclock = false;
   ppu._overclockCapped = false;
+  ppu._overclockCooldown = 0;
   if (!next) ppu._hasTightWaitLoop = false;
   return next;
 }
@@ -244,6 +255,7 @@ export function patchPostRenderOverclock(nes) {
   ppu._overclockScanlines = 0;
   ppu._inOverclock = false;
   ppu._overclockCapped = false;
+  ppu._overclockCooldown = 0;
 
   const origEndScanline = ppu.endScanline.bind(ppu);
   ppu.endScanline = function () {

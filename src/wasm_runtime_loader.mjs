@@ -55,6 +55,37 @@ export function listZipEntryNames(u8) {
   return names;
 }
 
+function hasWasmMagic(u8) {
+  return Boolean(
+    u8 && u8.byteLength >= 8 &&
+    u8[0] === 0x00 && u8[1] === 0x61 && u8[2] === 0x73 && u8[3] === 0x6d
+  );
+}
+
+export async function fetchAndValidateBrowserWasm({
+  wasmUrl, cacheKey, fileName, xfer = null, fetchImpl = null,
+  minBytes = 200000
+}) {
+  const doFetch = fetchImpl || globalThis.fetch;
+  const hit = xfer
+    ? await xfer.getCachedRomByCrc?.(cacheKey).catch(() => null) : null;
+  if (hit?.u8) {
+    const valid = hit.u8.byteLength > minBytes && hasWasmMagic(hit.u8) &&
+      (typeof WebAssembly?.validate !== 'function' ||
+        WebAssembly.validate(hit.u8));
+    if (valid) return hit.u8;
+    await xfer?.deleteCachedRomByCrc?.(cacheKey).catch(() => {});
+  }
+  const res = await doFetch(wasmUrl, hit ? { cache: 'reload' } : undefined);
+  if (!res.ok) throw new Error(`${fileName} fetch HTTP ${res.status}`);
+  const u8 = new Uint8Array(await res.arrayBuffer());
+  const ok = hasWasmMagic(u8) &&
+    (typeof WebAssembly?.validate !== 'function' || WebAssembly.validate(u8));
+  if (!ok) throw new Error(`${fileName} invalid WASM binary`);
+  xfer?.putCachedRomByCrc?.(cacheKey, fileName, u8);
+  return u8;
+}
+
 export async function loadNodeVendorFactory(baseFile) {
   const [path, url] = await Promise.all([
     import('node:path'), import('node:url')

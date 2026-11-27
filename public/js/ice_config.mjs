@@ -14,12 +14,40 @@ const PUBLIC_TURN_443_SERVERS = [
     urls: [
       'turn:openrelay.metered.ca:443',
       'turn:openrelay.metered.ca:443?transport=tcp',
+      'turns:openrelay.metered.ca:443?transport=tcp',
       'turn:openrelay.metered.ca:80'
     ],
     username: 'openrelayproject',
     credential: 'openrelayproject'
   }
 ];
+
+const ICE_URL_RE = /^(stuns?|turns?):[^\s]+$/i;
+const TURN_URL_RE = /^turns?:/i;
+
+function sanitizeIceServer(entry) {
+  if (!entry || !entry.urls) return null;
+  const rawList = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
+  const validUrls = rawList
+    .map((u) => String(u || '').trim())
+    .filter((u) => ICE_URL_RE.test(u));
+  if (!validUrls.length) return null;
+  const hasUser = typeof entry.username === 'string' &&
+    entry.username.length > 0;
+  const hasPass =
+    typeof entry.credential === 'string' && entry.credential.length > 0;
+  const hasCreds = hasUser && hasPass;
+  const filtered = hasCreds
+    ? validUrls
+    : validUrls.filter((u) => !TURN_URL_RE.test(u));
+  if (!filtered.length) return null;
+  const out = { urls: filtered.length === 1 ? filtered[0] : filtered };
+  if (hasCreds && filtered.some((u) => TURN_URL_RE.test(u))) {
+    out.username = entry.username;
+    out.credential = entry.credential;
+  }
+  return out;
+}
 
 function parseCustomTurnFromSearch(search) {
   if (!search) return [];
@@ -29,12 +57,13 @@ function parseCustomTurnFromSearch(search) {
     if (!raw) return [];
     const urls = raw.split(',').map((s) => s.trim()).filter(Boolean);
     if (!urls.length) return [];
-    const entry = { urls: urls.length === 1 ? urls[0] : urls };
-    const u = qp.get('turnUser');
-    const p = qp.get('turnPass');
-    if (u) entry.username = u;
-    if (p) entry.credential = p;
-    return [entry];
+    const entry = {
+      urls: urls.length === 1 ? urls[0] : urls,
+      username: qp.get('turnUser') || '',
+      credential: qp.get('turnPass') || ''
+    };
+    const clean = sanitizeIceServer(entry);
+    return clean ? [clean] : [];
   } catch {
     return [];
   }
@@ -46,7 +75,7 @@ function parseCustomTurnFromStorage() {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     const list = Array.isArray(parsed) ? parsed : [parsed];
-    return list.filter((x) => x && x.urls);
+    return list.map(sanitizeIceServer).filter(Boolean);
   } catch {
     return [];
   }
@@ -56,8 +85,12 @@ export function buildGameplayIceServers(options = {}) {
   const includeTurn = options.includeTurn !== false;
   const search = options.search ?? globalThis.location?.search ?? '';
   const custom = [];
-  if (Array.isArray(options.customTurn)) custom.push(...options.customTurn);
-  else if (options.customTurn?.urls) custom.push(options.customTurn);
+  if (Array.isArray(options.customTurn)) {
+    custom.push(...options.customTurn.map(sanitizeIceServer).filter(Boolean));
+  } else if (options.customTurn?.urls) {
+    const c = sanitizeIceServer(options.customTurn);
+    if (c) custom.push(c);
+  }
   custom.push(...parseCustomTurnFromSearch(search));
   custom.push(...parseCustomTurnFromStorage());
 
@@ -70,4 +103,44 @@ export function classifyIceCandidateType(candType = '') {
   const t = String(candType || '').toLowerCase();
   if (t === 'relay') return 'turn_443';
   return 'direct_p2p';
+}
+
+export function waitForRtcGathering(rtc, maxWaitMs = 1200) {
+  if (!rtc || rtc.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise((resolve) => {
+    const t = setTimeout(() => {
+      rtc.removeEventListener('icegatheringstatechange', check);
+      resolve();
+    }, maxWaitMs);
+    function check() {
+      if (rtc.iceGatheringState === 'complete') {
+        clearTimeout(t);
+        rtc.removeEventListener('icegatheringstatechange', check);
+        resolve();
+      }
+    }
+    rtc.addEventListener('icegatheringstatechange', check);
+  });
+}
+
+export async function inspectSelectedIcePair(rtc) {
+  if (!rtc?.getStats) return null;
+  const stats = await rtc.getStats();
+  let pair = null;
+  stats.forEach((r) => {
+    if (
+      r.type === 'candidate-pair' && (r.selected || r.state === 'succeeded')
+    ) {
+      if (!pair || r.selected) pair = r;
+    }
+  });
+  if (!pair) return null;
+  const loc = stats.get(pair.localCandidateId);
+  const rem = stats.get(pair.remoteCandidateId);
+  const proto = String(loc?.protocol || rem?.protocol || 'udp').toUpperCase();
+  const locType = loc?.candidateType || 'direct';
+  const isRelay = locType === 'relay' || rem?.candidateType === 'relay';
+  const pathKind = classifyIceCandidateType(isRelay ? 'relay' : locType);
+  const label = isRelay && locType !== 'relay' ? `${locType}->relay` : locType;
+  return { proto, locType, isRelay, pathKind, label };
 }

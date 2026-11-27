@@ -3,7 +3,7 @@ import { INPUT_BITS, computeDeterministicHash } from './crc32.mjs';
 import { CPU_SCALAR_PROPS, PPU_SCALAR_PROPS } from './ppu_register_tables.mjs';
 import { patchJsnes8x16Sprites } from './jsnes_ppu_patches.mjs';
 import {
-  saveObjectZeroGc, restoreObjectZeroGc
+  saveObjectZeroGc, restoreObjectZeroGc, fixupRestoredMapperState
 } from './jsnes_zero_gc_state.mjs';
 import { invalidateMapperBankCaches } from './mapper_bank_cache.mjs';
 
@@ -68,14 +68,16 @@ export function saveFastState(nes, slot, frameNum = 0) {
     slot.ntAttrib[i].set(ppu.nameTable[i].attrib);
   }
 
-  const hasChrRam = !nes.rom || nes.rom.vromCount === 0;
+  const hasChrRam = !nes.rom || nes.rom.vromCount === 0 ||
+    Boolean(nes.mmap?.chrRam);
   slot.hasChrRam = hasChrRam;
   for (let i = 0; i < 512; i++) {
     const t = ppu.ptTile[i];
+    const refChanged = slot.ptTileRefs[i] !== t;
     slot.ptTileRefs[i] = t;
-    if (hasChrRam && t) {
+    if (hasChrRam && t && typeof t._vromRef !== 'number') {
       const epoch = t._tileEpoch || 1;
-      if (slot.chrRamTileEpochs[i] !== epoch) {
+      if (refChanged || slot.chrRamTileEpochs[i] !== epoch) {
         slot.chrRamTileEpochs[i] = epoch;
         slot.chrRamPix.set(t.pix, i * 64);
         slot.chrRamOpaque.set(t.opaque, i * 8);
@@ -128,8 +130,8 @@ export function loadFastState(nes, slot) {
 
   for (let i = 0; i < 512; i++) {
     ppu.ptTile[i] = slot.ptTileRefs[i];
-    if (slot.hasChrRam && ppu.ptTile[i]) {
-      const t = ppu.ptTile[i];
+    const t = ppu.ptTile[i];
+    if (slot.hasChrRam && t && typeof t._vromRef !== 'number') {
       const savedEpoch = slot.chrRamTileEpochs[i];
       if ((t._tileEpoch || 1) !== savedEpoch) {
         t._tileEpoch = savedEpoch;
@@ -197,7 +199,7 @@ export function serializeCompactNesState(
     ptTileMap = new Array(512);
     for (let i = 0; i < 512; i++) {
       const t = nes.ppu.ptTile[i];
-      ptTileMap[i] = t && typeof t._vromRef === 'number' ? t._vromRef : 0;
+      ptTileMap[i] = t && typeof t._vromRef === 'number' ? t._vromRef : -1;
     }
     nesState.ppu.ptTile = [];
 
@@ -217,6 +219,7 @@ export function serializeCompactNesState(
   nesState.ppu._overclockEnabled = ocMode > 0;
   nesState.ppu._hasTightWaitLoop = Boolean(nes.ppu._hasTightWaitLoop);
   nesState.ppu._overclockCapped = Boolean(nes.ppu._overclockCapped);
+  nesState.ppu._overclockCooldown = nes.ppu._overclockCooldown || 0;
 
   return {
     sessionId,
@@ -235,6 +238,7 @@ export function restoreCompactNesState(nes, syncObj) {
   const s = syncObj.nesState;
   invalidateMapperBankCaches(nes.mmap);
   nes.mmap.fromJSON(s.mmap);
+  fixupRestoredMapperState(nes.mmap, s.mmap);
   nes.cpu.fromJSON(s.cpu);
 
   const ppu = nes.ppu;
@@ -256,6 +260,7 @@ export function restoreCompactNesState(nes, syncObj) {
   nes._overclockEnabled = ocMode > 0;
   ppu._hasTightWaitLoop = Boolean(s.ppu._hasTightWaitLoop);
   ppu._overclockCapped = Boolean(s.ppu._overclockCapped);
+  ppu._overclockCooldown = Number(s.ppu._overclockCooldown) || 0;
   ppu._overclockScanlines = 0;
   ppu._inOverclock = false;
 
@@ -267,7 +272,8 @@ export function restoreCompactNesState(nes, syncObj) {
   if (useRefMap) {
     ppu.ptTile = origPtTile;
     for (let i = 0; i < 512; i++) {
-      const ref = syncObj.ptTileMap[i] || 0;
+      const ref = syncObj.ptTileMap[i];
+      if (typeof ref !== 'number' || ref < 0) continue;
       const b = (ref >> 8) & 0xff;
       const t = ref & 0xff;
       if (nes.rom.vromTile[b] && nes.rom.vromTile[b][t]) {

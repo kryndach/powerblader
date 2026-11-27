@@ -1,7 +1,8 @@
 // Sega (Genesis Plus GX) & Super Nintendo (Snes9x) Libretro WASM Cores
 import { INPUT_BITS, crc32Bytes } from './crc32.mjs';
 import {
-  RGB565_TO_BGR24, loadNodeVendorWasm, resampleStereoS16Linear
+  RGB565_TO_BGR24, loadNodeVendorWasm, resampleStereoS16Linear,
+  fetchAndValidateBrowserWasm
 } from './wasm_runtime_loader.mjs';
 
 export { resampleStereoS16Linear };
@@ -38,15 +39,12 @@ export async function ensureLibretroRuntime(
       rt.factory = ns.default;
       if (wasmBinaryOverride) rt.wasmBinary = wasmBinaryOverride;
       else {
-        const key = `WASM_${coreKey.toUpperCase()}_V2`;
-        const hit = xfer
-          ? await xfer.getCachedRomByCrc(key).catch(() => null) : null;
-        if (hit?.u8?.byteLength > 200000) rt.wasmBinary = hit.u8;
-        else {
-          const res = await fetch(wasmUrl.href);
-          rt.wasmBinary = new Uint8Array(await res.arrayBuffer());
-          xfer?.putCachedRomByCrc?.(key, `${rt.file}.wasm`, rt.wasmBinary);
-        }
+        rt.wasmBinary = await fetchAndValidateBrowserWasm({
+          wasmUrl: wasmUrl.href,
+          cacheKey: `WASM_${coreKey.toUpperCase()}_V2`,
+          fileName: `${rt.file}.wasm`,
+          xfer
+        });
       }
     } else {
       const { factory, wasmBytes } = await loadNodeVendorWasm(rt.file);

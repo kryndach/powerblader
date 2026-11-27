@@ -22,7 +22,7 @@ const jsnes = jsnesMod.NES ? jsnesMod : jsnesMod.default;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
-function testC2aAudioWorkletAndDynamicRate() {
+async function testC2aAudioWorkletAndDynamicRate() {
   for (const outRate of [48000, 44100]) {
     const drc = createDrcAudioCore({ outSampleRate: outRate, mode: 'worklet' });
     assert.ok(
@@ -68,16 +68,20 @@ function testC2aAudioWorkletAndDynamicRate() {
     );
   }
 
-  // Verify createAudioDrcEngine initializes AudioWorklet when available
+  // Verify createAudioDrcEngine initializes AudioWorklet & flushes bootQueue
   let workletLoadedUrl = null;
   let workletNodeCreated = false;
+  const postedMsgs = [];
   const prevAC = globalThis.AudioContext;
   const prevAWN = globalThis.AudioWorkletNode;
   try {
     globalThis.AudioWorkletNode = class MockWorkletNode {
       constructor(_ctx, name, opts) {
         workletNodeCreated = name === 'netplay-drc-processor' && Boolean(opts);
-        this.port = { postMessage() {}, onmessage: null };
+        this.port = {
+          postMessage(m) { postedMsgs.push(m); },
+          onmessage: null
+        };
       }
       connect() {}
     };
@@ -94,15 +98,25 @@ function testC2aAudioWorkletAndDynamicRate() {
     };
     const eng = createAudioDrcEngine({});
     eng.initAudio();
+    for (let i = 0; i < 600; i++) eng.pushSample(0.25, -0.25);
+    await new Promise((r) => setTimeout(r, 15));
     assert.ok(
       workletLoadedUrl && workletLoadedUrl.includes('audio_worklet_processor'),
       `Expected AudioWorklet addModule(), got: ${workletLoadedUrl}`
+    );
+    assert.strictEqual(
+      workletNodeCreated, true,
+      'AudioWorkletNode was never constructed after addModule() resolved!'
+    );
+    const chunkMsgs = postedMsgs.filter((m) => m?.type === 'chunk');
+    assert.ok(
+      chunkMsgs.length >= 2,
+      `Expected bootQueue flush (>=2 chunks), got ${chunkMsgs.length}`
     );
   } finally {
     globalThis.AudioContext = prevAC;
     globalThis.AudioWorkletNode = prevAWN;
   }
-  void workletNodeCreated;
   console.log('[PASS] C2a-1: AudioWorklet DRC (48/44.1kHz, <=25ms cushion)');
 }
 
@@ -272,7 +286,7 @@ async function testC2bUniversalShadowWorker() {
   }
 }
 
-testC2aAudioWorkletAndDynamicRate();
+await testC2aAudioWorkletAndDynamicRate();
 testC2aLinearAudioResampling();
 await testC2bUniversalShadowWorker();
 console.log('\nALL TRACK C2 TESTS PASSED!');

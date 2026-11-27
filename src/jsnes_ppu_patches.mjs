@@ -28,6 +28,7 @@ function resetOverclockRuntimeFlags(ppu) {
   ppu._overclockScanlines = 0;
   ppu._inOverclock = false;
   ppu._overclockCapped = false;
+  ppu._overclockCooldown = 0;
 }
 
 export function patchJsnes8x16Sprites(nes) {

@@ -33,14 +33,26 @@ export function createSaveSlotsManager(state, ui, romSync) {
     return !state.isStaticOrigin || Boolean(state.apiBaseUrl);
   }
 
+  function saveApiUrl(query = '') {
+    const parts = [];
+    if (query) parts.push(query);
+    if (state.roomAuth) {
+      parts.push(`auth=${encodeURIComponent(state.roomAuth)}`);
+    }
+    const qs = parts.length ? `?${parts.join('&')}` : '';
+    return buildApiUrl(state, `/api/save-slot${qs}`);
+  }
+
   function writeSlotEntry(romCrc32, slot, entry) {
     const key = makeStorageKey(romCrc32, slot);
     memorySlots.set(key, entry);
     diskSavedKeys.add(key);
     if (canUseServerApi()) {
-      fetch(buildApiUrl(state, '/api/save-slot'), {
+      const headers = { 'Content-Type': 'application/json' };
+      if (state.roomAuth) headers['X-Room-Auth'] = state.roomAuth;
+      fetch(saveApiUrl(), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ romCrc32, slot, entry })
       }).catch(() => {});
     }
@@ -97,7 +109,7 @@ export function createSaveSlotsManager(state, ui, romSync) {
     renderSlotOptions();
     if (!state.romCrc32 || !canUseServerApi()) return;
     const crc = state.romCrc32;
-    fetch(buildApiUrl(state, `/api/save-slot?crc=${encodeURIComponent(crc)}`))
+    fetch(saveApiUrl(`crc=${encodeURIComponent(crc)}`))
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!data || !Array.isArray(data.savedSlots)) return;
@@ -221,7 +233,7 @@ export function createSaveSlotsManager(state, ui, romSync) {
     if (!entry && canUseServerApi()) {
       try {
         const q = `crc=${encodeURIComponent(state.romCrc32)}&slot=${slot}`;
-        const res = await fetch(buildApiUrl(state, `/api/save-slot?${q}`));
+        const res = await fetch(saveApiUrl(q));
         if (res.ok) {
           const data = await res.json();
           if (data?.entry?.syncState) {

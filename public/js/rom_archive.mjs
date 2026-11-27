@@ -7,7 +7,9 @@ import { bindRomDropAndPicker } from './transfer_status_ui.mjs';
 import {
   extractRomFromZipBrowser, extractArchiveViaServer, unpackRomIfNeeded
 } from './rom_zip_unpacker.mjs';
-import { encodeBinaryRomChunk } from '../../src/binary_net_codec.mjs';
+import {
+  encodeBinaryRomChunk, matchesBinarySessionId
+} from '../../src/binary_net_codec.mjs';
 
 export {
   uploadRomToServerCache, fetchRomBytesWithProgress,
@@ -246,7 +248,7 @@ export function handleRomTransferMessage(
         const cur = state.incomingRomTransfer;
         if (!hit?.u8 || cur?.sessionId !== msg.sessionId) return;
         state.incomingRomTransfer = null;
-        applyCacheHit(hit, null, msg.syncState, msg.sessionId);
+        return applyCacheHit(hit, null, msg.syncState, msg.sessionId);
       }).catch(() => {});
     }
     return true;
@@ -271,7 +273,17 @@ export function handleRomTransferMessage(
       romBytes, xfer.romName, xfer.isAutoDefaultRom, null, xfer.syncState
     );
   };
-  if (msg.type === 'rom_chunk_data' && xfer?.sessionId === msg.sessionId) {
+  const runFinalize = () => finalize().catch((e) => {
+    ui.setTransferStatus?.(null);
+    ui.logDebug?.(`ROM chunk finalize failed: ${e?.message || e}`);
+    ui.showScreenBanner?.(
+      `ROM TRANSFER FAILED: ${e?.message || 'Error'}`, 'err', 4000
+    );
+    if (state.engine) state.engine.syncPaused = false;
+    ui.updateStatusStrip?.();
+  });
+  if (msg.type === 'rom_chunk_data' && xfer &&
+      matchesBinarySessionId(msg.sessionId, xfer.sessionId)) {
     const part = msg.data instanceof Uint8Array
       ? msg.data : base64ToUint8(msg.dataB64);
     if (!xfer.chunks.has(msg.index)) {
@@ -298,12 +310,12 @@ export function handleRomTransferMessage(
         pct, detail: formatTransferProgress(pObj)
       });
     }
-    if (xfer.chunks.size >= xfer.totalChunks && xfer.endSeen) finalize();
+    if (xfer.chunks.size >= xfer.totalChunks && xfer.endSeen) runFinalize();
     return true;
   }
   if (msg.type === 'rom_chunk_end' && xfer?.sessionId === msg.sessionId) {
     xfer.endSeen = true;
-    if (xfer.chunks.size >= xfer.totalChunks) finalize();
+    if (xfer.chunks.size >= xfer.totalChunks) runFinalize();
     return true;
   }
   return false;

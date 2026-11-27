@@ -95,6 +95,10 @@ export function probeCandidateUrls(
   );
 }
 
+const MIGRATE_PARAMS = [
+  'room', 'nick', 'debug', 'pass', 'turn', 'turnUser', 'turnPass', 'relays'
+];
+
 export function buildMigratedClientUrl(targetBaseUrl, currentHref) {
   const base = String(targetBaseUrl || '').replace(/\/+$/, '');
   const cur = new URL(currentHref);
@@ -104,12 +108,10 @@ export function buildMigratedClientUrl(targetBaseUrl, currentHref) {
     ? new URL(cur.origin + cur.pathname)
     : new URL(`${base}/`);
   if (keepFixed) next.searchParams.set('server', base);
-  const room = cur.searchParams.get('room');
-  const nick = cur.searchParams.get('nick');
-  const dbg = cur.searchParams.get('debug');
-  if (room) next.searchParams.set('room', room);
-  if (nick) next.searchParams.set('nick', nick);
-  if (dbg) next.searchParams.set('debug', dbg);
+  for (const key of MIGRATE_PARAMS) {
+    const val = cur.searchParams.get(key);
+    if (val) next.searchParams.set(key, val);
+  }
   next.searchParams.set('optimized', '1');
   return next.toString();
 }
@@ -270,11 +272,14 @@ export function createRouteOptimizer(state, ui, tunnelCtrl, hooks = {}) {
         state.isExternalServer = true;
         try {
           const next = new URL(window.location.href);
-          if (next.searchParams.has('server') || state.isStaticOrigin) {
+          const hasExplicitServer =
+            next.searchParams.has('server') || next.searchParams.has('host');
+          if (hasExplicitServer && !state.usedNostrDiscovery) {
+            next.searchParams.delete('host');
             next.searchParams.set('server', url);
+            next.searchParams.set('optimized', '1');
+            window.history?.replaceState?.(null, '', next.toString());
           }
-          next.searchParams.set('optimized', '1');
-          window.history?.replaceState?.(null, '', next.toString());
         } catch {}
         setTimeout(() => hooks.onHotRouteSwitch(url), 80);
         return true;

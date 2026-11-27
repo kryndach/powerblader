@@ -66,8 +66,31 @@ function restoreFrom(obj, buf) {
   }
 }
 
+function needsCustomJsonState(obj) {
+  return Boolean(
+    (obj.chrRam && typeof obj.rebuildChrRamTiles === 'function') ||
+    (obj.exram && typeof obj._syncNametables === 'function')
+  );
+}
+
+export function fixupRestoredMapperState(obj, srcJson = null) {
+  if (!obj) return;
+  if (Array.isArray(obj.chrRamSlots) &&
+      (!srcJson || obj.chrRamSlots === srcJson.chrRamSlots)) {
+    obj.chrRamSlots = obj.chrRamSlots.slice();
+  }
+  if ('exramMode' in obj && 'bgTileOverride' in obj) {
+    obj.bgTileOverride = obj.exramMode === 1;
+  }
+  if ('_chrBankTarget' in obj) obj._chrBankTarget = -1;
+}
+
 export function saveObjectZeroGc(obj, slot, fieldKey) {
   if (!obj) { slot[fieldKey] = null; return; }
+  if (needsCustomJsonState(obj)) {
+    slot[fieldKey] = { _customJson: true, data: obj.toJSON() };
+    return;
+  }
   const schema = getSchema(obj);
   let buf = slot[fieldKey];
   if (!buf || buf.schema !== schema) {
@@ -80,5 +103,17 @@ export function saveObjectZeroGc(obj, slot, fieldKey) {
 export function restoreObjectZeroGc(obj, slot, fieldKey) {
   const buf = slot[fieldKey];
   if (!obj || !buf) return;
+  if (buf._customJson) {
+    const ppu = obj.nes?.ppu;
+    const prevRender = ppu?._inRendering;
+    if (ppu) ppu._inRendering = true;
+    try {
+      obj.fromJSON(buf.data);
+    } finally {
+      if (ppu) ppu._inRendering = prevRender;
+    }
+    fixupRestoredMapperState(obj, buf.data);
+    return;
+  }
   restoreFrom(obj, buf);
 }

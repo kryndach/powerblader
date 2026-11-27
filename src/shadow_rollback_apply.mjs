@@ -2,6 +2,9 @@
 import {
   encodeNesStateBytes, decodeNesStateBytes
 } from './universal_worker_core_factory.mjs';
+import {
+  createFastSnapshotSlot, saveFastState, loadFastState
+} from './fast_savestate.mjs';
 
 export const MAX_APPLY_GAP = 3;
 export const FALLBACK_APPLY_GAP = 8;
@@ -60,11 +63,26 @@ export function resolveSnapshotForSync(engine, core) {
     f--;
   }
   const slot = engine.saveRing[f % B];
-  if (!slot || slot.frame !== f || !slot.stateBytes) return null;
-  const len = slot.usedLen || slot.stateBytes.length;
-  const bytes = new Uint8Array(len);
-  bytes.set(slot.stateBytes.subarray(0, len));
-  return { frame: f, bytes };
+  if (!slot || slot.frame !== f) return null;
+  if (slot.stateBytes) {
+    const len = slot.usedLen || slot.stateBytes.length;
+    const bytes = new Uint8Array(len);
+    bytes.set(slot.stateBytes.subarray(0, len));
+    return { frame: f, bytes };
+  }
+  const raw = core?.rawCore || core;
+  if (slot.cpuMem && raw?.cpu && raw?.ppu) {
+    const tmp = createFastSnapshotSlot();
+    saveFastState(raw, tmp, cur);
+    try {
+      loadFastState(raw, slot);
+      const bytes = encodeNesStateBytes(raw);
+      return bytes ? { frame: f, bytes } : null;
+    } finally {
+      loadFastState(raw, tmp);
+    }
+  }
+  return null;
 }
 
 export function applyShadowHashes(engine, hashes) {

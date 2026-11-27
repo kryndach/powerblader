@@ -101,7 +101,9 @@ export function createAudioDrcEngine(
 
   function initAudio() {
     if (audioCtx) {
-      if (audioCtx.state === 'suspended') audioCtx.resume();
+      if (audioCtx.state === 'suspended') {
+        Promise.resolve(audioCtx.resume?.()).catch(() => {});
+      }
       return;
     }
     const win = typeof window !== 'undefined' ? window : globalThis;
@@ -143,6 +145,7 @@ export function createAudioDrcEngine(
       };
       node.connect(audioCtx.destination);
       workletNode = node;
+      scriptCore = null;
       mode = 'worklet';
       syncGainToActiveEngine();
       while (bootQueue.length > 0) {
@@ -190,19 +193,20 @@ export function createAudioDrcEngine(
     if (mode === 'worklet' && workletStats) {
       return { ...workletStats, samplesPushed: totalPushed, mode: 'worklet' };
     }
-    if (scriptCore) {
+    if (mode !== 'worklet' && !workletBooting && scriptCore) {
       return {
         ...scriptCore.getStats(),
         samplesPushed: totalPushed,
         sampleRate: audioCtx ? audioCtx.sampleRate : 0,
-        mode: mode === 'worklet' ? 'worklet' : 'script'
+        mode: 'script'
       };
     }
+    const isWl = mode === 'worklet' || workletBooting;
     return {
       underruns: 0, overflows: 0, samplesPushed: totalPushed, samplesOut: 0,
       minStepRate: 1, maxStepRate: 1, energySum: 0, maxJump: 0, rms: 0,
       queued: stagePos, sampleRate: audioCtx ? audioCtx.sampleRate : 0,
-      buffering: true, mode, targetMs: mode === 'worklet' ? 24 : 54
+      buffering: true, mode, targetMs: isWl ? 24 : 54
     };
   }
 
@@ -242,8 +246,23 @@ export function createAudioDrcEngine(
   }
 
   if (typeof window !== 'undefined' && window.addEventListener) {
-    window.addEventListener('keydown', () => initAudio(), { once: true });
-    window.addEventListener('pointerdown', () => initAudio(), { once: true });
+    const detachGestures = () => {
+      window.removeEventListener?.('keydown', onUserGesture);
+      window.removeEventListener?.('pointerdown', onUserGesture);
+    };
+    function onUserGesture() {
+      initAudio();
+      if (!audioCtx) return;
+      if (audioCtx.state === 'running') return detachGestures();
+      if (audioCtx.state === 'suspended' &&
+          typeof audioCtx.resume === 'function') {
+        Promise.resolve(audioCtx.resume()).then(() => {
+          if (audioCtx?.state === 'running') detachGestures();
+        }).catch(() => {});
+      }
+    }
+    window.addEventListener('keydown', onUserGesture);
+    window.addEventListener('pointerdown', onUserGesture);
   }
 
   return { initAudio, pushSample, resetBuffer, getStats };

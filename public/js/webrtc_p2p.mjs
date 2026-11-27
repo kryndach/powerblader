@@ -1,48 +1,68 @@
 // WebRTC P2P DataChannel & Dual-WebSocket (ws + wsAux) Transport Manager
 import { buildWsUrl } from './server_endpoint.mjs';
 import {
-  buildGameplayIceServers, classifyIceCandidateType
+  buildGameplayIceServers, waitForRtcGathering, inspectSelectedIcePair
 } from './ice_config.mjs';
 import { createMultiPathRacer } from './multipath_racer.mjs';
 import {
   encodeNetplayPacketBinary, decodeNetplayPacketBinary, isBinaryNetplayPacket
 } from '../../src/binary_net_codec.mjs';
 
-function waitForRtcGathering(rtc, maxWaitMs = 1200) {
-  if (!rtc || rtc.iceGatheringState === 'complete') return Promise.resolve();
-  return new Promise((resolve) => {
-    const t = setTimeout(() => {
-      rtc.removeEventListener('icegatheringstatechange', check);
-      resolve();
-    }, maxWaitMs);
-    function check() {
-      if (rtc.iceGatheringState === 'complete') {
-        clearTimeout(t);
-        rtc.removeEventListener('icegatheringstatechange', check);
-        resolve();
-      }
-    }
-    rtc.addEventListener('icegatheringstatechange', check);
-  });
-}
-
 export function createNetTransport(state, ui, onIncomingMessage) {
   const racer = createMultiPathRacer();
-  state.multipathRacer = racer;
   let rtcPathKind = 'direct_p2p';
+  let lastSyncedP2p = null, lastSyncedWss = null, hasLiveRttFeed = false;
+  const origReset = racer.reset;
+  racer.reset = () => {
+    lastSyncedP2p = lastSyncedWss = null;
+    hasLiveRttFeed = false;
+    origReset();
+  };
+  state.multipathRacer = racer;
+  state.rtcPathKind = rtcPathKind;
+
+  const p2pLabel = () =>
+    (rtcPathKind === 'turn_443' ? 'TURN/443' : 'Direct P2P');
+
+  function syncWinnerToState() {
+    const win = racer.selectActivePath();
+    if (!win) return null;
+    const next = win.id === 'p2p';
+    if (state._usingP2pAuto !== next) {
+      state._usingP2pAuto = next;
+      ui.updateStatusStrip?.();
+    }
+    return next;
+  }
+
+  function recordPathRtt(id, rttMs) {
+    if (!(rttMs > 0)) return;
+    hasLiveRttFeed = true;
+    if (id === 'p2p') {
+      lastSyncedP2p = rttMs;
+      racer.recordSample('p2p', {
+        kind: rtcPathKind, label: p2pLabel(), rttMs
+      });
+    } else {
+      lastSyncedWss = rttMs;
+      racer.recordSample('wss', { kind: 'wss', label: 'WSS Relay', rttMs });
+    }
+    syncWinnerToState();
+  }
+  state.recordPathRtt = recordPathRtt;
 
   function closeWebRtc() {
     racer.removePath('p2p');
+    lastSyncedP2p = null;
+    rtcPathKind = state.rtcPathKind = 'direct_p2p';
+    state.p2pRttMs = 0;
+    state._usingP2pAuto = undefined;
     if (state.rtcChannel) {
-      try {
-        state.rtcChannel.close();
-      } catch {}
+      try { state.rtcChannel.close(); } catch {}
       state.rtcChannel = null;
     }
     if (state.rtcPeer) {
-      try {
-        state.rtcPeer.close();
-      } catch {}
+      try { state.rtcPeer.close(); } catch {}
       state.rtcPeer = null;
     }
     ui.dbgRtcState.textContent = 'Closed';
@@ -57,57 +77,44 @@ export function createNetTransport(state, ui, onIncomingMessage) {
   }
 
   function shouldAutoUseP2p() {
-    const p2p = state.p2pRttMs, wss = state.wssRttMs;
-    if (p2p > 0) {
-      racer.setPathMetrics('p2p', {
-        kind: rtcPathKind,
-        label: rtcPathKind === 'turn_443' ? 'TURN/443' : 'Direct P2P',
-        rttMs: p2p
-      });
-    }
-    if (wss > 0) {
-      racer.setPathMetrics('wss', {
-        kind: 'wss', label: 'WSS Relay', rttMs: wss
-      });
-    }
-    if (wss > 0 && p2p > 0) {
-      const winner = racer.selectActivePath();
-      if (winner) {
-        state._usingP2pAuto = winner.id === 'p2p';
-        return state._usingP2pAuto;
+    if (!hasLiveRttFeed) {
+      const p2p = state.p2pRttMs, wss = state.wssRttMs;
+      if (p2p > 0 && p2p !== lastSyncedP2p) {
+        lastSyncedP2p = p2p;
+        racer.setPathMetrics('p2p', {
+          kind: rtcPathKind, label: p2pLabel(), rttMs: p2p
+        });
       }
-    } else if (state._usingP2pAuto === undefined) {
-      state._usingP2pAuto = true;
+      if (wss > 0 && wss !== lastSyncedWss) {
+        lastSyncedWss = wss;
+        racer.setPathMetrics('wss', {
+          kind: 'wss', label: 'WSS Relay', rttMs: wss
+        });
+      }
     }
+    const chosen = syncWinnerToState();
+    if (chosen !== null) return chosen;
+    if (state._usingP2pAuto === undefined) state._usingP2pAuto = true;
     return state._usingP2pAuto;
   }
 
   async function reportRealIceType(rtc) {
-    if (!rtc?.getStats) return;
     try {
-      const stats = await rtc.getStats();
-      let pair = null;
-      stats.forEach((r) => {
-        if (r.type === 'candidate-pair' &&
-            (r.selected || r.state === 'succeeded')) {
-          if (!pair || r.selected) pair = r;
-        }
-      });
-      if (!pair || state.rtcPeer !== rtc) return;
-      const loc = stats.get(pair.localCandidateId);
-      const proto = String(loc?.protocol || 'udp').toUpperCase();
-      const kind = loc?.candidateType || 'direct';
-      rtcPathKind = classifyIceCandidateType(kind);
-      ui.dbgRtcState.textContent = `OPEN (${proto} ${kind})`;
+      const info = await inspectSelectedIcePair(rtc);
+      if (!info || state.rtcPeer !== rtc) return;
+      rtcPathKind = state.rtcPathKind = info.pathKind;
+      racer.updatePathMeta?.('p2p', { kind: rtcPathKind, label: p2pLabel() });
+      ui.dbgRtcState.textContent = `OPEN (${info.proto} ${info.label})`;
       ui.updateStatusStrip();
     } catch {}
   }
 
-  function setupRtcDataChannel(channel) {
+  function setupRtcDataChannel(channel, rtc) {
     state.rtcChannel = channel;
     try { channel.binaryType = 'arraybuffer'; } catch {}
     ui.dbgRtcState.textContent = 'Connecting...';
     channel.onopen = () => {
+      if (state.rtcChannel !== channel) return;
       ui.dbgRtcState.textContent = 'OPEN (Probing...)';
       ui.logDebug('WebRTC P2P DataChannel OPEN! Probing RTT vs WSS.');
       try {
@@ -115,19 +122,27 @@ export function createNetTransport(state, ui, onIncomingMessage) {
           type: 'peer_ping', t: Date.now()
         }));
       } catch {}
-      setTimeout(() => reportRealIceType(state.rtcPeer), 400);
+      setTimeout(() => reportRealIceType(rtc || state.rtcPeer), 400);
       ui.updateStatusStrip();
     };
     channel.onclose = () => {
+      if (state.rtcChannel !== channel) return;
+      state.rtcChannel = null;
+      state.p2pRttMs = 0;
+      state._usingP2pAuto = false;
+      lastSyncedP2p = null;
+      racer.removePath('p2p');
       ui.dbgRtcState.textContent = 'Closed (WSS Fallback)';
       ui.logDebug('WebRTC DataChannel closed; falling back to WSS Relay.');
       ui.updateStatusStrip();
     };
     channel.onerror = () => {
+      if (state.rtcChannel !== channel) return;
       ui.dbgRtcState.textContent = 'Blocked (Using WSS)';
       ui.updateStatusStrip();
     };
     channel.onmessage = (ev) => {
+      if (state.rtcChannel !== channel) return;
       try {
         const msg = decodeWirePayload(ev.data);
         if (msg) onIncomingMessage(msg, 'p2p');
@@ -137,9 +152,10 @@ export function createNetTransport(state, ui, onIncomingMessage) {
 
   async function flushPendingIce(rtc) {
     const q = rtc?._pendingIce;
-    if (!q?.length || !rtc.remoteDescription) return;
+    if (!q?.length || !rtc.remoteDescription || state.rtcPeer !== rtc) return;
     rtc._pendingIce = [];
     for (const cand of q) {
+      if (state.rtcPeer !== rtc) return;
       try { await rtc.addIceCandidate(new RTCIceCandidate(cand)); } catch {}
     }
   }
@@ -161,24 +177,18 @@ export function createNetTransport(state, ui, onIncomingMessage) {
 
       rtc.onicecandidate = (ev) => {
         if (
-          rtc._sdpSent &&
-          ev.candidate &&
-          ev.candidate.candidate &&
-          state.ws &&
-          state.ws.readyState === 1
+          state.rtcPeer === rtc && rtc._sdpSent &&
+          ev.candidate?.candidate && state.ws?.readyState === 1
         ) {
-          state.ws.send(
-            JSON.stringify({
-              type: 'webrtc_signal',
-              signal: { candidate: ev.candidate }
-            })
-          );
+          state.ws.send(JSON.stringify({
+            type: 'webrtc_signal', signal: { candidate: ev.candidate }
+          }));
         }
       };
 
       rtc.onconnectionstatechange = () => {
-        if (!state.rtcPeer) return;
-        const st = state.rtcPeer.connectionState;
+        if (state.rtcPeer !== rtc) return;
+        const st = rtc.connectionState;
         if (st === 'failed' || st === 'disconnected') {
           ui.dbgRtcState.textContent = `Fallback (${st})`;
           ui.updateStatusStrip();
@@ -187,24 +197,25 @@ export function createNetTransport(state, ui, onIncomingMessage) {
 
       if (isInitiator) {
         const dc = rtc.createDataChannel('nes_netplay', {
-          ordered: false,
-          maxRetransmits: 0
+          ordered: false, maxRetransmits: 0
         });
-        setupRtcDataChannel(dc);
+        setupRtcDataChannel(dc, rtc);
         const offer = await rtc.createOffer();
+        if (state.rtcPeer !== rtc) return;
         await rtc.setLocalDescription(offer);
+        if (state.rtcPeer !== rtc) return;
         await waitForRtcGathering(rtc, 1200);
+        if (state.rtcPeer !== rtc) return;
         rtc._sdpSent = true;
-        if (state.ws && state.ws.readyState === 1 && rtc.localDescription) {
-          state.ws.send(
-            JSON.stringify({
-              type: 'webrtc_signal',
-              signal: { sdp: rtc.localDescription }
-            })
-          );
+        if (state.ws?.readyState === 1 && rtc.localDescription) {
+          state.ws.send(JSON.stringify({
+            type: 'webrtc_signal', signal: { sdp: rtc.localDescription }
+          }));
         }
       } else {
-        rtc.ondatachannel = (ev) => setupRtcDataChannel(ev.channel);
+        rtc.ondatachannel = (ev) => {
+          if (state.rtcPeer === rtc) setupRtcDataChannel(ev.channel, rtc);
+        };
       }
     } catch (e) {
       ui.dbgRtcState.textContent = 'Error (Using WSS)';
@@ -220,19 +231,21 @@ export function createNetTransport(state, ui, onIncomingMessage) {
     try {
       if (signal.sdp) {
         await rtc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+        if (state.rtcPeer !== rtc) return;
         await flushPendingIce(rtc);
+        if (state.rtcPeer !== rtc) return;
         if (signal.sdp.type === 'offer') {
           const answer = await rtc.createAnswer();
+          if (state.rtcPeer !== rtc) return;
           await rtc.setLocalDescription(answer);
+          if (state.rtcPeer !== rtc) return;
           await waitForRtcGathering(rtc, 1200);
+          if (state.rtcPeer !== rtc) return;
           rtc._sdpSent = true;
-          if (state.ws && state.ws.readyState === 1 && rtc.localDescription) {
-            state.ws.send(
-              JSON.stringify({
-                type: 'webrtc_signal',
-                signal: { sdp: rtc.localDescription }
-              })
-            );
+          if (state.ws?.readyState === 1 && rtc.localDescription) {
+            state.ws.send(JSON.stringify({
+              type: 'webrtc_signal', signal: { sdp: rtc.localDescription }
+            }));
           }
         }
       } else if (signal.candidate) {

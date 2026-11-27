@@ -1,6 +1,7 @@
 // Multi-Console Emulator Core Adapter (NES, Sega Mega Drive/SMS, Nintendo 3DS)
 import { crc32Bytes, computeDeterministicHash } from './crc32.mjs';
 import { patchJsnes8x16Sprites } from './jsnes_ppu_patches.mjs';
+import { invalidateMapperBankCaches } from './mapper_bank_cache.mjs';
 import {
   createFastSnapshotSlot, saveFastState, loadFastState,
   applyControllerMask, serializeCompactNesState, restoreCompactNesState
@@ -180,10 +181,7 @@ export class NesCoreAdapter {
   onTimelineReset(initSlot, startFrame) {
     patchJsnes8x16Sprites(this.nes);
     if (this.nes && this.nes.mmap) {
-      this.nes.mmap._bankAt8000 = -1;
-      this.nes.mmap._bankAtC000 = -1;
-      this.nes.mmap._vromAt0000 = -1;
-      this.nes.mmap._vromAt1000 = -1;
+      invalidateMapperBankCaches(this.nes.mmap);
       saveFastState(this.nes, initSlot, startFrame);
     }
   }

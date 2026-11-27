@@ -102,6 +102,7 @@ function attachSocketLifecycle(ws, code, nick) {
   state.ws = ws;
   try { ws.binaryType = 'arraybuffer'; } catch {}
   ws.onopen = () => {
+    hybridConn?.resetReconnectAttempts?.();
     ui.dbgWssState.textContent = ws.isServerlessP2p
       ? 'Connected (P2P)' : 'Connected';
     if (ws.isServerlessP2p && ws.getIceSummary) {
@@ -155,11 +156,11 @@ function attachSocketLifecycle(ws, code, nick) {
 }
 
 function connectToRoom() {
+  hybridConn?.cancelAutoReconnect?.();
   audio.initAudio();
   if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
   if (state.wsAux) { try { state.wsAux.close(); } catch {} state.wsAux = null; }
   transport.closeWebRtc();
-
   const code = (ui.roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
   ui.roomInput.value = code;
   syncBenchLinks();
@@ -175,8 +176,7 @@ hybridConn = setupHybridConnectionUi(state, ui, {
     audio.initAudio();
     if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
     if (state.wsAux) {
-      try { state.wsAux.close(); } catch {}
-      state.wsAux = null;
+      try { state.wsAux.close(); } catch {} state.wsAux = null;
     }
     transport.closeWebRtc();
     ui.dbgWssState.textContent = 'P2P Signaling...';

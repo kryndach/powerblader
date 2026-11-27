@@ -87,5 +87,6 @@ export const PPU_SCALAR_PROPS = [
   '_hasTightWaitLoop',
   '_overclockScanlines',
   '_inOverclock',
-  '_overclockCapped'
+  '_overclockCapped',
+  '_overclockCooldown'
 ];

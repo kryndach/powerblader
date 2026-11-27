@@ -7,6 +7,25 @@ import {
 
 export { attachCacheDirectory, getFolderCacheInfo, clearFolderCacheForTests };
 
+export async function gzipBytes(u8) {
+  if (typeof CompressionStream === 'function') {
+    const cs = new CompressionStream('gzip');
+    const s = new Blob([u8]).stream().pipeThrough(cs);
+    return new Uint8Array(await new Response(s).arrayBuffer());
+  }
+  return new Uint8Array((await import('node:zlib')).gzipSync(u8, { level: 6 }));
+}
+
+export async function gunzipBytes(u8) {
+  if (typeof DecompressionStream === 'function') {
+    const ds = new DecompressionStream('gzip');
+    const s = new Blob([u8]).stream().pipeThrough(ds);
+    return new Uint8Array(await new Response(s).arrayBuffer());
+  }
+  const zlib = await import('node:zlib');
+  return new Uint8Array(zlib.gunzipSync(u8));
+}
+
 const IDB_NAME = 'nes_online_rom_cache_v1';
 const IDB_STORE = 'roms';
 const memCacheFallback = new Map();

@@ -2,12 +2,12 @@
 import { formatTransferProgress } from './transfer_status_ui.mjs';
 import {
   getCachedRomByCrc, putCachedRomByCrc, deleteCachedRomByCrc,
-  clearMemRomCacheForTests
+  clearMemRomCacheForTests, gzipBytes, gunzipBytes
 } from './rom_idb_cache.mjs';
 
 export {
   formatTransferProgress, getCachedRomByCrc, putCachedRomByCrc,
-  deleteCachedRomByCrc, clearMemRomCacheForTests
+  deleteCachedRomByCrc, clearMemRomCacheForTests, gzipBytes, gunzipBytes
 };
 
 export function isLocalHostRuntime() {
@@ -46,24 +46,6 @@ function createByteTracker(totalBytes, onProgress) {
   };
 }
 
-export async function gzipBytes(u8) {
-  if (typeof CompressionStream === 'function') {
-    const cs = new CompressionStream('gzip');
-    const s = new Blob([u8]).stream().pipeThrough(cs);
-    return new Uint8Array(await new Response(s).arrayBuffer());
-  }
-  return new Uint8Array((await import('node:zlib')).gzipSync(u8, { level: 6 }));
-}
-export async function gunzipBytes(u8) {
-  if (typeof DecompressionStream === 'function') {
-    const ds = new DecompressionStream('gzip');
-    const s = new Blob([u8]).stream().pipeThrough(ds);
-    return new Uint8Array(await new Response(s).arrayBuffer());
-  }
-  const zlib = await import('node:zlib');
-  return new Uint8Array(zlib.gunzipSync(u8));
-}
-
 const RETRY_WAIT_MS = [120, 280, 550, 1100, 2200];
 
 async function fetchWithRetry(url, init, retries = 5, doFetch = null) {
@@ -75,8 +57,10 @@ async function fetchWithRetry(url, init, retries = 5, doFetch = null) {
         throw init.signal.reason || new Error('Aborted');
       }
       const res = await fn(url, init);
-      if (res.ok || res.status === 206 || res.status === 404 ||
-          res.status === 416) return res;
+      if (res.ok || res.status === 206 || res.status === 401 ||
+          res.status === 403 || res.status === 404 || res.status === 416) {
+        return res;
+      }
       lastErr = new Error(`HTTP ${res.status}`);
     } catch (e) {
       if (e?.name === 'AbortError' || init?.signal?.aborted) throw e;
@@ -302,7 +286,8 @@ export async function uploadRomToServerCache(state, onProgress = null) {
     return state.roomRomUploadPromise;
   }
   state.roomRomUploadingCrc = crc;
-  state.roomRomUploadPromise = (async () => {
+  let myPromise = null;
+  myPromise = (async () => {
     try {
       let body = state.romUint8;
       const headers = { 'Content-Type': 'application/octet-stream' };
@@ -319,15 +304,30 @@ export async function uploadRomToServerCache(state, onProgress = null) {
         + `&name=${encodeURIComponent(state.romName)}${authQ}`;
       const ok = await uploadStripedRom(
         `${base}/api/room-rom?${q}`, body, headers,
-        { onProgress: (p, info) => state.roomRomOnProgress?.(p, info) }
+        {
+          onProgress: (p, info) => {
+            if (state.roomRomUploadPromise === myPromise) {
+              state.roomRomOnProgress?.(p, info);
+            }
+          }
+        }
       );
-      if (ok) { state.roomRomUploadedCrc = crc; return rm; }
+      if (ok) {
+        if (state.roomRomUploadPromise === myPromise ||
+            state.romCrc32 === crc) state.roomRomUploadedCrc = crc;
+        return rm;
+      }
     } catch {} finally {
-      state.roomRomUploadPromise = null; state.roomRomOnProgress = null;
+      if (state.roomRomUploadPromise === myPromise) {
+        state.roomRomUploadPromise = null;
+        state.roomRomUploadingCrc = null;
+        state.roomRomOnProgress = null;
+      }
     }
     return null;
   })();
-  return state.roomRomUploadPromise;
+  state.roomRomUploadPromise = myPromise;
+  return myPromise;
 }
 
 export async function fetchRomBytesWithProgress(

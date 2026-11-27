@@ -2,8 +2,10 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { promisify } from 'util';
 import zlib from 'zlib';
 import { execFileSync } from 'child_process';
+const gzipAsync = promisify(zlib.gzip);
 import {
   isSupportedRomFile, isArchiveFile, isSupportedRomOrArchiveFile
 } from '../src/core_adapter.mjs';
@@ -275,21 +277,25 @@ export function listLocalRomFiles(localDir) {
 }
 
 const localMemCache = new Map();
-function sendRomBuffer(req, res, romName, romBuffer, gzBuf = null, crc = '') {
-  const isZip = romName.toLowerCase().endsWith('.zip');
-  const gz = gzBuf || (!isZip && romBuffer.length > 16384
-    ? zlib.gzipSync(romBuffer, { level: 1 }) : null);
+async function maybeGzipAsync(romName, romBuffer) {
+  if (romName.toLowerCase().endsWith('.zip') || romBuffer.length <= 16384) {
+    return null;
+  }
+  return gzipAsync(romBuffer, { level: 1 }).catch(() => null);
+}
+async function sendRomBuffer(req, res, romName, romBuffer, gzBuf, crc = '') {
+  const gz = gzBuf || await maybeGzipAsync(romName, romBuffer);
   sendBinaryWithRange(req, res, romBuffer, gz, {
     'X-Rom-Filename': encodeURIComponent(romName),
     'X-Rom-Crc32': crc || computeRomCrc32(romBuffer)
   });
 }
-
 export function handleLocalRomsApi(res, rootDir, sendJson) {
   sendJson(res, 200, { files: listLocalRomFiles(path.join(rootDir, 'local')) });
 }
-
-export function handleLocalRomDownloadApi(req, urlObj, res, rootDir, sendJson) {
+export async function handleLocalRomDownloadApi(
+  req, urlObj, res, rootDir, sendJson
+) {
   const localDir = path.join(rootDir, 'local');
   const files = listLocalRomFiles(localDir);
   const q = urlObj.searchParams.get('file') || urlObj.searchParams.get('name');
@@ -306,41 +312,39 @@ export function handleLocalRomDownloadApi(req, urlObj, res, rootDir, sendJson) {
     let entry = localMemCache.get(romFile);
     if (!entry || entry.mtime !== mtime) {
       const { romName, romBuffer } = extractRomFromFile(romFile);
-      const isZip = romName.toLowerCase().endsWith('.zip');
-      const gz = !isZip && romBuffer.length > 16384
-        ? zlib.gzipSync(romBuffer, { level: 1 }) : null;
+      const gz = await maybeGzipAsync(romName, romBuffer);
       const crc = computeRomCrc32(romBuffer);
       entry = { mtime, romName, romBuffer, gz, crc };
       localMemCache.set(romFile, entry);
     }
-    sendRomBuffer(
-      req, res, entry.romName, entry.romBuffer, entry.gz, entry.crc
-    );
+    const e = entry;
+    await sendRomBuffer(req, res, e.romName, e.romBuffer, e.gz, e.crc);
   } catch (e) {
-    sendJson(res, 400, { ok: false, error: e.message });
+    if (!res.headersSent) sendJson(res, 400, { ok: false, error: e.message });
   }
 }
-
 export function handleExtractRomPostApi(req, urlObj, res, sendJson) {
   const fileName = urlObj.searchParams.get('name') || 'archive.zip';
   const chunks = [];
-  let total = 0;
+  let total = 0, aborted = false;
   req.on('data', (c) => {
-    if ((total += c.length) > 64 * 1024 * 1024) req.destroy();
-    else chunks.push(c);
+    if ((total += c.length) > 64 * 1024 * 1024) {
+      aborted = true; req.destroy();
+    } else chunks.push(c);
   });
-  req.on('end', () => {
+  req.on('end', async () => {
+    if (aborted) return;
     try {
       const { romName, romBuffer } = extractRomFromBuffer(
         Buffer.concat(chunks), fileName
       );
       const crc = computeRomCrc32(romBuffer);
-      const e = cacheRoomRom(
-        urlObj.searchParams.get('room'), crc, romName, romBuffer
-      );
-      sendRomBuffer(req, res, romName, romBuffer, e.gzipBuffer, crc);
+      const gz = await maybeGzipAsync(romName, romBuffer);
+      const rm = urlObj.searchParams.get('room');
+      cacheRoomRom(rm, crc, romName, romBuffer, gz);
+      await sendRomBuffer(req, res, romName, romBuffer, gz, crc);
     } catch (e) {
-      sendJson(res, 400, { ok: false, error: e.message });
+      if (!res.headersSent) sendJson(res, 400, { ok: false, error: e.message });
     }
   });
 }

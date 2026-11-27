@@ -22,6 +22,14 @@ export function hashSessionId32(sessionId) {
   return h;
 }
 
+export function matchesBinarySessionId(pktSid, expectedSid) {
+  if (!pktSid || !expectedSid || pktSid === expectedSid) return true;
+  if (typeof pktSid === 'string' && pktSid.startsWith('bin_')) {
+    return pktSid === `bin_${hashSessionId32(expectedSid).toString(16)}`;
+  }
+  return false;
+}
+
 function toUint8View(raw) {
   if (!raw) return null;
   if (raw instanceof Uint8Array) return raw;
@@ -68,9 +76,19 @@ export function encodeNetplayPacketBinary(pkt) {
     i += run;
     if (pairs.length >= 510) break;
   }
-  if (pkt.tailCount > 0 && pairs.length >= 2) {
-    const lastIdx = pairs.length - 1;
-    pairs[lastIdx] = Math.min(255, pairs[lastIdx] + pkt.tailCount);
+  const extraTail = pkt.tailCount > inputs.length
+    ? Math.floor(pkt.tailCount) - inputs.length : 0;
+  if (extraTail > 0 && pairs.length >= 2) {
+    const lastVal = pairs[pairs.length - 2];
+    let rem = extraTail;
+    const add = Math.min(255 - pairs[pairs.length - 1], rem);
+    pairs[pairs.length - 1] += add;
+    rem -= add;
+    while (rem > 0 && pairs.length < 510) {
+      const chunk = Math.min(255, rem);
+      pairs.push(lastVal, chunk);
+      rem -= chunk;
+    }
   }
   const hasHash =
     typeof pkt.hashFrame === 'number' && typeof pkt.hash === 'number';
@@ -85,9 +103,9 @@ export function encodeNetplayPacketBinary(pkt) {
   const sf = Math.max(0, Math.floor(pkt.startFrame || 0)) >>> 0;
   dv.setUint32(6, sf, true);
   const ackDelta = typeof pkt.ack === 'number' && Number.isFinite(pkt.ack)
-    ? Math.max(0, Math.min(65534, sf - Math.floor(pkt.ack)))
-    : 0xffff;
-  dv.setUint16(10, ackDelta, true);
+    ? Math.max(-32767, Math.min(32767, sf - Math.floor(pkt.ack)))
+    : -32768;
+  dv.setInt16(10, ackDelta, true);
   const lead = typeof pkt.peerLead === 'number' && Number.isFinite(pkt.peerLead)
     ? Math.max(-127, Math.min(127, Math.round(pkt.peerLead)))
     : -128;
@@ -132,7 +150,7 @@ export function decodeNetplayPacketBinary(raw, expectedSessionId = null) {
   const wide = Boolean(flags & FLAG_WIDE_MASK);
   const sidHash = dv.getUint32(2, true);
   const startFrame = dv.getUint32(6, true);
-  const ackDelta = dv.getUint16(10, true);
+  const ackDelta = dv.getInt16(10, true);
   const lead = dv.getInt8(12);
   const rxClump = Number((u8[13] / 16).toFixed(2));
   const inputDelay = u8[14];
@@ -155,7 +173,7 @@ export function decodeNetplayPacketBinary(raw, expectedSessionId = null) {
   const msg = {
     type: 'netplay_input', sessionId, startFrame, inputs, rxClump, inputDelay
   };
-  if (ackDelta !== 0xffff) msg.ack = Math.max(-1, startFrame - ackDelta);
+  if (ackDelta !== -32768) msg.ack = Math.max(-1, startFrame - ackDelta);
   if (lead !== -128) msg.peerLead = lead;
   if (hasHash) {
     msg.hashFrame = dv.getUint32(off, true);
@@ -174,14 +192,15 @@ export function extractBinaryInputDedupKey(raw) {
   const sidHash = dv.getUint32(2, true);
   const startFrame = dv.getUint32(6, true);
   const pairCnt = u8[15];
+  const hashOff = 16 + pairCnt * (wide ? 3 : 2);
+  const need = hashOff + (hasHash ? 8 : 0);
+  if (u8.byteLength < need) return null;
   const firstMask = pairCnt > 0
     ? (wide ? dv.getUint16(16, true) : u8[16]) : 0;
-  const hashOff = 16 + pairCnt * (wide ? 3 : 2);
-  const hf = hasHash && u8.byteLength >= hashOff + 8
-    ? dv.getUint32(hashOff, true) : '';
+  const hf = hasHash ? dv.getUint32(hashOff, true) : '';
   return {
     dedupKey: `b:${sidHash}:${startFrame}:${firstMask}:${hf}`,
-    startFrame, hasHash
+    sidHash, startFrame, hasHash
   };
 }
 

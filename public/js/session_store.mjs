@@ -56,6 +56,10 @@ export function resetPingWindow(state) {
   state.rttMs = 0;
   state.jitterMs = 0;
   state._lastWireRttAt = 0;
+  state.p2pRttMs = 0;
+  state.wssRttMs = 0;
+  state._usingP2pAuto = undefined;
+  state.multipathRacer?.reset?.();
 }
 
 export function clearActiveRomTransfers(state, ui) {

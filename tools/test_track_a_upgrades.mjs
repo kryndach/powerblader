@@ -91,8 +91,9 @@ async function testA2HonestP2pPingSmartAutoAndIce() {
   };
   const tel = createTelemetryReporter(state, ui, {});
   const proto = createProtocolHandlers(
-    state, ui, { routeNetplayInput: () => true }, {}, tel,
-    { sendFastNetplayPacket: () => {}, handleWebRtcSignal: () => {} }
+    state, ui, {},
+    { sendFastNetplayPacket: () => {}, handleWebRtcSignal: () => {} },
+    tel
   );
   proto.handleIncomingNetMessage({ type: 'peer_ping', t: 12345 }, 'p2p');
   assert.strictEqual(rtcOut.length, 1, 'P2P peer_ping must reply on P2P');

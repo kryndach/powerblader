@@ -1,5 +1,6 @@
 // Netplay Packet Serialization, Callback Wrapping & Timeline Helpers
 import { formatHex32 } from './crc32.mjs';
+import { matchesBinarySessionId } from './binary_net_codec.mjs';
 
 export function resetEngineTimeline(
   engine,
@@ -147,11 +148,7 @@ export function processRemoteInputPacket(
   ) {
     return;
   }
-  if (
-    packet.sessionId &&
-    engine.sessionId &&
-    packet.sessionId !== engine.sessionId
-  ) {
+  if (!matchesBinarySessionId(packet.sessionId, engine.sessionId)) {
     return;
   }
   const remotePlayer = engine.localPlayer === 1 ? 2 : 1;

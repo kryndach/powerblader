@@ -21,14 +21,14 @@ export function applyPublicApiCors(req, res, pathname) {
     return false;
   }
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
   res.setHeader(
     'Access-Control-Allow-Headers',
     'Content-Type, Range, X-Accept-Raw-Gz, X-Rom-Encoding, X-Room-Auth'
   );
   res.setHeader(
     'Access-Control-Expose-Headers',
-    'Content-Range, Content-Length, Accept-Ranges, ' +
+    'Content-Range, Content-Length, Accept-Ranges, X-Raw-Length, ' +
       'X-Rom-Filename, X-Rom-Crc32, X-Payload-Encoding'
   );
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return true; }
@@ -37,6 +37,38 @@ export function applyPublicApiCors(req, res, pathname) {
 
 const roomRomCache = new Map();
 const pendingMultipart = new Map();
+const MAX_ROOM_ROM_BYTES = 64 * 1024 * 1024;
+const MAX_MULTIPART_PARTS = 2048;
+const MAX_PENDING_MULTIPART = 8;
+const MAX_PENDING_BYTES = 128 * 1024 * 1024;
+const MULTIPART_TTL_MS = 300000;
+
+function sweepPendingMultipart(now, reserveBytes = 0) {
+  let totalBytes = 0;
+  for (const [k, st] of pendingMultipart.entries()) {
+    if (now - st.ts > MULTIPART_TTL_MS) pendingMultipart.delete(k);
+    else totalBytes += st.buf.length;
+  }
+  while (
+    pendingMultipart.size > 0 &&
+    (pendingMultipart.size >= MAX_PENDING_MULTIPART ||
+      totalBytes + reserveBytes > MAX_PENDING_BYTES)
+  ) {
+    const oldestKey = pendingMultipart.keys().next().value;
+    totalBytes -= pendingMultipart.get(oldestKey).buf.length;
+    pendingMultipart.delete(oldestKey);
+  }
+}
+
+function hasExactCoverage(partsMap, fullSize) {
+  const ivs = Array.from(partsMap.values()).sort((a, b) => a.offset - b.offset);
+  let pos = 0;
+  for (const iv of ivs) {
+    if (iv.offset !== pos) return false;
+    pos += iv.len;
+  }
+  return pos === fullSize;
+}
 
 const cleanCrc = (raw) =>
   String(raw || '').replace(/[^a-zA-Z0-9_-]/g, '').toUpperCase().slice(0, 16);
@@ -152,49 +184,83 @@ export function handleRoomRomApi(req, urlObj, res, sendJson) {
     const isGzipBody =
       req.headers['x-rom-encoding'] === 'gzip' ||
       /\bgzip\b/i.test(req.headers['content-encoding'] || '');
-    const partIdx = Number(urlObj.searchParams.get('part'));
+    const partParam = urlObj.searchParams.get('part');
+    const partIdx = partParam !== null ? Number(partParam) : NaN;
     const totalParts = Number(urlObj.searchParams.get('total') || '1');
     const offset = Number(urlObj.searchParams.get('offset') || '0');
     const fullSize = Number(urlObj.searchParams.get('size') || '0');
+    const isMultipart = partParam !== null || totalParts > 1;
 
     const chunks = [];
-    let total = 0;
+    let total = 0, aborted = false;
     req.on('data', (chunk) => {
       total += chunk.length;
-      if (total > 64 * 1024 * 1024) return req.destroy();
+      if (total > MAX_ROOM_ROM_BYTES) { aborted = true; return req.destroy(); }
       chunks.push(chunk);
     });
     req.on('end', async () => {
+      if (aborted) return;
       try {
         const rawBody = Buffer.concat(chunks);
         if (!rawBody.length) {
           return sendJson(res, 400, { ok: false, error: 'Empty ROM payload' });
         }
-        if (totalParts > 1 && fullSize > 0 && Number.isInteger(partIdx)) {
-          const key = `${roomCode}:${crc || romName}:${fullSize}`;
+        if (isMultipart) {
+          const validParams =
+            Number.isInteger(totalParts) && totalParts >= 2 &&
+            totalParts <= MAX_MULTIPART_PARTS &&
+            Number.isInteger(partIdx) && partIdx >= 0 &&
+            partIdx < totalParts &&
+            Number.isInteger(fullSize) && fullSize > 0 &&
+            fullSize <= MAX_ROOM_ROM_BYTES &&
+            Number.isInteger(offset) && offset >= 0 &&
+            offset + rawBody.length <= fullSize;
+          if (!validParams) {
+            return sendJson(
+              res, 400, { ok: false, error: 'Invalid multipart ROM parameters' }
+            );
+          }
+          const now = Date.now();
+          const key = `${roomCode}:${crc || romName}:${fullSize}:${totalParts}`;
           let st = pendingMultipart.get(key);
-          if (!st || Date.now() - st.ts > 300000) {
+          if (!st || now - st.ts > MULTIPART_TTL_MS) {
+            if (st) pendingMultipart.delete(key);
+            sweepPendingMultipart(now, fullSize);
             st = {
-              buf: Buffer.allocUnsafe(fullSize),
-              seen: new Set(),
-              ts: Date.now()
+              buf: Buffer.alloc(fullSize), parts: new Map(),
+              bytesWritten: 0, ts: now
             };
             pendingMultipart.set(key, st);
           }
-          st.ts = Date.now();
-          if (offset + rawBody.length <= fullSize) {
-            rawBody.copy(st.buf, offset);
-            st.seen.add(partIdx);
+          st.ts = now;
+          const prev = st.parts.get(partIdx);
+          if (prev) {
+            if (prev.offset !== offset || prev.len !== rawBody.length) {
+              return sendJson(
+                res, 400, { ok: false, error: 'Conflicting multipart chunk' }
+              );
+            }
+          } else {
+            st.parts.set(partIdx, { offset, len: rawBody.length });
+            st.bytesWritten += rawBody.length;
           }
-          if (st.seen.size < totalParts) {
+          rawBody.copy(st.buf, offset);
+          if (st.parts.size < totalParts) {
             return sendJson(res, 200, {
-              ok: true, complete: false, received: st.seen.size, totalParts
+              ok: true, complete: false, received: st.parts.size, totalParts
             }, true);
           }
           pendingMultipart.delete(key);
+          if (st.bytesWritten !== fullSize ||
+              !hasExactCoverage(st.parts, fullSize)) {
+            return sendJson(
+              res, 400, { ok: false, error: 'Incomplete multipart ROM payload' }
+            );
+          }
           const romBuf = isGzipBody ? await gunzipAsync(st.buf) : st.buf;
-          const gzPart = isGzipBody ? st.buf : null;
-          cacheRoomRom(roomCode, crc, romName, romBuf, gzPart);
+          cacheRoomRom(
+            roomCode, crc, romName, romBuf, isGzipBody ? st.buf : null
+          );
           return sendJson(res, 200, {
             ok: true, complete: true, roomCode, crc, romName,
             size: romBuf.length

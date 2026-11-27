@@ -1,6 +1,7 @@
 // Room Session Manager, Dual-WebSocket Striping & Message Relay
 import {
-  createWireRttProber, relayRawNetplayInput, relayBinaryNetplayInput
+  createWireRttProber, relayRawNetplayInput, relayBinaryFrame,
+  recordRoomSessionId
 } from './wire_rtt_prober.mjs';
 import {
   handleAutotestReportWs, handleGameplayTelemetryWs
@@ -191,6 +192,12 @@ export function createRoomManager(trackers, options = {}) {
       msg.type.startsWith('telemetry_');
 
     if (shouldForward) {
+      if (msg.sessionId) {
+        recordRoomSessionId(rooms, peer.roomCode, msg.sessionId);
+      }
+      if (msg.syncState?.sessionId) {
+        recordRoomSessionId(rooms, peer.roomCode, msg.syncState.sessionId);
+      }
       if (msg.type === 'netplay_input' && typeof msg.startFrame === 'number') {
         return relayRawNetplayInput(rooms, peer, msg, rawStr, seenInputKey);
       }
@@ -230,18 +237,7 @@ export function createRoomManager(trackers, options = {}) {
         if (isBinary && ws.peerSession) {
           const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
           ws.peerSession.lastSeenAt = Date.now();
-          if (relayBinaryNetplayInput(
-            rooms, ws.peerSession, buf, seenInputKey
-          )) return;
-          const rm = rooms.get(ws.peerSession.roomCode);
-          if (rm) {
-            for (const dst of rm.values()) {
-              if (dst.clientId !== ws.peerSession.clientId &&
-                  dst.ws?.readyState === 1) {
-                try { dst.ws.send(buf); } catch {}
-              }
-            }
-          }
+          relayBinaryFrame(rooms, ws.peerSession, buf, seenInputKey);
           return;
         }
         const rawStr = data.toString();

@@ -12,7 +12,7 @@ export function stepPacingAccumulator(
     const scale = Math.max(-0.025, Math.min(0.025, rift * 0.007));
     effectiveFrameMs = FRAME_DURATION_MS * (1 + scale);
   }
-  const nextAcc = fromRaf && dt >= 14.2 && dt <= 19.2 && Math.abs(rift) <= 0.25
+  const nextAcc = fromRaf && dt >= 15.6 && dt <= 17.8 && Math.abs(rift) <= 0.25
     ? effectiveFrameMs
     : Math.min(accumulatorMs + dt, effectiveFrameMs * 2);
   return { accumulatorMs: nextAcc, effectiveFrameMs };

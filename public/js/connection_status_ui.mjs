@@ -11,9 +11,10 @@ function esc(s) {
 
 export function getActiveTransportLabel(state, ui) {
   if (state.ws?.isServerlessP2p) return 'P2P Direct';
-  const rtcOpen = state.rtcChannel?.readyState === 'open' &&
-    ui?.transportModeSelect?.value !== 'wss';
-  if (rtcOpen) return 'WebRTC P2P';
+  const mode = ui?.transportModeSelect?.value || 'auto';
+  const rtcActive = state.rtcChannel?.readyState === 'open' &&
+    (mode === 'p2p' || (mode === 'auto' && state._usingP2pAuto !== false));
+  if (rtcActive) return 'WebRTC P2P';
   if (state.usedNostrDiscovery || state.isExternalServer) return 'Pinggy WSS';
   return 'WSS Relay';
 }

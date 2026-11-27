@@ -5,10 +5,11 @@ import { buildApiUrl } from './server_endpoint.mjs';
 export function createTelemetryReporter(state, ui, romSync) {
   function buildGameplayTelemetryPayload() {
     const t = state.engine ? state.engine.getTelemetry() : {};
+    const mode = ui.transportModeSelect?.value || 'auto';
     const usingP2P = Boolean(
       state.ws?.isServerlessP2p ||
       (state.rtcChannel && state.rtcChannel.readyState === 'open' &&
-        ui.transportModeSelect.value !== 'wss')
+        (mode === 'p2p' || (mode === 'auto' && state._usingP2pAuto !== false)))
     );
     const matchState =
       !state.ws || state.ws.readyState !== 1
@@ -109,9 +110,11 @@ export function createTelemetryReporter(state, ui, romSync) {
     const nowPerf = performance.now();
     if (isP2pMsg) {
       state.p2pRttMs = sampleRtt;
+      state.recordPathRtt?.('p2p', sampleRtt);
     } else {
       state.wssRttMs = sampleRtt;
       if (msg.type === 'wire_rtt') state._lastWireRttAt = nowPerf;
+      state.recordPathRtt?.('wss', sampleRtt);
     }
     const p2pActive = Boolean(
       state.ws?.isServerlessP2p ||

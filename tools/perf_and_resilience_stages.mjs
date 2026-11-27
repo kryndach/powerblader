@@ -334,7 +334,7 @@ export function benchmarkAndVerifyZeroGc(
   const rb10Ms = loadMs + 9 * headMs + 2 * saveMs + visMs;
   const nesBytes = isNes
     ? (slot.cpuMem?.byteLength || 0) + (slot.vramMem?.byteLength || 0) +
-      (slot.spriteMem?.byteLength || 0) + (slot.ppuScalars?.byteLength || 0)
+      (slot.spriteMem?.byteLength || 0) + ((slot.ppuScalars?.length || 0) * 8)
     : 0;
   const stateKb = (isNes
     ? nesBytes : (slot.usedLen || slot.stateBytes?.length || 0)) / 1024;

@@ -84,6 +84,13 @@ export function createMultiPathRacer(options = {}) {
     rec.updatedAt = nowFn();
   }
 
+  function updatePathMeta(id, meta = {}) {
+    const rec = paths.get(id);
+    if (!rec) return;
+    if (meta.kind) rec.kind = meta.kind;
+    if (meta.label) rec.label = meta.label;
+  }
+
   function removePath(id) {
     paths.delete(id);
     if (activeId === id) activeId = null;
@@ -146,7 +153,7 @@ export function createMultiPathRacer(options = {}) {
   }
 
   return {
-    recordSample, setPathMetrics, removePath,
+    recordSample, setPathMetrics, updatePathMeta, removePath,
     selectActivePath, getScoreboard, reset
   };
 }

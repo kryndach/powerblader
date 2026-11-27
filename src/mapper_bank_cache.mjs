@@ -149,6 +149,18 @@ export function patchFastMapperBankSwitching(mmap) {
     for (let i = 0; i < 128; i++) ptTile[baseIndex + i] = vromTile[tileOff + i];
   };
 
+  if (typeof mmap.load1kChrRamBank === 'function') {
+    const origChrRam = mmap.load1kChrRamBank.bind(mmap);
+    mmap.load1kChrRamBank = function (bank, address) {
+      const slot = address >> 10;
+      if (slot >= 0 && slot < 8) this._vrom1k[slot] = -1;
+      else this._vrom1k.fill(-1);
+      this._vromAt0000 = -1;
+      this._vromAt1000 = -1;
+      return origChrRam(bank, address);
+    };
+  }
+
   if (typeof mmap.executeCommand === 'function') {
     mmap._mmc3Regs = [0, 2, 4, 5, 6, 7, 0, 1];
     const origExec = mmap.executeCommand.bind(mmap);
@@ -181,6 +193,9 @@ export function patchFastMapperBankSwitching(mmap) {
         }
         if (chrDiff && this.nes.rom && this.nes.rom.vromCount > 0) {
           for (let c = 0; c < 6; c++) origExec(c, this._mmc3Regs[c]);
+        }
+        if (chrDiff && typeof this.updateNametableMirroring === 'function') {
+          this.updateNametableMirroring();
         }
         return;
       }

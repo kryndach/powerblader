@@ -125,8 +125,7 @@ export function setupHybridConnectionUi(state, ui, hooks) {
     const { room, pass } = await refreshRoomAuth();
     try {
       await fetch('./api/rendezvous-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ room, password: pass })
       });
     } catch {}
@@ -143,35 +142,30 @@ export function setupHybridConnectionUi(state, ui, hooks) {
     if (document.getElementById('hostP2pBtn') || !ui.connectBtn) return;
     if (!isStaticOrigin && qp.get('p2p') !== '1') return;
     const btn = document.createElement('button');
-    btn.id = 'hostP2pBtn';
-    btn.textContent = 'Host P2P';
+    btn.id = 'hostP2pBtn'; btn.textContent = 'Host P2P';
     btn.title = 'Host serverless browser-to-browser P2P room (no .bat needed)';
     btn.addEventListener('click', () => startServerlessHost());
     ui.connectBtn.insertAdjacentElement('afterend', btn);
   }
   if (isStaticOrigin) maybeAddHostP2pButton();
 
+  const finishBackendCheck = (isStatic) => {
+    isStaticOrigin = state.isStaticOrigin = isStatic;
+    maybeAddHostP2pButton();
+    return isStatic;
+  };
   const backendCheckPromise = (
     !state.apiBaseUrl && !forceStatic && typeof fetch === 'function'
   )
     ? fetch('./api/health', { cache: 'no-store' })
         .then((r) => (r.ok ? r.json() : null))
-        .then((d) => {
-          isStaticOrigin = !Boolean(d?.ok);
-          state.isStaticOrigin = isStaticOrigin;
-          maybeAddHostP2pButton();
-          return isStaticOrigin;
-        })
-        .catch(() => {
-          isStaticOrigin = true;
-          state.isStaticOrigin = true;
-          maybeAddHostP2pButton();
-          return true;
-        })
+        .then((d) => finishBackendCheck(!Boolean(d?.ok)))
+        .catch(() => finishBackendCheck(true))
     : Promise.resolve(isStaticOrigin);
 
   async function startServerlessHost() {
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    cancelAutoReconnect();
+    reconnectAttempts = 0;
     const myGen = ++connectGen;
     const { room, pass } = await refreshRoomAuth();
     if (myGen !== connectGen) return;
@@ -220,8 +214,9 @@ export function setupHybridConnectionUi(state, ui, hooks) {
     hooks.attachCustomSocket(p2pSock, room, nick);
   }
 
-  async function smartConnect() {
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  async function smartConnect({ isAutoReconnect = false } = {}) {
+    cancelAutoReconnect();
+    if (!isAutoReconnect) reconnectAttempts = 0;
     const myGen = ++connectGen;
     await backendCheckPromise;
     if (myGen !== connectGen) return;
@@ -317,6 +312,10 @@ export function setupHybridConnectionUi(state, ui, hooks) {
   }
 
   let reconnectAttempts = 0;
+  function cancelAutoReconnect() {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  }
+  function resetReconnectAttempts() { reconnectAttempts = 0; }
   function schedulePinggyAutoReconnect() {
     if (!state.usedNostrDiscovery || reconnectTimer) return;
     if (reconnectAttempts >= 6) {
@@ -334,7 +333,7 @@ export function setupHybridConnectionUi(state, ui, hooks) {
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       state.apiBaseUrl = state.wsBaseUrl = '';
-      smartConnect();
+      smartConnect({ isAutoReconnect: true });
     }, delayMs);
   }
   Promise.all([backendCheckPromise, refreshRoomAuth()]).then(([, { pass }]) => {
@@ -342,8 +341,8 @@ export function setupHybridConnectionUi(state, ui, hooks) {
         !state.isExternalServer) syncHostPasswordToServer();
   });
   return {
-    smartConnect, startServerlessHost, refreshRoomAuth,
-    schedulePinggyAutoReconnect, whenReady: () => backendCheckPromise,
-    getPasswordInput: () => passInput
+    smartConnect, startServerlessHost, refreshRoomAuth, cancelAutoReconnect,
+    resetReconnectAttempts, schedulePinggyAutoReconnect,
+    whenReady: () => backendCheckPromise, getPasswordInput: () => passInput
   };
 }

@@ -219,9 +219,13 @@ async function pollHttpTunnel(isInitialJoin = false) {
   const t0 = performance.now();
 
   try {
-    const res = await fetch(buildApiUrl(endpoints, '/api/http-tunnel'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const authQ = roomAuth ? `?auth=${encodeURIComponent(roomAuth)}` : '';
+    const hdrs = roomAuth
+      ? { 'Content-Type': 'application/json', 'X-Room-Auth': roomAuth }
+      : { 'Content-Type': 'application/json' };
+    const url = buildApiUrl(endpoints, `/api/http-tunnel${authQ}`);
+    const res = await fetch(url, {
+      method: 'POST', headers: hdrs,
       body: JSON.stringify({
         roomCode: code, clientId, nick, join: isInitialJoin,
         ackSeq: highestSeqSeen, messages: batch
@@ -247,15 +251,10 @@ async function pollHttpTunnel(isInitialJoin = false) {
         }
       }
       for (const m of data.messages || []) handleIncomingMessage(m, 'http');
-    } else {
-      els.httpStateVal.textContent = `ERR (${res.status})`;
-    }
+    } else els.httpStateVal.textContent = `ERR (${res.status})`;
   } catch {
-    httpTunnelActive = false;
-    els.httpStateVal.textContent = 'ERR';
-  } finally {
-    httpPollingBusy = false;
-  }
+    httpTunnelActive = false; els.httpStateVal.textContent = 'ERR';
+  } finally { httpPollingBusy = false; }
 }
 
 async function connectRoom() {

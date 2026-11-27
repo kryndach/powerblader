@@ -1,6 +1,8 @@
 // RFC 6455 C++ WebSocket Ping Wire-RTT Prober & Raw Netplay Input Fast-Path
 import {
-  extractBinaryInputDedupKey, decodeNetplayPacketBinary
+  BIN_MAGIC_INPUT, extractBinaryInputDedupKey, decodeNetplayPacketBinary,
+  isBinaryNetplayPacket, isBinaryRomChunk, decodeBinaryRomChunk,
+  hashSessionId32
 } from '../src/binary_net_codec.mjs';
 
 export function createWireRttProber(rooms, intervalMs = 1500) {
@@ -86,9 +88,45 @@ export function relayRawNetplayInput(rooms, peer, msg, rawStr, seenInputKey) {
   }
 }
 
+export function recordRoomSessionId(rooms, roomCode, sid) {
+  if (!sid || typeof sid !== 'string') return;
+  const roomMap = rooms.get(roomCode);
+  if (!roomMap) return;
+  let map = roomMap._sidByHash;
+  if (!map) map = roomMap._sidByHash = new Map();
+  map.set(hashSessionId32(sid), sid);
+  if (map.size > 32) map.delete(map.keys().next().value);
+}
+
+function pushHttpOutbox(dst, msg) {
+  dst.httpOutbox.push({ ...msg, _seq: dst.nextSeq++ });
+  if (dst.httpOutbox.length > 400) dst.httpOutbox.shift();
+}
+
+function decodeNonInputBinaryForHttp(rawBuf, sidMap) {
+  if (isBinaryNetplayPacket(rawBuf)) {
+    return decodeNetplayPacketBinary(rawBuf);
+  }
+  if (isBinaryRomChunk(rawBuf)) {
+    const sidHash = rawBuf.readUInt32LE(1);
+    const expectedSid = sidMap?.get(sidHash) || null;
+    const dec = decodeBinaryRomChunk(rawBuf, expectedSid);
+    if (!dec) return null;
+    const dataB64 = Buffer.from(
+      dec.data.buffer, dec.data.byteOffset, dec.data.byteLength
+    ).toString('base64');
+    return {
+      type: dec.type, sessionId: dec.sessionId, index: dec.index, dataB64
+    };
+  }
+  return null;
+}
+
 export function relayBinaryNetplayInput(rooms, peer, rawBuf, seenInputKey) {
   const meta = extractBinaryInputDedupKey(rawBuf);
-  if (!meta) return false;
+  if (!meta) {
+    return Boolean(rawBuf?.length > 0 && rawBuf[0] === BIN_MAGIC_INPUT);
+  }
   if (seenInputKey(peer, meta.dedupKey)) return true;
   const roomMap = rooms.get(peer.roomCode);
   if (!roomMap) return true;
@@ -103,12 +141,31 @@ export function relayBinaryNetplayInput(rooms, peer, rawBuf, seenInputKey) {
       try { s.send(rawBuf); dst.lastTxAt = Date.now(); sent = true; } catch {}
     }
     if (!sent) {
-      const dec = decodeNetplayPacketBinary(rawBuf);
-      if (dec) {
-        dst.httpOutbox.push({ ...dec, _seq: dst.nextSeq++ });
-        if (dst.httpOutbox.length > 400) dst.httpOutbox.shift();
-      }
+      const expectedSid = roomMap._sidByHash?.get(meta.sidHash) || null;
+      const dec = decodeNetplayPacketBinary(rawBuf, expectedSid);
+      if (dec) pushHttpOutbox(dst, dec);
     }
   }
   return true;
+}
+
+export function relayBinaryFrame(rooms, peer, rawBuf, seenInputKey) {
+  try {
+    if (!rawBuf || rawBuf.length === 0) return;
+    if (relayBinaryNetplayInput(rooms, peer, rawBuf, seenInputKey)) return;
+    const roomMap = rooms.get(peer.roomCode);
+    if (!roomMap) return;
+    let httpDecoded = undefined;
+    for (const dst of roomMap.values()) {
+      if (dst.clientId === peer.clientId) continue;
+      if (dst.ws?.readyState === 1) {
+        try { dst.ws.send(rawBuf); dst.lastTxAt = Date.now(); continue; }
+        catch {}
+      }
+      if (httpDecoded === undefined) {
+        httpDecoded = decodeNonInputBinaryForHttp(rawBuf, roomMap._sidByHash);
+      }
+      if (httpDecoded) pushHttpOutbox(dst, httpDecoded);
+    }
+  } catch {}
 }
