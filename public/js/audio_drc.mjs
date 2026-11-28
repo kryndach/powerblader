@@ -1,7 +1,8 @@
 // Real-Time AudioWorklet (Zero-COOP) + ScriptProcessor Fallback Audio DRC
 import { createDrcAudioCore } from './audio_worklet_processor.mjs';
 
-const WORKLET_CHUNK_LEN = 256;
+const WORKLET_AUTO_FLUSH_LEN = 256;
+const WORKLET_BUF_CAP = 1024;
 const SCRIPT_BLOCK_SIZE = 1024;
 const MAX_POOL_PAIRS = 8;
 
@@ -18,10 +19,11 @@ export function createAudioDrcEngine(
   let audioVolume = 0.80;
   let totalPushed = 0;
   let workletStats = null;
+  let inFrame = false;
 
   const chunkPool = [];
-  let stageL = new Float32Array(WORKLET_CHUNK_LEN);
-  let stageR = new Float32Array(WORKLET_CHUNK_LEN);
+  let stageL = new Float32Array(WORKLET_BUF_CAP);
+  let stageR = new Float32Array(WORKLET_BUF_CAP);
   let stagePos = 0;
   const bootQueue = [];
 
@@ -38,10 +40,12 @@ export function createAudioDrcEngine(
   } catch {}
 
   function takeChunkPair() {
-    const recycled = chunkPool.pop();
-    if (recycled) return recycled;
+    while (chunkPool.length > 0) {
+      const recycled = chunkPool.pop();
+      if (recycled && recycled[0].length >= WORKLET_BUF_CAP) return recycled;
+    }
     return [
-      new Float32Array(WORKLET_CHUNK_LEN), new Float32Array(WORKLET_CHUNK_LEN)
+      new Float32Array(WORKLET_BUF_CAP), new Float32Array(WORKLET_BUF_CAP)
     ];
   }
 
@@ -166,6 +170,17 @@ export function createAudioDrcEngine(
     return resumeP;
   }
 
+  function beginFrame() {
+    inFrame = true;
+  }
+
+  function endFrame() {
+    inFrame = false;
+    if ((mode === 'worklet' || workletBooting) && stagePos > 0) {
+      flushStageToWorklet(stagePos);
+    }
+  }
+
   function pushSample(l, r) {
     totalPushed++;
     if (mode === 'script' && scriptCore) {
@@ -175,7 +190,8 @@ export function createAudioDrcEngine(
     if (mode === 'worklet' || workletBooting) {
       stageL[stagePos] = l;
       stageR[stagePos] = r;
-      if (++stagePos >= WORKLET_CHUNK_LEN) flushStageToWorklet(stagePos);
+      const limit = inFrame ? WORKLET_BUF_CAP : WORKLET_AUTO_FLUSH_LEN;
+      if (++stagePos >= limit) flushStageToWorklet(stagePos);
       return;
     }
     if (!scriptCore) {
@@ -209,9 +225,10 @@ export function createAudioDrcEngine(
     const isWl = mode === 'worklet' || workletBooting;
     return {
       underruns: 0, overflows: 0, samplesPushed: totalPushed, samplesOut: 0,
-      minStepRate: 1, maxStepRate: 1, energySum: 0, maxJump: 0, rms: 0,
-      queued: stagePos, sampleRate: audioCtx ? audioCtx.sampleRate : 0,
-      buffering: true, mode, targetMs: isWl ? 24 : 54
+      minStepRate: 1, maxStepRate: 1, maxStepJump: 0, energySum: 0,
+      maxJump: 0, rms: 0, queued: stagePos,
+      sampleRate: audioCtx ? audioCtx.sampleRate : 0,
+      buffering: true, mode, targetMs: isWl ? 60 : 67
     };
   }
 
@@ -267,5 +284,5 @@ export function createAudioDrcEngine(
     window.addEventListener('pointerdown', onUserGesture);
   }
 
-  return { initAudio, pushSample, resetBuffer, getStats };
+  return { initAudio, pushSample, beginFrame, endFrame, resetBuffer, getStats };
 }

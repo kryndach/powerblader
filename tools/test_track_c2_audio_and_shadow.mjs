@@ -26,8 +26,8 @@ async function testC2aAudioWorkletAndDynamicRate() {
   for (const outRate of [48000, 44100]) {
     const drc = createDrcAudioCore({ outSampleRate: outRate, mode: 'worklet' });
     assert.ok(
-      drc.targetMs >= 16 && drc.targetMs <= 30,
-      `Worklet targetMs=${drc.targetMs} must be in 16..30ms low-latency band`
+      drc.targetMs >= 48 && drc.targetMs <= 64,
+      `Worklet targetMs=${drc.targetMs} must be in 48..64ms jitter-safe band`
     );
     const outL = new Float32Array(128);
     const outR = new Float32Array(128);
@@ -61,10 +61,11 @@ async function testC2aAudioWorkletAndDynamicRate() {
     assert.ok(st.rms > 0.2, `Rate ${outRate}Hz RMS too low: ${st.rms}`);
     const expectedBase = 48000 / outRate;
     assert.ok(
-      st.minStepRate >= expectedBase * 0.90 &&
-      st.maxStepRate <= expectedBase * 1.10,
+      st.minStepRate >= expectedBase * 0.98 &&
+      st.maxStepRate <= expectedBase * 1.02 &&
+      (st.maxStepJump || 0) <= 0.005,
       `Rate ${outRate}Hz stepRate [${st.minStepRate}, ${st.maxStepRate}] ` +
-        `did not track base ${expectedBase.toFixed(4)}`
+        `jump=${st.maxStepJump} did not track base ${expectedBase.toFixed(4)}`
     );
   }
 
@@ -117,7 +118,7 @@ async function testC2aAudioWorkletAndDynamicRate() {
     globalThis.AudioContext = prevAC;
     globalThis.AudioWorkletNode = prevAWN;
   }
-  console.log('[PASS] C2a-1: AudioWorklet DRC (48/44.1kHz, <=25ms cushion)');
+  console.log('[PASS] C2a-1: AudioWorklet DRC (48/44.1kHz, 60ms jitter-safe)');
 }
 
 function testC2aLinearAudioResampling() {

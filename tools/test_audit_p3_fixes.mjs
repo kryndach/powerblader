@@ -96,7 +96,7 @@ async function testP3_10AudioGestureUnlockAndStaleScriptCore() {
     assert.ok((listeners.get('keydown')?.size || 0) > 0);
     const st = audio.getStats();
     assert.strictEqual(st.mode, 'worklet');
-    assert.ok(st.targetMs <= 30, `Stale targetMs=${st.targetMs}`);
+    assert.ok(st.targetMs <= 64, `Stale scriptCore targetMs=${st.targetMs}`);
 
     for (const fn of [...(listeners.get('keydown') || [])]) fn();
     await new Promise((r) => setTimeout(r, 15));

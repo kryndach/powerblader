@@ -22,9 +22,7 @@ import {
   resolveServerEndpoints, buildApiUrl, buildWsUrl, buildSubPageUrl
 } from './server_endpoint.mjs';
 import { startConsoleFrameLoop } from './frame_loop.mjs';
-import {
-  createConsoleState, resetPeerSessionState
-} from './session_store.mjs';
+import { createConsoleState, resetPeerSessionState } from './session_store.mjs';
 import {
   createShadowRollbackHost, shouldAttachShadowWorker
 } from '../src/shadow_rollback_host.mjs';
@@ -38,10 +36,10 @@ Object.assign(state, resolveServerEndpoints());
 
 const ui = createConsoleUI(state);
 const audio = createAudioDrcEngine({
-  muteBtn: ui.muteBtn,
-  volumeSlider: ui.volumeSlider,
+  muteBtn: ui.muteBtn, volumeSlider: ui.volumeSlider,
   volumeValLabel: ui.volumeValLabel
 });
+state.audio = audio;
 window.__nesAudioStats = () => audio.getStats();
 window.__shadowStats = () => state.engine?.shadowRollback?.getStats?.() || null;
 window.addEventListener('beforeunload', () => state.engine?.destroy?.());
@@ -62,10 +60,14 @@ const romSync = createRomSyncManager(state, ui, audio);
 const saveSlots = createSaveSlotsManager(state, ui, romSync);
 const keyBindings = createKeyBindingsManager(state, ui);
 const viewportCtrl = createViewportAndSpeedController(state, ui, romSync);
-state.onEngineCreated = () => {
-  if (shouldAttachShadowWorker(state.engine?.systemId) && state.nes) {
+const ensureShadow = () => {
+  if (!state.engine || !state.nes || state.engine.shadowRollback) return;
+  if (shouldAttachShadowWorker(state.engine.systemId)) {
     state.engine.attachShadowRollback(createShadowRollbackHost(state.nes));
   }
+};
+state.onEngineCreated = () => {
+  if (state.engine?.online || state.ws?.readyState === 1) ensureShadow();
 };
 state.onRomLoaded = () => {
   viewportCtrl.applyOverclockToCore();
@@ -184,7 +186,10 @@ hybridConn = setupHybridConnectionUi(state, ui, {
     attachSocketLifecycle(customWs, code, nick);
   }
 });
-state.onRoomJoined = () => hybridConn?.resetReconnectAttempts?.();
+state.onRoomJoined = () => {
+  hybridConn?.resetReconnectAttempts?.();
+  ensureShadow();
+};
 
 ui.connectBtn.addEventListener('click', () => hybridConn.smartConnect());
 const tunnelCtrl = setupHostTunnelController(state, ui, {
@@ -328,9 +333,8 @@ function syncBenchLinks() {
   const c = (ui.roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
   const b = state.apiBaseUrl;
   if (ui.autoBenchLink) {
-    ui.autoBenchLink.href = buildSubPageUrl(
-      './autotest.html', { gameRoom: c }, b
-    );
+    const q = { gameRoom: c };
+    ui.autoBenchLink.href = buildSubPageUrl('./autotest.html', q, b);
   }
   if (ui.netBenchLink) {
     ui.netBenchLink.href = buildSubPageUrl('./net_debug.html', { room: c }, b);
@@ -339,11 +343,8 @@ function syncBenchLinks() {
 ui.autoBenchLink?.addEventListener('click', syncBenchLinks);
 ui.netBenchLink?.addEventListener('click', syncBenchLinks);
 syncBenchLinks();
-const isStatic = await hybridConn.whenReady();
-if (!isStatic || state.apiBaseUrl) {
+if (!(await hybridConn.whenReady()) || state.apiBaseUrl) {
   await romSync.discoverLocalRoms();
   startLocalHostHealthPoller(state, ui);
 }
-if (params.get('room') || params.get('server')) {
-  hybridConn.smartConnect();
-}
+if (params.get('room') || params.get('server')) hybridConn.smartConnect();

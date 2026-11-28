@@ -9,7 +9,7 @@ import {
   RollbackNetplayEngine, computeRomCrc32
 } from '../src/netplay_engine.mjs';
 import { extractRomFromFile } from '../server/archive_extractor.mjs';
-import { createAudioDrcEngine } from '../public/js/audio_drc.mjs';
+import { createDrcAudioCore } from '../public/js/audio_worklet_processor.mjs';
 import {
   resolveSaveSlotPath, buildHumanTetrisScripts, buildButtonSpamScripts,
   TETRIS_NETWORK_PROFILES, countRegionPixelDiff
@@ -21,27 +21,10 @@ const FRAME_MS = 1000 / 60;
 const AUDIO_RATE = 48000;
 
 function createHeadlessAudioHarness() {
-  let processCb = null;
-  let blockLen = 1024;
-  const origCtx = globalThis.AudioContext;
-  globalThis.AudioContext = class SimAudioCtx {
-    constructor() {
-      this.sampleRate = AUDIO_RATE;
-      this.state = 'running';
-      this.destination = {};
-    }
-    createScriptProcessor(bufSize) {
-      blockLen = bufSize || 1024;
-      return {
-        onaudioprocess: null,
-        connect() { processCb = this.onaudioprocess; }
-      };
-    }
-  };
-  const drc = createAudioDrcEngine({});
-  drc.initAudio();
-  globalThis.AudioContext = origCtx;
-
+  const blockLen = 128;
+  const drc = createDrcAudioCore({
+    outSampleRate: AUDIO_RATE, mode: 'worklet'
+  });
   const outL = new Float32Array(blockLen);
   const outR = new Float32Array(blockLen);
   let sampleClock = 0;
@@ -51,9 +34,7 @@ function createHeadlessAudioHarness() {
       sampleClock += AUDIO_RATE / 60;
       while (sampleClock >= blockLen) {
         sampleClock -= blockLen;
-        processCb({
-          outputBuffer: { getChannelData: (ch) => (ch === 0 ? outL : outR) }
-        });
+        drc.renderBlock(outL, outR);
       }
     },
     getStats: () => drc.getStats()
@@ -247,7 +228,11 @@ async function runTetrisProfile(c1, c2, saveSyncState, prof) {
     );
     assert.strictEqual(aStats.overflows, 0, `${prof.id} audio overflows!`);
     assert.ok(
-      pitchDriftPct <= 6.0, `${prof.id} music pitch warp ${pitchDriftPct}%`
+      pitchDriftPct <= 3.0, `${prof.id} music pitch warp ${pitchDriftPct}%`
+    );
+    assert.ok(
+      (aStats.maxStepJump || 0) <= 0.005,
+      `${prof.id} per-quantum pitch jump ${aStats.maxStepJump}`
     );
     assert.ok(p95 <= prof.maxP95Ms, `${prof.id} p95=${p95.toFixed(1)}ms > cap`);
     assert.ok(

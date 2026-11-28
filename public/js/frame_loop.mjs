@@ -12,9 +12,11 @@ export function stepPacingAccumulator(
     const scale = Math.max(-0.025, Math.min(0.025, rift * 0.007));
     effectiveFrameMs = FRAME_DURATION_MS * (1 + scale);
   }
-  const nextAcc = fromRaf && dt >= 15.0 && dt <= 18.4 && Math.abs(rift) <= 0.25
+  const snap60 = fromRaf && dt >= 15.0 && dt <= 18.4 &&
+    Math.abs(rift) <= 0.25 && accumulatorMs < effectiveFrameMs * 0.5;
+  const nextAcc = snap60
     ? effectiveFrameMs
-    : Math.min(accumulatorMs + dt, effectiveFrameMs * 2);
+    : Math.min(accumulatorMs + dt, effectiveFrameMs * 3);
   return { accumulatorMs: nextAcc, effectiveFrameMs };
 }
 
@@ -177,11 +179,17 @@ export function startConsoleFrameLoop(
         for (let s = 0; s < effSpeed; s++) {
           const isLast = s === effSpeed - 1;
           if (state.nes.ppu) state.nes.ppu._headlessFrame = !isLast;
-          const res = state.engine.stepNetplayFrame(combinedMask, 0, {
-            turboSpeed: effSpeed,
-            skipRollback: s > 0 || ticksInRaf > 0,
-            skipPacket: !isLast
-          });
+          state.audio?.beginFrame?.();
+          let res;
+          try {
+            res = state.engine.stepNetplayFrame(combinedMask, 0, {
+              turboSpeed: effSpeed,
+              skipRollback: s > 0 || ticksInRaf > 0,
+              skipPacket: !isLast
+            });
+          } finally {
+            state.audio?.endFrame?.();
+          }
           if (state.nes.ppu) state.nes.ppu._headlessFrame = false;
           if (isLast && res.packetToSend && state.peerConnected) {
             transport.sendFastNetplayPacket(res.packetToSend);
