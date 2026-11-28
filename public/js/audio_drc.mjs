@@ -3,6 +3,7 @@ import { createDrcAudioCore } from './audio_worklet_processor.mjs';
 
 const WORKLET_AUTO_FLUSH_LEN = 256;
 const WORKLET_BUF_CAP = 1024;
+const MAX_BOOT_QUEUE_SAMPLES = 3200;
 const SCRIPT_BLOCK_SIZE = 1024;
 const MAX_POOL_PAIRS = 8;
 
@@ -27,6 +28,7 @@ export function createAudioDrcEngine(
   let stageR = new Float32Array(WORKLET_BUF_CAP);
   let stagePos = 0;
   const bootQueue = [];
+  let bootQueueSamples = 0;
 
   try {
     const savedVol = localStorage.getItem('nes_volume');
@@ -70,6 +72,7 @@ export function createAudioDrcEngine(
       const [bl, br, len] = bootQueue.shift();
       scriptCore.pushChunk(bl, br, len);
     }
+    bootQueueSamples = 0;
     if (stagePos > 0) {
       scriptCore.pushChunk(stageL, stageR, stagePos);
       stagePos = 0;
@@ -104,8 +107,16 @@ export function createAudioDrcEngine(
           [sendL.buffer, sendR.buffer]
         );
       } catch {}
-    } else if (bootQueue.length < 24) {
+    } else {
       bootQueue.push([sendL, sendR, len]);
+      bootQueueSamples += len;
+      while (
+        bootQueue.length > 1 && bootQueueSamples > MAX_BOOT_QUEUE_SAMPLES
+      ) {
+        const [ol, or, olen] = bootQueue.shift();
+        bootQueueSamples -= olen;
+        if (chunkPool.length < MAX_POOL_PAIRS) chunkPool.push([ol, or]);
+      }
     }
   }
 
@@ -171,6 +182,7 @@ export function createAudioDrcEngine(
       syncGainToActiveEngine();
       if (syncCtxSuspended()) {
         bootQueue.length = 0;
+        bootQueueSamples = 0;
         stagePos = 0;
       } else {
         while (bootQueue.length > 0) {
@@ -179,6 +191,7 @@ export function createAudioDrcEngine(
             { type: 'chunk', l: bl, r: br, len }, [bl.buffer, br.buffer]
           );
         }
+        bootQueueSamples = 0;
         if (stagePos > 0) flushStageToWorklet(stagePos);
       }
     }).catch(() => {
@@ -224,6 +237,7 @@ export function createAudioDrcEngine(
   function resetBuffer() {
     stagePos = 0;
     bootQueue.length = 0;
+    bootQueueSamples = 0;
     if (workletNode) {
       try { workletNode.port.postMessage({ type: 'reset' }); } catch {}
     }

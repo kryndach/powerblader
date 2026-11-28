@@ -10,6 +10,7 @@ import { createAudioDrcEngine } from '../public/js/audio_drc.mjs';
 import { handleRomTransferMessage } from '../public/js/rom_archive.mjs';
 import { stepPacingAccumulator } from '../public/js/frame_loop.mjs';
 import { setupHybridConnectionUi } from '../public/js/hybrid_connect.mjs';
+import { runShadowAndAudioDeepStage } from './shadow_and_audio_deep_stage.mjs';
 import {
   findChromiumBinary, launchHeadlessBrowser, createCdpTab, waitFor,
   startRemoteProxy, sleep
@@ -283,6 +284,7 @@ async function main() {
   console.log('=== Deep Adversarial Audit Regression Suite ===\n');
   await testWebRtcClockStaleSyncCloseAndAnswererGuards();
   await testStrictIceAudioResumeAuthGuardArchiveAndPacing();
+  await runShadowAndAudioDeepStage();
   await testRealChromeNettestAuthHttpTunnelAndIce();
   console.log('\nALL DEEP ADVERSARIAL AUDIT REGRESSIONS PASSED!');
 }

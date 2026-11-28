@@ -92,14 +92,16 @@ export function applyShadowHashes(engine, hashes) {
   engine._verifyConfirmedHashes();
 }
 
-export function buildWorkerInputSlice(engine, workerConfirmedFrame) {
+export function buildWorkerInputSlice(
+  engine, workerConfirmedFrame, allowEmpty = false
+) {
   const end = engine.currentFrame;
   const rawStart = Math.max(
     engine.timelineStartFrame, Math.min(workerConfirmedFrame, end)
   );
   const start = Math.max(rawStart, end - MAX_SLICE_LEN);
   const len = Math.max(0, end - start);
-  if (len === 0) return null;
+  if (len === 0 && !allowEmpty) return null;
   const p1Masks = new Uint32Array(len);
   const p2Masks = new Uint32Array(len);
   for (let i = 0; i < len; i++) {
@@ -172,7 +174,9 @@ export function applyShadowCatchupState(
   engine.earliestMispredictedFrame = findEarliestMisprediction(
     engine, msg.fromFrame
   );
-  const keepUpTo = Math.max(msg.usedConfFrame, confirmedWatermark);
+  const msgConf = Number.isFinite(msg.usedConfFrame) ? msg.usedConfFrame : -1;
+  const wmConf = Number.isFinite(confirmedWatermark) ? confirmedWatermark : -1;
+  const keepUpTo = Math.max(msgConf, wmConf);
   for (const k of engine.localHashes.keys()) {
     if (k > keepUpTo) engine.localHashes.delete(k);
   }

@@ -70,14 +70,18 @@ export function createShadowRollbackHost(core, options = {}) {
   }
 
   function sendInputsToWorker(engine, needCatchup) {
-    const slice = buildWorkerInputSlice(engine, workerConfirmedFrame);
+    const slice = buildWorkerInputSlice(
+      engine, workerConfirmedFrame, needCatchup
+    );
     if (!slice) return false;
     const { start, end, p1Masks, p2Masks } = slice;
+    const xfer = p1Masks.byteLength > 0
+      ? [p1Masks.buffer, p2Masks.buffer] : null;
     post({
       type: 'inputs', epoch, sliceStart: start, targetFrame: end,
       confirmedFrame: engine.lastConfirmedRemoteFrame,
       p1Masks, p2Masks, needCatchup
-    }, [p1Masks.buffer, p2Masks.buffer]);
+    }, xfer);
     lastSentTargetFrame = end;
     lastSentConfirmedFrame = engine.lastConfirmedRemoteFrame;
     if (needCatchup) catchupInFlight = true;

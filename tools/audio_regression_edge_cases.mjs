@@ -299,6 +299,7 @@ export async function testEdge4ChromeTurboF8AndOfflineToOnline(rootDir) {
       sHitch.underruns - b0.underruns, 0,
       `23ms hitches caused ${sHitch.underruns - b0.underruns} underruns!`
     );
+    assert.strictEqual(sHitch.overflows - b0.overflows, 0, '23ms overflow!');
 
     const b1 = await tab.evaluate(`window.__nesAudioStats()`);
     await tab.evaluate(
@@ -311,6 +312,7 @@ export async function testEdge4ChromeTurboF8AndOfflineToOnline(rootDir) {
     await sleep(700);
     const sT = await tab.evaluate(`window.__nesAudioStats()`);
     assert.strictEqual(sT.underruns - b1.underruns, 0, '4x turbo underrun!');
+    assert.strictEqual(sT.overflows - b1.overflows, 0, '4x turbo overflow!');
 
     const b2 = await tab.evaluate(`window.__nesAudioStats()`);
     await tab.evaluate(`document.getElementById('quickSaveBtn').click()`);
@@ -319,6 +321,7 @@ export async function testEdge4ChromeTurboF8AndOfflineToOnline(rootDir) {
     await sleep(700);
     const sL = await tab.evaluate(`window.__nesAudioStats()`);
     assert.strictEqual(sL.underruns - b2.underruns, 0, 'F6/F8 load underrun!');
+    assert.strictEqual(sL.overflows - b2.overflows, 0, 'F6/F8 load overflow!');
 
     await tab.evaluate(`(() => {
       document.getElementById('roomInput').value = 'LAZYSH';
