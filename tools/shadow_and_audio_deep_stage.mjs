@@ -1,5 +1,6 @@
-// Adversarial TDD Regressions: Shadow Watermark Catchup, NaN & Audio BootQueue
+// Adversarial TDD Regressions: Shadow Catchup, Audio BootQueue & Netem FIFO
 import assert from 'assert';
+import net from 'net';
 import { createAudioDrcEngine } from '../public/js/audio_drc.mjs';
 import { createDrcAudioCore } from '../public/js/audio_worklet_processor.mjs';
 import { RollbackNetplayEngine } from '../src/netplay_engine.mjs';
@@ -9,6 +10,7 @@ import {
 } from '../src/shadow_rollback_worker_core.mjs';
 import { applyShadowCatchupState } from '../src/shadow_rollback_apply.mjs';
 import { sleep } from './browser_cdp_harness.mjs';
+import { startNetemProxy } from './netem_proxy.mjs';
 
 function createDeterministicMockArcadeCore() {
   let acc = 0x12345678, n = 0;
@@ -175,11 +177,50 @@ async function testSlowAddModuleBootQueueNoOverflow() {
   }
 }
 
+async function testNetemProxyStrictTcpFifoOrder() {
+  const rxParts = [];
+  let rxLen = 0;
+  const echo = net.createServer((s) => {
+    s.on('data', (d) => { rxParts.push(d); rxLen += d.length; });
+  });
+  await new Promise((r) => echo.listen(0, '127.0.0.1', r));
+  const proxy = await startNetemProxy(echo.address().port, {
+    rttMs: 240, jitterMs: 20, kbpsCap: 170, sharedPipe: true,
+    clumpEveryMs: 1400, clumpHoldMs: 120
+  });
+  const client = net.connect(proxy.port, '127.0.0.2');
+  client.setNoDelay(true);
+  try {
+    await new Promise((r) => client.once('connect', r));
+    const sent = [];
+    for (let i = 0; i < 300; i++) {
+      const b = Buffer.alloc(64);
+      b.writeUInt32BE(i, 0);
+      sent.push(b);
+      client.write(b);
+      if (i % 7 === 0) await sleep(1);
+    }
+    const exp = Buffer.concat(sent);
+    const t0 = Date.now();
+    while (rxLen < exp.length && Date.now() - t0 < 5000) await sleep(30);
+    const got = Buffer.concat(rxParts);
+    assert.strictEqual(got.length, exp.length, 'Missing netem TCP bytes');
+    assert.strictEqual(
+      got.equals(exp), true, 'netem_proxy delivered TCP chunks out of order!'
+    );
+  } finally {
+    client.destroy();
+    await proxy.close();
+    await new Promise((r) => echo.close(() => r()));
+  }
+}
+
 export async function runShadowAndAudioDeepStage() {
   testUndefinedUsedConfFrameNaNGuard();
   await testOrganicCatchupAtWorkerWatermark();
   await testSlowAddModuleBootQueueNoOverflow();
+  await testNetemProxyStrictTcpFifoOrder();
   console.log(
-    '[PASS] Deep-4: Shadow Empty-Slice Catchup, NaN Guard & BootQueue'
+    '[PASS] Deep-4: Shadow Catchup, NaN Guard, BootQueue & Netem TCP FIFO'
   );
 }

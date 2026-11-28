@@ -24,6 +24,32 @@ export function startNetemProxy(targetPort, initialOpts = {}) {
     return Math.round(u * cfg.jitterMs * 0.5);
   }
 
+  function clearSockQueue(sock) {
+    if (sock._fifoTimer) {
+      clearTimeout(sock._fifoTimer);
+      sock._fifoTimer = null;
+    }
+    if (sock._fifoQueue) sock._fifoQueue.length = 0;
+  }
+
+  function pumpFifo(dstSock) {
+    dstSock._fifoTimer = null;
+    const q = dstSock._fifoQueue;
+    if (!q || q.length === 0) return;
+    if (dstSock.destroyed) { q.length = 0; return; }
+    const now = performance.now();
+    while (q.length > 0 && q[0].deliverAt <= now) {
+      const item = q.shift();
+      if (!dstSock.destroyed) dstSock.write(item.chunk);
+    }
+    if (q.length > 0 && !dstSock.destroyed) {
+      const wait = Math.max(1, Math.ceil(q[0].deliverAt - performance.now()));
+      const t = setTimeout(() => pumpFifo(dstSock), wait);
+      t.unref?.();
+      dstSock._fifoTimer = t;
+    }
+  }
+
   function scheduleChunk(srcSock, dstSock, chunk, isUp) {
     if (isUp) bytesUp += chunk.length;
     else bytesDown += chunk.length;
@@ -55,14 +81,13 @@ export function startNetemProxy(targetPort, initialOpts = {}) {
     const delayMs = Math.max(0, Math.round(deliverAt - now));
     if (delayMs > maxQueueMs) maxQueueMs = delayMs;
 
-    if (delayMs === 0) {
+    const q = (dstSock._fifoQueue ||= []);
+    if (delayMs === 0 && q.length === 0) {
       if (!dstSock.destroyed) dstSock.write(chunk);
       return;
     }
-    const t = setTimeout(() => {
-      if (!dstSock.destroyed) dstSock.write(chunk);
-    }, delayMs);
-    t.unref?.();
+    q.push({ deliverAt, chunk });
+    if (!dstSock._fifoTimer) pumpFifo(dstSock);
   }
 
   return new Promise((resolve, reject) => {
@@ -73,6 +98,8 @@ export function startNetemProxy(targetPort, initialOpts = {}) {
       openSockets.add(client);
       openSockets.add(upstream);
       const cleanup = () => {
+        clearSockQueue(client);
+        clearSockQueue(upstream);
         openSockets.delete(client);
         openSockets.delete(upstream);
         if (!client.destroyed) client.destroy();
@@ -97,7 +124,10 @@ export function startNetemProxy(targetPort, initialOpts = {}) {
           };
         },
         close() {
-          for (const s of openSockets) { try { s.destroy(); } catch {} }
+          for (const s of openSockets) {
+            clearSockQueue(s);
+            try { s.destroy(); } catch {}
+          }
           openSockets.clear();
           return new Promise((r) => srv.close(() => r()));
         }
