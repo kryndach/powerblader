@@ -287,7 +287,56 @@ async function testC2bUniversalShadowWorker() {
   }
 }
 
+async function testC2bConfirmedHashPreservedAcrossCatchup() {
+  const fb = new Uint32Array(16);
+  const core = {
+    systemId: 'arcade', width: 4, height: 4, opts: {},
+    stepFrame() {}, getFrameBuffer: () => fb,
+    saveStateBytes: () => new Uint8Array(8),
+    loadStateBytes() {}, computeHash: () => 0xabcdef01
+  };
+  const eng = new NesNetplayEngine(core, {
+    localPlayer: 1, online: true, inputDelayFrames: 0
+  });
+  let onHostMsg = null;
+  const host = createShadowRollbackHost(core, {
+    transport: {
+      onMessage: (fn) => { onHostMsg = fn; },
+      postMessage: (m) => {
+        if (m.type === 'init') onHostMsg({ type: 'worker_booted' });
+        else if (m.type === 'sync_state') {
+          onHostMsg({ type: 'synced', epoch: m.epoch, frame: m.frame });
+        }
+      },
+      terminate: () => {}
+    }
+  });
+  eng.attachShadowRollback(host);
+  eng.receiveRemoteInputPacket({
+    type: 'netplay_input', sessionId: eng.sessionId, player: 2,
+    startFrame: 31, inputs: new Array(32).fill(0)
+  });
+  for (let f = 0; f < 32; f++) eng.stepNetplayFrame(0);
+  eng.localHashes.set(60, 0xdeadbeef);
+  onHostMsg({
+    type: 'catchup_state', epoch: 1, frame: 32, fromFrame: 20,
+    usedConfFrame: 25, simP1: new Uint32Array(12), simP2: new Uint32Array(12),
+    stateBuf: new Uint8Array(8).buffer, stateLen: 8, hashes: []
+  });
+  onHostMsg({
+    type: 'confirmed_progress', epoch: 1, confirmedFrame: 31,
+    hashes: [[30, 0x1234abcd]]
+  });
+  host.applyPendingAndRequestCatchup(eng);
+  assert.strictEqual(host.getStats().shadowSwaps, 1, 'Catchup must apply');
+  assert.strictEqual(eng.localHashes.get(30), 0x1234abcd, 'Hash 30 deleted!');
+  assert.strictEqual(eng.localHashes.has(60), false, 'Hash 60 not pruned!');
+  eng.destroy();
+  console.log('[PASS] C2b-4: Confirmed Shadow Hashes Survive Stale Catchup');
+}
+
 await testC2aAudioWorkletAndDynamicRate();
 testC2aLinearAudioResampling();
 await testC2bUniversalShadowWorker();
+await testC2bConfirmedHashPreservedAcrossCatchup();
 console.log('\nALL TRACK C2 TESTS PASSED!');

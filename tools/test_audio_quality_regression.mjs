@@ -272,7 +272,7 @@ async function test4RealChromeOfflineArcadeAudioQuality() {
       await sleep(300);
     }
 
-  // Real user gesture via CDP to start & unlock AudioWorklet
+    // Real user gesture via CDP to start & unlock AudioWorklet
     for (const type of ['mousePressed', 'mouseReleased']) {
       await tab.send('Input.dispatchMouseEvent', {
         type, x: 200, y: 200, button: 'left', clickCount: 1
@@ -280,10 +280,10 @@ async function test4RealChromeOfflineArcadeAudioQuality() {
     }
     await waitFor(() => tab.evaluate(`(() => {
       const s = window.__nesAudioStats?.();
-      return s && s.mode === 'worklet' && s.samplesOut > 12000 ? s : null;
+      return s && s.mode === 'worklet' && s.samplesOut > 24000 ? s : null;
     })()`), 10000, 'AudioWorklet actively rendering');
 
-    await sleep(600);
+    await sleep(900);
     const base = await tab.evaluate(`window.__nesAudioStats()`);
 
     // Simulate realistic offline gameplay: keypresses + routine 28ms hitches

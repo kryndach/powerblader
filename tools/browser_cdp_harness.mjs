@@ -139,6 +139,7 @@ export function startRemoteProxy(targetPort) {
 export async function launchHeadlessBrowser(binPath, userDataDir) {
   const proc = spawn(binPath, [
     '--headless=new',
+    '--disable-gpu',
     '--remote-debugging-port=0',
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',

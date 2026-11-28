@@ -110,7 +110,9 @@ export function buildWorkerInputSlice(engine, workerConfirmedFrame) {
   return { start, end, p1Masks, p2Masks };
 }
 
-export function applyShadowCatchupState(engine, msg, stats, staleDropStreak) {
+export function applyShadowCatchupState(
+  engine, msg, stats, staleDropStreak, confirmedWatermark = msg.usedConfFrame
+) {
   const gap = engine.currentFrame - msg.frame;
   const limit = staleDropStreak >= 2 ? FALLBACK_APPLY_GAP : MAX_APPLY_GAP;
   if (gap < 0 || gap > limit) {
@@ -170,8 +172,9 @@ export function applyShadowCatchupState(engine, msg, stats, staleDropStreak) {
   engine.earliestMispredictedFrame = findEarliestMisprediction(
     engine, msg.fromFrame
   );
+  const keepUpTo = Math.max(msg.usedConfFrame, confirmedWatermark);
   for (const k of engine.localHashes.keys()) {
-    if (k > msg.usedConfFrame) engine.localHashes.delete(k);
+    if (k > keepUpTo) engine.localHashes.delete(k);
   }
   engine._verifyConfirmedHashes();
   return { applied: true, gap };

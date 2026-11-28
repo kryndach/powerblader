@@ -234,7 +234,7 @@ export function createShadowRollbackHost(core, options = {}) {
         const msg = pendingCatchup;
         pendingCatchup = null;
         const res = applyShadowCatchupState(
-          engine, msg, stats, staleDropStreak
+          engine, msg, stats, staleDropStreak, workerConfirmedFrame
         );
         recycleBuffer(msg.stateBuf);
         staleDropStreak = res.applied ? 0 : staleDropStreak + 1;
