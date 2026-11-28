@@ -3,21 +3,33 @@ import { INPUT_BITS } from '../../src/netplay_engine.mjs';
 import { encodeNetplayPacketBinary } from '../../src/binary_net_codec.mjs';
 
 export const FRAME_DURATION_MS = 1000 / 60;
+const SNAP_MAX_CARRY_MS = 2.0;
+const SNAP_MAX_DEBT_MS = 4.0;
 
 export function stepPacingAccumulator(
-  accumulatorMs, dt, rift = 0, fromRaf = false
+  accumulatorMs, dt, rift = 0, fromRaf = false, paceState = null
 ) {
   let effectiveFrameMs = FRAME_DURATION_MS;
   if (Math.abs(rift) > 0.25) {
     const scale = Math.max(-0.025, Math.min(0.025, rift * 0.007));
     effectiveFrameMs = FRAME_DURATION_MS * (1 + scale);
   }
-  const snap60 = fromRaf && dt >= 15.0 && dt <= 18.4 &&
-    Math.abs(rift) <= 0.25 && accumulatorMs < effectiveFrameMs * 0.5;
-  const nextAcc = snap60
-    ? effectiveFrameMs
-    : Math.min(accumulatorMs + dt, effectiveFrameMs * 3);
-  return { accumulatorMs: nextAcc, effectiveFrameMs };
+  let snap60 = fromRaf && dt >= 15.0 && dt <= 18.4 &&
+    Math.abs(rift) <= 0.25 && accumulatorMs < SNAP_MAX_CARRY_MS;
+  if (snap60 && paceState) {
+    const fab = effectiveFrameMs - (accumulatorMs + dt);
+    const nextDebt = (paceState.snapDebtMs || 0) + fab;
+    if (Math.abs(nextDebt) <= SNAP_MAX_DEBT_MS) paceState.snapDebtMs = nextDebt;
+    else snap60 = false;
+  }
+  if (snap60) return { accumulatorMs: effectiveFrameMs, effectiveFrameMs };
+  const debt = paceState?.snapDebtMs || 0;
+  if (paceState) paceState.snapDebtMs = 0;
+  const raw = Math.max(0, accumulatorMs + dt - debt);
+  return {
+    accumulatorMs: Math.min(raw, effectiveFrameMs * 3),
+    effectiveFrameMs
+  };
 }
 
 const KEY_MAP = {
@@ -146,6 +158,7 @@ export function startConsoleFrameLoop(
   let lastTickTime = performance.now();
   let lastRafAt = performance.now();
   let accumulatorMs = 0;
+  const paceState = { snapDebtMs: 0 };
   let framesThisSec = 0;
   let lastDbgUiFrame = -99;
   let lastFpsUpdate = performance.now();
@@ -164,7 +177,9 @@ export function startConsoleFrameLoop(
     ) {
       rift = state.engine.riftFrames || 0;
     }
-    const paced = stepPacingAccumulator(accumulatorMs, dt, rift, fromRaf);
+    const paced = stepPacingAccumulator(
+      accumulatorMs, dt, rift, fromRaf, paceState
+    );
     accumulatorMs = paced.accumulatorMs;
     const effectiveFrameMs = paced.effectiveFrameMs;
 
@@ -176,33 +191,33 @@ export function startConsoleFrameLoop(
         const effSpeed = viewportCtrl ? viewportCtrl.getEffectiveSpeed() : 1;
         const combinedMask =
           effSpeed > 1 ? 0 : localButtonsMask | pollGamepadMask();
-        for (let s = 0; s < effSpeed; s++) {
-          const isLast = s === effSpeed - 1;
-          if (state.nes.ppu) state.nes.ppu._headlessFrame = !isLast;
-          state.audio?.beginFrame?.();
-          let res;
-          try {
-            res = state.engine.stepNetplayFrame(combinedMask, 0, {
+        state.audio?.beginFrame?.();
+        try {
+          for (let s = 0; s < effSpeed; s++) {
+            const isLast = s === effSpeed - 1;
+            if (state.nes.ppu) state.nes.ppu._headlessFrame = !isLast;
+            const res = state.engine.stepNetplayFrame(combinedMask, 0, {
               turboSpeed: effSpeed,
               skipRollback: s > 0 || ticksInRaf > 0,
               skipPacket: !isLast
             });
-          } finally {
-            state.audio?.endFrame?.();
+            if (state.nes.ppu) state.nes.ppu._headlessFrame = false;
+            if (isLast && res.packetToSend && state.peerConnected) {
+              transport.sendFastNetplayPacket(res.packetToSend);
+            }
+            if (res.stepped) framesThisSec++;
+            const curF = state.engine.currentFrame;
+            if (
+              isLast &&
+              (Math.abs(curF - lastDbgUiFrame) >= 4 || !res.stepped)
+            ) {
+              lastDbgUiFrame = curF;
+              telemetry.updateDebugTelemetry(res.p1Mask, res.p2Mask);
+            }
           }
-          if (state.nes.ppu) state.nes.ppu._headlessFrame = false;
-          if (isLast && res.packetToSend && state.peerConnected) {
-            transport.sendFastNetplayPacket(res.packetToSend);
-          }
-          if (res.stepped) framesThisSec++;
-          const curF = state.engine.currentFrame;
-          if (
-            isLast &&
-            (Math.abs(curF - lastDbgUiFrame) >= 4 || !res.stepped)
-          ) {
-            lastDbgUiFrame = curF;
-            telemetry.updateDebugTelemetry(res.p1Mask, res.p2Mask);
-          }
+        } finally {
+          if (state.nes?.ppu) state.nes.ppu._headlessFrame = false;
+          state.audio?.endFrame?.();
         }
       }
       ticksInRaf++;
@@ -279,7 +294,7 @@ export function startConsoleFrameLoop(
     const tickWorker = new Worker(URL.createObjectURL(workerBlob));
     tickWorker.onmessage = () => {
       const now = performance.now();
-      if (document.hidden || now - lastRafAt > 50) runTick(now, false);
+      if (document.hidden || now - lastRafAt > 36) runTick(now, false);
     };
   } catch {}
 

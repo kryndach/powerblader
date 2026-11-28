@@ -3,7 +3,7 @@ const SOURCE_SAMPLE_RATE = 48000;
 const RING_SIZE = 8192;
 const RING_MASK = RING_SIZE - 1;
 const WORKLET_PROFILE = {
-  prebuffer: 2560, target: 2880, maxTarget: 4608, maxQueued: 6912
+  prebuffer: 2880, target: 3072, maxTarget: 4608, maxQueued: 6912
 };
 const SCRIPT_PROFILE = {
   prebuffer: 2600, target: 3200, maxTarget: 4608, maxQueued: 6912
@@ -60,6 +60,7 @@ export function createDrcAudioCore(options = {}) {
       readPtr = (writePtr - effectiveTarget) & RING_MASK;
       readFrac = 0;
       avgQueued = effectiveTarget;
+      integralDrc = 0;
       fadeIn = 64;
     }
     const next = (writePtr + 1) & RING_MASK;
@@ -107,7 +108,7 @@ export function createDrcAudioCore(options = {}) {
       DRC_MIN, Math.min(DRC_MAX, 1.0 + normErr * DRC_KP + integralDrc)
     );
     if (qNow < lowHeadroom) {
-      const emg = 0.96 + 0.03 * (qNow / lowHeadroom);
+      const emg = 0.975 + 0.015 * (qNow / lowHeadroom);
       if (emg < targetDrc) targetDrc = emg;
     }
 
@@ -141,6 +142,7 @@ export function createDrcAudioCore(options = {}) {
       fadeIn = 64;
       avgQueued = effectiveTarget;
       currentDrc = 1.0;
+      integralDrc = 0;
       hasRenderedSteady = false;
       if (qNow > effectiveTarget) {
         readPtr = (writePtr - effectiveTarget) & RING_MASK;
@@ -150,7 +152,8 @@ export function createDrcAudioCore(options = {}) {
     }
 
     if (buffering) {
-      if (qNow >= prof.prebuffer) {
+      const resumeLevel = Math.max(prof.prebuffer, effectiveTarget - 320);
+      if (qNow >= resumeLevel) {
         buffering = false;
         fadeIn = 64;
         if (qNow > effectiveTarget + 800) {
@@ -160,6 +163,7 @@ export function createDrcAudioCore(options = {}) {
         }
         avgQueued = qNow;
         currentDrc = 1.0;
+        integralDrc = 0;
         hasRenderedSteady = false;
       } else {
         for (let i = 0; i < n; i++) {

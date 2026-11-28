@@ -14,6 +14,12 @@ import {
 } from './browser_cdp_harness.mjs';
 import { resolveSaveSlotPath } from './tetris_scenarios.mjs';
 import { buildFileUploadJs } from './test_rom_builder_tables.mjs';
+import {
+  testEdge1Pacing120HzHitchesAndVrr,
+  testEdge2DrcRecoveryIntegralResetAndWaveform,
+  testEdge3SuspendedContextZeroOverflows,
+  testEdge4ChromeTurboF8AndOfflineToOnline
+} from './audio_regression_edge_cases.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -192,9 +198,8 @@ async function test3FrameAlignedFlushAndPacingCarry() {
     'Unmute must fade in smoothly'
   );
 
-  // C. Verify stepPacingAccumulator does not drop frames on 18.5/14.7/16.8ms
   let acc = 0, totalTicks = 0;
-  const pattern = [18.5, 14.7, 16.8]; // sums to 50.0ms = exact 3 frames!
+  const pattern = [18.5, 14.7, 16.8];
   for (let i = 0; i < 300; i++) {
     const r = stepPacingAccumulator(acc, pattern[i % 3], 0, true);
     acc = r.accumulatorMs;
@@ -202,10 +207,7 @@ async function test3FrameAlignedFlushAndPacingCarry() {
       acc -= r.effectiveFrameMs; totalTicks++;
     }
   }
-  assert.ok(
-    totalTicks >= 298 && totalTicks <= 302,
-    `60Hz VSync jitter dropped frames: got ${totalTicks}/300!`
-  );
+  assert.ok(totalTicks >= 298 && totalTicks <= 302, `Dropped: ${totalTicks}`);
   console.log('[PASS] Audio-3: Frame Flush, Mute Fade-In & 60Hz VSync Carry');
 }
 
@@ -309,35 +311,27 @@ async function test4RealChromeOfflineArcadeAudioQuality() {
     const dO = cur.overflows - base.overflows;
     const dOut = cur.samplesOut - base.samplesOut;
     const srBase = 48000 / (cur.sampleRate || 48000);
-    const minR = cur.minStepRate / srBase;
-    const maxR = cur.maxStepRate / srBase;
+    const minR = cur.minStepRate / srBase, maxR = cur.maxStepRate / srBase;
     const swingPct = (maxR - minR) * 100;
     const jumpPct = (cur.maxStepJump || 0) * 100;
-
     assert.strictEqual(cur.mode, 'worklet', 'Expected AudioWorklet mode');
     assert.ok(dOut >= 180000, `Audio stalled: only ${dOut} samples out`);
     if (isRealTgm) assert.ok(cur.rms > 0.015, `TGM2+ silent: rms=${cur.rms}`);
     assert.strictEqual(dU, 0, `Offline Arcade had ${dU} underruns!`);
     assert.strictEqual(dO, 0, `Offline Arcade had ${dO} overflows!`);
-    assert.ok(
-      minR >= 0.96 && maxR <= 1.03,
-      `Pitch cliff: [${minR.toFixed(4)}..${maxR.toFixed(4)}]`
-    );
+    assert.ok(minR >= 0.96 && maxR <= 1.03, `Pitch: [${minR}..${maxR}]`);
     assert.ok(swingPct <= 3.5, `Pitch swing ${swingPct.toFixed(2)}% > 3.5%`);
     assert.ok(jumpPct <= 0.5, `Pitch jump ${jumpPct.toFixed(3)}% > 0.5%`);
     assert.strictEqual(tab.exceptions.length, 0, tab.exceptions.join('; '));
     console.log(
-      `[PASS] Audio-4: Real Chrome Offline ${needle} (Worklet, 0 Underruns, ` +
-        `0 Overflows, Pitch=[${minR.toFixed(4)}..${maxR.toFixed(4)}], ` +
-        `MaxJump=${jumpPct.toFixed(3)}%, RMS=${cur.rms.toFixed(3)})`
+      `[PASS] Audio-4: Chrome ${needle} (Worklet, 0U/0O, ` +
+        `Pitch=[${minR.toFixed(4)}..${maxR.toFixed(4)}], ` +
+        `Jump=${jumpPct.toFixed(3)}%, RMS=${cur.rms.toFixed(3)})`
     );
     tab.close();
   } finally {
-    if (browser?.proc) {
-      try { browser.proc.kill('SIGKILL'); } catch {}
-      await sleep(150);
-    }
-    await app.close();
+    if (browser?.proc) { try { browser.proc.kill('SIGKILL'); } catch {} }
+    await sleep(120); await app.close();
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   }
 }
@@ -347,4 +341,8 @@ test1WorkletZeroFmWarbleUnderWasapiBursts();
 test2WorkletSurvives40msBurstAnd28msGcHitches();
 await test3FrameAlignedFlushAndPacingCarry();
 await test4RealChromeOfflineArcadeAudioQuality();
+testEdge1Pacing120HzHitchesAndVrr();
+testEdge2DrcRecoveryIntegralResetAndWaveform();
+await testEdge3SuspendedContextZeroOverflows();
+await testEdge4ChromeTurboF8AndOfflineToOnline(ROOT_DIR);
 console.log('\nALL AUDIO QUALITY REGRESSION TESTS PASSED!');

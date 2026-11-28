@@ -219,11 +219,11 @@ ui.resetBtn.addEventListener('click', () => {
   } else {
     state.nes.loadROM(state.romBinaryString);
     state.engine.resetTimeline(0);
+    audio.resetBuffer?.();
     ui.logDebug('Console reset to frame #0.');
     ui.showScreenBanner(`CONSOLE RESET - "${state.romName}"`, 'ok', 2000);
   }
 });
-
 ui.startMatchNowBtn.addEventListener('click', () => {
   if (state.ws?.readyState === 1 && state.peerConnected &&
       state.romCrc32 && state.partnerRomCrc32 === state.romCrc32) {

@@ -189,6 +189,7 @@ export function createSaveSlotsManager(state, ui, romSync) {
     state.engine.online = isOnline;
     state.engine.inputDelayFrames = romSync.resolveDesiredInputDelay();
     state.engine.importSyncState(syncState, { preserveLocalInputDelay: true });
+    state.audio?.resetBuffer?.();
 
     const fb = state.nes.getFrameBuffer
       ? state.nes.getFrameBuffer()

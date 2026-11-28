@@ -15,6 +15,7 @@ export function createAudioDrcEngine(
   let scriptCore = null;
   let mode = 'idle';
   let workletBooting = false;
+  let ctxSuspended = false;
   let audioMuted = false;
   let audioVolume = 0.80;
   let totalPushed = 0;
@@ -85,8 +86,13 @@ export function createAudioDrcEngine(
     mode = 'script';
   }
 
+  function syncCtxSuspended() {
+    ctxSuspended = Boolean(audioCtx && audioCtx.state === 'suspended');
+    return ctxSuspended;
+  }
+
   function flushStageToWorklet(len = stagePos) {
-    if (len <= 0) return;
+    if (len <= 0 || syncCtxSuspended()) { stagePos = 0; return; }
     const sendL = stageL;
     const sendR = stageR;
     [stageL, stageR] = takeChunkPair();
@@ -106,9 +112,13 @@ export function createAudioDrcEngine(
   function resumeIfSuspended() {
     if (!audioCtx || audioCtx.state !== 'suspended' ||
         typeof audioCtx.resume !== 'function') {
+      syncCtxSuspended();
       return Promise.resolve();
     }
-    return Promise.resolve(audioCtx.resume()).catch(() => {});
+    syncCtxSuspended();
+    return Promise.resolve(audioCtx.resume())
+      .then(() => { syncCtxSuspended(); })
+      .catch(() => { syncCtxSuspended(); });
   }
 
   function initAudio() {
@@ -122,6 +132,9 @@ export function createAudioDrcEngine(
       });
     } catch {
       audioCtx = new AudioContextClass();
+    }
+    if (typeof audioCtx.addEventListener === 'function') {
+      audioCtx.addEventListener('statechange', syncCtxSuspended);
     }
     const resumeP = resumeIfSuspended();
     const hasWorklet = Boolean(
@@ -156,13 +169,18 @@ export function createAudioDrcEngine(
       scriptCore = null;
       mode = 'worklet';
       syncGainToActiveEngine();
-      while (bootQueue.length > 0) {
-        const [bl, br, len] = bootQueue.shift();
-        node.port.postMessage(
-          { type: 'chunk', l: bl, r: br, len }, [bl.buffer, br.buffer]
-        );
+      if (syncCtxSuspended()) {
+        bootQueue.length = 0;
+        stagePos = 0;
+      } else {
+        while (bootQueue.length > 0) {
+          const [bl, br, len] = bootQueue.shift();
+          node.port.postMessage(
+            { type: 'chunk', l: bl, r: br, len }, [bl.buffer, br.buffer]
+          );
+        }
+        if (stagePos > 0) flushStageToWorklet(stagePos);
       }
-      if (stagePos > 0) flushStageToWorklet(stagePos);
     }).catch(() => {
       workletBooting = false;
       attachScriptFallback();
@@ -171,6 +189,7 @@ export function createAudioDrcEngine(
   }
 
   function beginFrame() {
+    syncCtxSuspended();
     inFrame = true;
   }
 
@@ -182,6 +201,7 @@ export function createAudioDrcEngine(
   }
 
   function pushSample(l, r) {
+    if (ctxSuspended) { stagePos = 0; return; }
     totalPushed++;
     if (mode === 'script' && scriptCore) {
       scriptCore.pushSample(l, r);
@@ -228,7 +248,7 @@ export function createAudioDrcEngine(
       minStepRate: 1, maxStepRate: 1, maxStepJump: 0, energySum: 0,
       maxJump: 0, rms: 0, queued: stagePos,
       sampleRate: audioCtx ? audioCtx.sampleRate : 0,
-      buffering: true, mode, targetMs: isWl ? 60 : 67
+      buffering: true, mode, targetMs: isWl ? 64 : 67
     };
   }
 

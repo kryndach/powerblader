@@ -142,9 +142,8 @@ export function createRomSyncManager(state, ui, audio) {
     audio.resetBuffer?.();
     const onFrame = (fb) => ui.renderFrameToCanvas(fb);
     const onAudioSample = (l, r) => {
-      const eff = state.holdTurboActive
-        ? Math.max(4, state.turboMultiplier || 1)
-        : state.turboMultiplier || 1;
+      const eff = sysId !== 'nes' ? 1 : state.holdTurboActive
+        ? Math.max(4, state.turboMultiplier || 1) : state.turboMultiplier || 1;
       if (eff > 1 && ++audioSub % eff !== 0) return;
       audio.pushSample(l, r);
     };

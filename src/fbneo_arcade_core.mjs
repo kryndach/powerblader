@@ -45,10 +45,11 @@ export async function ensureFbneoRuntime(
         '../vendor/fbneo_arcade.wasm?v=3', import.meta.url
       ).href;
       const key = 'WASM_FBNEO_V3';
-      const hit = await xfer.getCachedRomByCrc(key);
+      const isLocal = xfer.isLocalHostRuntime();
+      const hit = isLocal ? null : await xfer.getCachedRomByCrc(key);
       let u8 = hit?.u8?.byteLength > 1000000 ? hit.u8 : null;
       if (!u8) {
-        if (xfer.isLocalHostRuntime()) {
+        if (isLocal) {
           const r = await fetch(wasmUrl);
           if (!r.ok) throw new Error(`FBNeo WASM HTTP ${r.status}`);
           u8 = new Uint8Array(await r.arrayBuffer());
@@ -56,8 +57,8 @@ export async function ensureFbneoRuntime(
           const dl = await xfer.fetchStripedBinary(wasmUrl, { onProgress });
           if (!dl?.u8) throw new Error('Failed to load fbneo_arcade.wasm');
           u8 = dl.u8;
+          xfer.putCachedRomByCrc(key, 'fbneo_arcade.wasm', u8);
         }
-        xfer.putCachedRomByCrc(key, 'fbneo_arcade.wasm', u8);
       }
       try { fbneoWasmModule = await WebAssembly.compile(u8); }
       catch {
