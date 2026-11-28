@@ -63,6 +63,7 @@ export async function ensureFbneoRuntime(
       catch {
         await xfer.deleteCachedRomByCrc(key);
         const fresh = await fetch(wasmUrl, { cache: 'reload' });
+        if (!fresh.ok) throw new Error(`FBNeo reload HTTP ${fresh.status}`);
         u8 = new Uint8Array(await fresh.arrayBuffer());
         fbneoWasmModule = await WebAssembly.compile(u8);
         xfer.putCachedRomByCrc(key, 'fbneo_arcade.wasm', u8);

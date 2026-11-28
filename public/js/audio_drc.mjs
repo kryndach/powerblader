@@ -99,16 +99,19 @@ export function createAudioDrcEngine(
     }
   }
 
-  function initAudio() {
-    if (audioCtx) {
-      if (audioCtx.state === 'suspended') {
-        Promise.resolve(audioCtx.resume?.()).catch(() => {});
-      }
-      return;
+  function resumeIfSuspended() {
+    if (!audioCtx || audioCtx.state !== 'suspended' ||
+        typeof audioCtx.resume !== 'function') {
+      return Promise.resolve();
     }
+    return Promise.resolve(audioCtx.resume()).catch(() => {});
+  }
+
+  function initAudio() {
+    if (audioCtx) return resumeIfSuspended();
     const win = typeof window !== 'undefined' ? window : globalThis;
     const AudioContextClass = win.AudioContext || win.webkitAudioContext;
-    if (!AudioContextClass) return;
+    if (!AudioContextClass) return Promise.resolve();
     try {
       audioCtx = new AudioContextClass({
         sampleRate: 48000, latencyHint: 'interactive'
@@ -116,13 +119,14 @@ export function createAudioDrcEngine(
     } catch {
       audioCtx = new AudioContextClass();
     }
+    const resumeP = resumeIfSuspended();
     const hasWorklet = Boolean(
       audioCtx.audioWorklet?.addModule &&
       typeof win.AudioWorkletNode === 'function'
     );
     if (!hasWorklet) {
       attachScriptFallback();
-      return;
+      return resumeP;
     }
     workletBooting = true;
     const modUrl = new URL('./audio_worklet_processor.mjs', import.meta.url);
@@ -159,6 +163,7 @@ export function createAudioDrcEngine(
       workletBooting = false;
       attachScriptFallback();
     });
+    return resumeP;
   }
 
   function pushSample(l, r) {
@@ -251,15 +256,12 @@ export function createAudioDrcEngine(
       window.removeEventListener?.('pointerdown', onUserGesture);
     };
     function onUserGesture() {
-      initAudio();
+      const p = initAudio();
       if (!audioCtx) return;
       if (audioCtx.state === 'running') return detachGestures();
-      if (audioCtx.state === 'suspended' &&
-          typeof audioCtx.resume === 'function') {
-        Promise.resolve(audioCtx.resume()).then(() => {
-          if (audioCtx?.state === 'running') detachGestures();
-        }).catch(() => {});
-      }
+      Promise.resolve(p).then(() => {
+        if (audioCtx?.state === 'running') detachGestures();
+      }).catch(() => {});
     }
     window.addEventListener('keydown', onUserGesture);
     window.addEventListener('pointerdown', onUserGesture);

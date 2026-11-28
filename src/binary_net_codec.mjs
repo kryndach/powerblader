@@ -102,9 +102,13 @@ export function encodeNetplayPacketBinary(pkt) {
   dv.setUint32(2, hashSessionId32(pkt.sessionId), true);
   const sf = Math.max(0, Math.floor(pkt.startFrame || 0)) >>> 0;
   dv.setUint32(6, sf, true);
-  const ackDelta = typeof pkt.ack === 'number' && Number.isFinite(pkt.ack)
-    ? Math.max(-32767, Math.min(32767, sf - Math.floor(pkt.ack)))
-    : -32768;
+  const rawAckDelta = typeof pkt.ack === 'number' && Number.isFinite(pkt.ack)
+    ? sf - Math.floor(pkt.ack)
+    : null;
+  const ackDelta =
+    rawAckDelta !== null && rawAckDelta >= -32767 && rawAckDelta <= 32767
+      ? rawAckDelta
+      : -32768;
   dv.setInt16(10, ackDelta, true);
   const lead = typeof pkt.peerLead === 'number' && Number.isFinite(pkt.peerLead)
     ? Math.max(-127, Math.min(127, Math.round(pkt.peerLead)))

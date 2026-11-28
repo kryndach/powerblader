@@ -82,7 +82,9 @@ export async function fetchAndValidateBrowserWasm({
   const ok = hasWasmMagic(u8) &&
     (typeof WebAssembly?.validate !== 'function' || WebAssembly.validate(u8));
   if (!ok) throw new Error(`${fileName} invalid WASM binary`);
-  xfer?.putCachedRomByCrc?.(cacheKey, fileName, u8);
+  Promise.resolve(
+    xfer?.putCachedRomByCrc?.(cacheKey, fileName, u8)
+  ).catch(() => {});
   return u8;
 }
 

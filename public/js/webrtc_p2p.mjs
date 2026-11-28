@@ -8,8 +8,12 @@ import {
   encodeNetplayPacketBinary, decodeNetplayPacketBinary, isBinaryNetplayPacket
 } from '../../src/binary_net_codec.mjs';
 
-export function createNetTransport(state, ui, onIncomingMessage) {
-  const racer = createMultiPathRacer();
+export function createNetTransport(
+  state, ui, onIncomingMessage, options = {}
+) {
+  const racer = createMultiPathRacer(
+    options.now ? { now: options.now } : undefined
+  );
   let rtcPathKind = 'direct_p2p';
   let lastSyncedP2p = null, lastSyncedWss = null, hasLiveRttFeed = false;
   const origReset = racer.reset;
@@ -57,14 +61,10 @@ export function createNetTransport(state, ui, onIncomingMessage) {
     rtcPathKind = state.rtcPathKind = 'direct_p2p';
     state.p2pRttMs = 0;
     state._usingP2pAuto = undefined;
-    if (state.rtcChannel) {
-      try { state.rtcChannel.close(); } catch {}
-      state.rtcChannel = null;
-    }
-    if (state.rtcPeer) {
-      try { state.rtcPeer.close(); } catch {}
-      state.rtcPeer = null;
-    }
+    const prevCh = state.rtcChannel, prevPeer = state.rtcPeer;
+    state.rtcChannel = state.rtcPeer = null;
+    if (prevCh) { try { prevCh.close(); } catch {} }
+    if (prevPeer) { try { prevPeer.close(); } catch {} }
     ui.dbgRtcState.textContent = 'Closed';
     ui.updateStatusStrip();
   }
@@ -104,6 +104,7 @@ export function createNetTransport(state, ui, onIncomingMessage) {
       if (!info || state.rtcPeer !== rtc) return;
       rtcPathKind = state.rtcPathKind = info.pathKind;
       racer.updatePathMeta?.('p2p', { kind: rtcPathKind, label: p2pLabel() });
+      syncWinnerToState();
       ui.dbgRtcState.textContent = `OPEN (${info.proto} ${info.label})`;
       ui.updateStatusStrip();
     } catch {}
@@ -189,6 +190,12 @@ export function createNetTransport(state, ui, onIncomingMessage) {
       rtc.onconnectionstatechange = () => {
         if (state.rtcPeer !== rtc) return;
         const st = rtc.connectionState;
+        if (st === 'failed') {
+          racer.removePath('p2p');
+          lastSyncedP2p = null;
+          state.p2pRttMs = 0;
+          state._usingP2pAuto = false;
+        }
         if (st === 'failed' || st === 'disconnected') {
           ui.dbgRtcState.textContent = `Fallback (${st})`;
           ui.updateStatusStrip();

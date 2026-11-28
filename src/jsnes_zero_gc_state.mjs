@@ -79,7 +79,23 @@ export function fixupRestoredMapperState(obj, srcJson = null) {
       (!srcJson || obj.chrRamSlots === srcJson.chrRamSlots)) {
     obj.chrRamSlots = obj.chrRamSlots.slice();
   }
-  if ('exramMode' in obj && 'bgTileOverride' in obj) {
+  if (Array.isArray(obj.chrRegs) &&
+      (!srcJson || obj.chrRegs === srcJson.chrRegs)) {
+    obj.chrRegs = obj.chrRegs.slice();
+  }
+  if (Array.isArray(obj.chrRamTiles) && obj.nes?.ppu) {
+    const ppu = obj.nes.ppu;
+    ppu._nextTileEpoch = (ppu._nextTileEpoch || 1) + 1;
+    const ep = ppu._nextTileEpoch;
+    for (let b = 0; b < obj.chrRamTiles.length; b++) {
+      const bank = obj.chrRamTiles[b];
+      if (!bank) continue;
+      for (let t = 0; t < bank.length; t++) {
+        if (bank[t]) bank[t]._tileEpoch = ep;
+      }
+    }
+  }
+  if ('exramMode' in obj && 'exram' in obj) {
     obj.bgTileOverride = obj.exramMode === 1;
   }
   if ('_chrBankTarget' in obj) obj._chrBankTarget = -1;

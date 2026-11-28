@@ -234,7 +234,8 @@ export function createRoomManager(trackers, options = {}) {
       wireProber.attachPongHandler(ws);
 
       ws.on('message', (data, isBinary) => {
-        if (isBinary && ws.peerSession) {
+        if (isBinary) {
+          if (!ws.peerSession) return;
           const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
           ws.peerSession.lastSeenAt = Date.now();
           relayBinaryFrame(rooms, ws.peerSession, buf, seenInputKey);

@@ -22,15 +22,35 @@ const PUBLIC_TURN_443_SERVERS = [
   }
 ];
 
-const ICE_URL_RE = /^(stuns?|turns?):[^\s]+$/i;
+const ICE_URL_RE = new RegExp(
+  '^(stuns?|turns?):(\\[[0-9a-f:.]+\\]|[a-z0-9.-]+)' +
+  '(?::(\\d{1,5}))?(?:\\?transport=(udp|tcp))?$', 'i'
+);
+const HOST_OK_RE = new RegExp(
+  '^(\\[[0-9a-f:.]+\\]|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?' +
+  '(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)$', 'i'
+);
 const TURN_URL_RE = /^turns?:/i;
+
+function isValidIceUrl(u) {
+  const m = ICE_URL_RE.exec(u);
+  if (!m) return false;
+  const [, scheme, host, portStr, transport] = m;
+  if (!HOST_OK_RE.test(host)) return false;
+  if (portStr) {
+    const p = Number(portStr);
+    if (!(p >= 1 && p <= 65535)) return false;
+  }
+  if (transport && !/^turns?$/i.test(scheme)) return false;
+  return true;
+}
 
 function sanitizeIceServer(entry) {
   if (!entry || !entry.urls) return null;
   const rawList = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
   const validUrls = rawList
     .map((u) => String(u || '').trim())
-    .filter((u) => ICE_URL_RE.test(u));
+    .filter(isValidIceUrl);
   if (!validUrls.length) return null;
   const hasUser = typeof entry.username === 'string' &&
     entry.username.length > 0;
@@ -106,7 +126,10 @@ export function classifyIceCandidateType(candType = '') {
 }
 
 export function waitForRtcGathering(rtc, maxWaitMs = 1200) {
-  if (!rtc || rtc.iceGatheringState === 'complete') return Promise.resolve();
+  if (!rtc || rtc.iceGatheringState === 'complete' ||
+      typeof rtc.addEventListener !== 'function') {
+    return Promise.resolve();
+  }
   return new Promise((resolve) => {
     const t = setTimeout(() => {
       rtc.removeEventListener('icegatheringstatechange', check);

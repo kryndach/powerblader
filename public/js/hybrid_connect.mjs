@@ -317,7 +317,8 @@ export function setupHybridConnectionUi(state, ui, hooks) {
   }
   function resetReconnectAttempts() { reconnectAttempts = 0; }
   function schedulePinggyAutoReconnect() {
-    if (!state.usedNostrDiscovery || reconnectTimer) return;
+    if (!state.usedNostrDiscovery || reconnectTimer ||
+        state.connStatus?.phase === 'error') return;
     if (reconnectAttempts >= 6) {
       return setConnectionPhase(state, ui, {
         phase: 'error', pill: 'HOST OFFLINE',

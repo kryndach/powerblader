@@ -102,7 +102,6 @@ function attachSocketLifecycle(ws, code, nick) {
   state.ws = ws;
   try { ws.binaryType = 'arraybuffer'; } catch {}
   ws.onopen = () => {
-    hybridConn?.resetReconnectAttempts?.();
     ui.dbgWssState.textContent = ws.isServerlessP2p
       ? 'Connected (P2P)' : 'Connected';
     if (ws.isServerlessP2p && ws.getIceSummary) {
@@ -150,17 +149,23 @@ function attachSocketLifecycle(ws, code, nick) {
     }
     if (state.connStatus?.phase !== 'error') {
       setConnectionPhase(state, ui, { phase: 'offline', tone: 'idle' });
+      hybridConn?.schedulePinggyAutoReconnect?.();
     } else ui.updateStatusStrip();
-    hybridConn?.schedulePinggyAutoReconnect?.();
   };
+}
+
+function closeSockets() {
+  const prevWs = state.ws, prevAux = state.wsAux;
+  state.ws = state.wsAux = null;
+  if (prevWs) { try { prevWs.close(); } catch {} }
+  if (prevAux) { try { prevAux.close(); } catch {} }
+  transport.closeWebRtc();
 }
 
 function connectToRoom() {
   hybridConn?.cancelAutoReconnect?.();
   audio.initAudio();
-  if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
-  if (state.wsAux) { try { state.wsAux.close(); } catch {} state.wsAux = null; }
-  transport.closeWebRtc();
+  closeSockets();
   const code = (ui.roomInput.value || 'NOVA').trim().toUpperCase().slice(0, 10);
   ui.roomInput.value = code;
   syncBenchLinks();
@@ -174,15 +179,12 @@ hybridConn = setupHybridConnectionUi(state, ui, {
   onServerDiscovered: () => { syncBenchLinks(); romSync.discoverLocalRoms(); },
   attachCustomSocket(customWs, code, nick) {
     audio.initAudio();
-    if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
-    if (state.wsAux) {
-      try { state.wsAux.close(); } catch {} state.wsAux = null;
-    }
-    transport.closeWebRtc();
+    closeSockets();
     ui.dbgWssState.textContent = 'P2P Signaling...';
     attachSocketLifecycle(customWs, code, nick);
   }
 });
+state.onRoomJoined = () => hybridConn?.resetReconnectAttempts?.();
 
 ui.connectBtn.addEventListener('click', () => hybridConn.smartConnect());
 const tunnelCtrl = setupHostTunnelController(state, ui, {
@@ -247,16 +249,14 @@ function applyInputDelaySelection(newValue) {
   const ms = Math.round(nextDelay * (1000 / 60.0988));
   const suffix = newValue === 'auto' ? ' [AUTO]' : '';
   ui.logDebug(`Local Input Delay set to ${nextDelay}f (${ms}ms)${suffix}`);
-  ui.showScreenBanner(`LOCAL INPUT LAG: ${nextDelay}f (${ms}ms)${suffix}`, 'ok',
-    2200);
+  const msg = `LOCAL INPUT LAG: ${nextDelay}f (${ms}ms)${suffix}`;
+  ui.showScreenBanner(msg, 'ok', 2200);
   telemetry.pushGameplayTelemetryToServer();
 }
-
 ui.topInputDelaySelect?.addEventListener('change', () =>
   applyInputDelaySelection(ui.topInputDelaySelect.value));
 ui.inputDelaySelect.addEventListener('change', () =>
   applyInputDelaySelection(ui.inputDelaySelect.value));
-
 ui.crtToggleBtn.addEventListener('click', () => {
   const enabled = ui.scanlinesOverlay.classList.toggle('enabled');
   ui.crtToggleBtn.textContent = enabled ? 'CRT: ON' : 'CRT: OFF';

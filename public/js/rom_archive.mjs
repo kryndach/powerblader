@@ -163,6 +163,15 @@ export function handleRomTransferMessage(
       hit.u8, msg.romName, msg.isAutoDefaultRom, dropKey, syncSt
     );
   };
+  const onXferError = (e) => {
+    ui.setTransferStatus?.(null);
+    ui.logDebug?.(`ROM transfer failed: ${e?.message || e}`);
+    ui.showScreenBanner?.(
+      `ROM TRANSFER FAILED: ${e?.message || 'Error'}`, 'err', 4000
+    );
+    if (state.engine) state.engine.syncPaused = false;
+    ui.updateStatusStrip?.();
+  };
   if (msg.type === 'rom_chunk_start') {
     const act = state.activeRomDownload;
     if (act && msg.romCrc32 && act.romCrc32 === msg.romCrc32 &&
@@ -249,7 +258,7 @@ export function handleRomTransferMessage(
         if (!hit?.u8 || cur?.sessionId !== msg.sessionId) return;
         state.incomingRomTransfer = null;
         return applyCacheHit(hit, null, msg.syncState, msg.sessionId);
-      }).catch(() => {});
+      }).catch(onXferError);
     }
     return true;
   }
@@ -260,7 +269,7 @@ export function handleRomTransferMessage(
     const full = new Uint8Array(xfer.totalBytes);
     for (let i = 0, off = 0; i < xfer.totalChunks; i++) {
       const part = xfer.chunks.get(i);
-      if (!part) return;
+      if (!part) throw new Error(`Missing ROM chunk #${i}`);
       full.set(part, off); off += part.length;
     }
     const romBytes = xfer.payloadEncoding === 'gzip'
@@ -273,17 +282,11 @@ export function handleRomTransferMessage(
       romBytes, xfer.romName, xfer.isAutoDefaultRom, null, xfer.syncState
     );
   };
-  const runFinalize = () => finalize().catch((e) => {
-    ui.setTransferStatus?.(null);
-    ui.logDebug?.(`ROM chunk finalize failed: ${e?.message || e}`);
-    ui.showScreenBanner?.(
-      `ROM TRANSFER FAILED: ${e?.message || 'Error'}`, 'err', 4000
-    );
-    if (state.engine) state.engine.syncPaused = false;
-    ui.updateStatusStrip?.();
-  });
+  const runFinalize = () => finalize().catch(onXferError);
   if (msg.type === 'rom_chunk_data' && xfer &&
       matchesBinarySessionId(msg.sessionId, xfer.sessionId)) {
+    if (!Number.isInteger(msg.index) || msg.index < 0 ||
+        msg.index >= xfer.totalChunks) return true;
     const part = msg.data instanceof Uint8Array
       ? msg.data : base64ToUint8(msg.dataB64);
     if (!xfer.chunks.has(msg.index)) {

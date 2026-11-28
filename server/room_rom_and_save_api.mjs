@@ -5,7 +5,9 @@ import { promisify } from 'util';
 import zlib from 'zlib';
 
 const gzipAsync = promisify(zlib.gzip);
-const gunzipAsync = promisify(zlib.gunzip);
+const gunzipRaw = promisify(zlib.gunzip);
+const MAX_ROOM_ROM_BYTES = 64 * 1024 * 1024;
+const gunzipRom = (b) => gunzipRaw(b, { maxOutputLength: MAX_ROOM_ROM_BYTES });
 
 const HOST_ONLY_PATHS = new Set([
   '/api/join-file', '/api/tunnel-routes',
@@ -37,7 +39,6 @@ export function applyPublicApiCors(req, res, pathname) {
 
 const roomRomCache = new Map();
 const pendingMultipart = new Map();
-const MAX_ROOM_ROM_BYTES = 64 * 1024 * 1024;
 const MAX_MULTIPART_PARTS = 2048;
 const MAX_PENDING_MULTIPART = 8;
 const MAX_PENDING_BYTES = 128 * 1024 * 1024;
@@ -207,7 +208,7 @@ export function handleRoomRomApi(req, urlObj, res, sendJson) {
         }
         if (isMultipart) {
           const validParams =
-            Number.isInteger(totalParts) && totalParts >= 2 &&
+            Number.isInteger(totalParts) && totalParts >= 1 &&
             totalParts <= MAX_MULTIPART_PARTS &&
             Number.isInteger(partIdx) && partIdx >= 0 &&
             partIdx < totalParts &&
@@ -216,9 +217,7 @@ export function handleRoomRomApi(req, urlObj, res, sendJson) {
             Number.isInteger(offset) && offset >= 0 &&
             offset + rawBody.length <= fullSize;
           if (!validParams) {
-            return sendJson(
-              res, 400, { ok: false, error: 'Invalid multipart ROM parameters' }
-            );
+            return sendJson(res, 400, { ok: false, error: 'Bad multipart' });
           }
           const now = Date.now();
           const key = `${roomCode}:${crc || romName}:${fullSize}:${totalParts}`;
@@ -257,7 +256,7 @@ export function handleRoomRomApi(req, urlObj, res, sendJson) {
               res, 400, { ok: false, error: 'Incomplete multipart ROM payload' }
             );
           }
-          const romBuf = isGzipBody ? await gunzipAsync(st.buf) : st.buf;
+          const romBuf = isGzipBody ? await gunzipRom(st.buf) : st.buf;
           cacheRoomRom(
             roomCode, crc, romName, romBuf, isGzipBody ? st.buf : null
           );
@@ -267,7 +266,7 @@ export function handleRoomRomApi(req, urlObj, res, sendJson) {
           }, true);
         }
 
-        const romBuffer = isGzipBody ? await gunzipAsync(rawBody) : rawBody;
+        const romBuffer = isGzipBody ? await gunzipRom(rawBody) : rawBody;
         const gzBuf = isGzipBody ? rawBody : null;
         cacheRoomRom(roomCode, crc, romName, romBuffer, gzBuf);
         sendJson(res, 200, {

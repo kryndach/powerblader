@@ -108,8 +108,10 @@ function decodeNonInputBinaryForHttp(rawBuf, sidMap) {
     return decodeNetplayPacketBinary(rawBuf);
   }
   if (isBinaryRomChunk(rawBuf)) {
-    const sidHash = rawBuf.readUInt32LE(1);
-    const expectedSid = sidMap?.get(sidHash) || null;
+    const dv = new DataView(
+      rawBuf.buffer, rawBuf.byteOffset, rawBuf.byteLength
+    );
+    const expectedSid = sidMap?.get(dv.getUint32(1, true)) || null;
     const dec = decodeBinaryRomChunk(rawBuf, expectedSid);
     if (!dec) return null;
     const dataB64 = Buffer.from(

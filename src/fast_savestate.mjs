@@ -237,7 +237,13 @@ export function restoreCompactNesState(nes, syncObj) {
   patchJsnes8x16Sprites(nes);
   const s = syncObj.nesState;
   invalidateMapperBankCaches(nes.mmap);
-  nes.mmap.fromJSON(s.mmap);
+  const prevInRender = nes.ppu?._inRendering;
+  if (nes.ppu) nes.ppu._inRendering = true;
+  try {
+    nes.mmap.fromJSON(s.mmap);
+  } finally {
+    if (nes.ppu) nes.ppu._inRendering = prevInRender;
+  }
   fixupRestoredMapperState(nes.mmap, s.mmap);
   nes.cpu.fromJSON(s.cpu);
 

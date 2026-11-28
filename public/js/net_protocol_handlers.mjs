@@ -80,6 +80,7 @@ export function createProtocolHandlers(
     state.roomCode = msg.roomCode;
     state.localClientId = msg.clientId || null;
     state.localPlayerIndex = msg.playerIndex;
+    state.onRoomJoined?.();
     if (state.connStatus?.phase === 'error') {
       setConnectionPhase(state, ui, { phase: 'connected', tone: 'ok' });
     }
@@ -123,11 +124,8 @@ export function createProtocolHandlers(
         `CONNECTED TO ${state.peerNick.toUpperCase()}`, 'ok', 3500
       );
       sendLocalRomStatus();
-      if (
-        state.localPlayerIndex === 1 &&
-        state.romCrc32 &&
-        state.partnerRomCrc32 === state.romCrc32
-      ) {
+      if (state.localPlayerIndex === 1 && state.romCrc32 &&
+          state.partnerRomCrc32 === state.romCrc32) {
         romSync.startLockstepMatchAtFrameZero('Joined with matching ROMs');
       } else {
         maybeAutoLoadCachedPartnerRom(

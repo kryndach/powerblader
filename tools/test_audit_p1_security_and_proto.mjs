@@ -4,14 +4,17 @@ import fs from 'fs';
 import http from 'http';
 import os from 'os';
 import path from 'path';
+import zlib from 'zlib';
 import WebSocket from 'ws';
 import * as jsnesMod from 'jsnes';
 import {
   BIN_MAGIC_INPUT, encodeNetplayPacketBinary, decodeNetplayPacketBinary,
   extractBinaryInputDedupKey, encodeBinaryRomChunk, hashSessionId32
 } from '../src/binary_net_codec.mjs';
+import { relayBinaryFrame } from '../server/wire_rtt_prober.mjs';
 import { NesNetplayEngine } from '../src/netplay_engine.mjs';
 import { createCoopServer } from '../server/relay_server.mjs';
+import { uploadStripedRom } from '../public/js/rom_fast_transfer.mjs';
 import { createDualControllerTestRom } from './test_rom_builder_tables.mjs';
 
 const jsnes = jsnesMod.NES ? jsnesMod : jsnesMod.default;
@@ -91,6 +94,15 @@ function testP1_3BinaryTailCountAndSignedAck() {
     type: 'netplay_input', sessionId: 's_ack', startFrame: 50, inputs: [0]
   }), 's_ack');
   assert.strictEqual(decNoAck.ack, undefined);
+
+  // Out-of-Int16-range ack delta MUST omit ack (not fabricate a false ack!)
+  for (const [sf, ack] of [[40000, -1], [50000, 0], [100, 40000]]) {
+    const dec = decodeNetplayPacketBinary(encodeNetplayPacketBinary({
+      type: 'netplay_input', sessionId: 's_ack', startFrame: sf,
+      inputs: [1], ack
+    }), 's_ack');
+    assert.strictEqual(dec.ack, undefined, `Fabricated ack=${dec.ack}`);
+  }
   console.log('[PASS] P1-3: Binary tailCount & Signed Int16 ackDelta verified');
 }
 
@@ -160,6 +172,61 @@ async function testP1_2MultipartBoundsAndCorsHeaders() {
     const okGet = await httpReq(port, '/api/room-rom?room=M3&crc=OK11');
     assert.strictEqual(okGet.status, 200);
     assert.deepStrictEqual(okGet.body, Buffer.concat([p0, p1]));
+
+    // HEAD exposes X-Raw-Length + CORS; forceStriped total=1 works
+    const head = await httpReq(port, '/api/room-rom?room=M3&crc=OK11', 'HEAD');
+    assert.strictEqual(head.status, 200);
+    assert.strictEqual(head.headers['x-raw-length'], '32');
+    assert.ok(String(head.headers['access-control-expose-headers'] || '')
+      .includes('X-Raw-Length'));
+    const nodeFetch = async (u, init = {}) => {
+      const url = new URL(String(u));
+      const r = await httpReq(
+        port, `${url.pathname}${url.search}`, init.method || 'GET',
+        init.body ? Buffer.from(init.body) : null, init.headers || {}
+      );
+      return { ok: r.status >= 200 && r.status < 300, status: r.status };
+    };
+    const ok1 = await uploadStripedRom(
+      `http://127.0.0.1:${port}/api/room-rom?room=F1&crc=F100&name=s.nes`,
+      new Uint8Array(64).fill(0x5a),
+      { 'Content-Type': 'application/octet-stream' },
+      { forceStriped: true, sliceBytes: 1024, fetchImpl: nodeFetch }
+    );
+    assert.strictEqual(ok1, true, 'forceStriped total=1 failed!');
+
+    // Overlapping chunks with bytesWritten === fullSize + gap -> 400
+    const ovB = '/api/room-rom?room=OV&crc=OV1&name=o.nes&total=2&size=32';
+    assert.strictEqual((await httpReq(
+      port, `${ovB}&part=0&offset=0`, 'POST', Buffer.alloc(20, 1)
+    )).status, 200);
+    assert.strictEqual((await httpReq(
+      port, `${ovB}&part=1&offset=10`, 'POST', Buffer.alloc(12, 2)
+    )).status, 400);
+
+    // Invalid params, >8 eviction, and gzip bomb (>64 MiB) -> 400
+    for (const q of [
+      'part=0&total=0&offset=0&size=16',
+      'part=abc&total=2&offset=0&size=16',
+      'part=0&total=2&offset=0&size=NaN'
+    ]) {
+      assert.strictEqual((await httpReq(
+        port, `/api/room-rom?room=B&crc=B&name=b.nes&${q}`, 'POST',
+        Buffer.alloc(8, 3)
+      )).status, 400);
+    }
+    for (let i = 0; i < 10; i++) {
+      const u = `/api/room-rom?room=EV${i}&crc=E${i}&name=e.nes` +
+        '&part=0&total=2&offset=0&size=32';
+      assert.strictEqual((await httpReq(port, u, 'POST', Buffer.alloc(16, i)))
+        .status, 200);
+    }
+    const bombGz = zlib.gzipSync(Buffer.alloc(65 * 1024 * 1024, 0));
+    const bRes = await httpReq(
+      port, '/api/room-rom?room=BOMB&crc=B1&name=b.nes', 'POST', bombGz,
+      { 'X-Rom-Encoding': 'gzip', 'Content-Type': 'application/octet-stream' }
+    );
+    assert.strictEqual(bRes.status, 400, 'Gzip bomb >64MB not rejected!');
     console.log('[PASS] P1-2: Multipart Bounds, Coverage & CORS Headers');
   } finally {
     await app.close();
@@ -239,6 +306,23 @@ async function testP1_4HttpTunnelBinaryAndWsTruncatedSurvival() {
     assert.ok(pong && pong.t === 7654321, 'Dropped binary peer_pong');
     assert.ok(chunk && chunk.dataB64 === expB64, 'Dropped binary rom_chunk');
     p1.close();
+
+    // Plain Uint8Array (non-Buffer) ROM chunk + unjoined binary WS frame
+    const dstU8 = { clientId: 'h2', ws: null, httpOutbox: [], nextSeq: 1 };
+    const srcU8 = { clientId: 'w1', roomCode: 'U8R' };
+    const rm = new Map([['U8R', new Map([['w1', srcU8], ['h2', dstU8]])]]);
+    relayBinaryFrame(
+      rm, srcU8, encodeBinaryRomChunk('rs', 3, new Uint8Array([9, 8])), () => 0
+    );
+    assert.strictEqual(dstU8.httpOutbox.length, 1);
+    const unj = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    await new Promise((r) => unj.once('open', r));
+    unj.send(Buffer.from(JSON.stringify({
+      type: 'join_room', roomCode: 'BINJ', nick: 'Bad'
+    })));
+    await new Promise((r) => setTimeout(r, 50));
+    assert.strictEqual(app.rooms.has('BINJ'), false);
+    unj.close();
     console.log('[PASS] P1-1b & P1-4: Truncated WS Survival & HTTP Binary');
   } finally {
     await app.close();
